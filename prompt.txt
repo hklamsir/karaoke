@@ -1,0 +1,79 @@
+# Role & Goal
+你是一位精通 Python 影音處理、阿里百煉（DashScope）語音大模型與字幕特效工程的資深開發者。
+請幫我開發一個完整的 Python 命令列工具（CLI），讓用戶可以輸入一段本地 MV 短片，程式能透過阿里百煉雲的 **`qwen-audio-3.1-asr-flash-filetrans`** 模型自動識別歌詞與「逐字時間軸（Word-level Timestamps）」，產出 `.ass` 卡拉OK格式字幕檔（支援平滑逐字變色），並可讓用戶自由選擇「僅輸出字幕檔」或「將字幕直接燒錄（內嵌）進新的 MV 影片檔中」。
+
+---
+
+# 核心功能與技術規格需求
+
+## 1. 操作介面（CLI 工具）
+使用 `argparse` 建立清晰的命令列介面，支援以下參數：
+- `-i` / `--input`：（必填）輸入的 MV 影片檔案路徑（支援 `.mp4`, `.mov`, `.mkv` 等常見格式）。
+- `-o` / `--output-dir`：（選填）輸出檔案的資料夾路徑，預設為輸入影片所在的同級目錄。
+- `--sub-only`：（選填 Flag）**輸出模式切換**：若啟用此參數，程式僅生成並儲存 `.ass` 卡拉OK字幕檔，跳過最後的 FFmpeg 影片燒錄步驟；若未啟用（預設），則同時輸出 `.ass` 字幕檔與燒錄好字幕的 `.mp4` 影片。
+- `--api-key`：（選填）阿里百煉雲 DashScope API Key。若未在 CLI 傳入，則自動從環境變數 `DASHSCOPE_API_KEY` 或 `.env` 檔案中讀取。
+- `--model`：（選填）指定百煉語音識別模型名稱，預設固定為 `"qwen-audio-3.1-asr-flash-filetrans"`。
+- `-l` / `--language`：（選填）指定歌曲語言提示（例如 `zh` 中文、`yue` 粵語、`en` 英語，預設不指定以自動偵測）。
+- `--separate-vocals`：（選填 Flag）若啟用此參數，先進行 AI 人聲分離，再將純人聲送交百煉雲 API 識別，以提高背景音樂強烈時的歌詞與時間軸準確度。
+- **字幕樣式自訂參數**：
+  - `--font-name`：字體名稱（預設：`Microsoft JhengHei` 或系統通用黑體）。
+  - `--font-size`：字體大小（預設：`48`）。
+  - `--primary-color`：卡拉OK「唱過後」的高亮顏色（支援 Hex 色碼輸入如 `#FFFF00` 黃色，程式內部需自動轉為 ASS 格式的 `&H00BBGGRR` 編碼）。
+  - `--secondary-color`：卡拉OK「尚未唱到」的底色（預設：`#FFFFFF` 白色）。
+  - `--outline-color`：字體外框顏色（預設：`#000000` 黑色）。
+
+## 2. 音訊前處理（符合 ASR 格式要求）
+- 使用 `ffmpeg` 從輸入影片中提取音訊。
+- **可選的人聲分離**：若用戶加上 `--separate-vocals` 參數，請整合開源工具（如 `audio-separator` 或 `demucs`）將音訊分離出純人聲（Vocals）。**注意**：純人聲僅用於送交 API 聽寫；最後合成輸出影片時，**必須保留原影片完整的背景音樂與伴奏**。
+- **音訊格式標準化**：使用 FFmpeg 將最終送交識別的音訊轉換為寬頻 PCM 編碼的單聲道 WAV 檔（16000Hz），FFmpeg 參數：`-ac 1 -ar 16000 -acodec pcm_s16le`。
+
+## 3. 阿里百煉雲 `qwen-audio-3.1-asr-flash-filetrans` 異步調用與字級時間戳
+由於 `qwen-audio-3.1-asr-flash-filetrans` 屬於錄音文件異步識別（Filetrans）模型，要求輸入為上傳後的 URL，並透過輪詢獲取結果。請務必實現以下標準對接邏輯：
+1. **本地音訊自動上傳（獲取臨時 URL）**：
+   - 由於 Filetrans 模型不支援直接傳入本地磁碟路徑，請在 Python 中使用 DashScope SDK 內建的檔案上傳機制（如 `dashscope.Files.upload` 或 `dashscope.utils.oss_utils.upload_file`），將本地產生的 `.wav` 音訊暫存檔自動上傳至百煉臨時儲存空間，獲取 `file_url`（如 `oss://...` 或 `https://...`）。
+   - 若使用 `oss://` 臨時 URL，請在呼叫轉寫 API 時於 Header 加入 `"X-DashScope-OssResourceResolve": "enable"`，確保百煉雲端能直接解析該檔案。
+2. **提交 ASR 異步任務**：
+   - 使用 `dashscope.audio.asr.Transcription.async_call`（或對應的 RESTful / SDK 異步調用介面）提交任務：
+     - `model="qwen-audio-3.1-asr-flash-filetrans"`（由 `--model` 參數傳入）
+     - `file_urls=[file_url]`
+     - `enable_words=True`（關鍵：必須開啟字詞級別時間戳，用於製作卡拉OK逐字變色）
+     - `enable_itn=False`（避免數字歌詞被轉成阿拉伯數字而破壞字數對齊）
+     - 若用戶有指定 `--language`，則傳入對應的語言參數（如 `language_hints=[args.language]` 或 `language=args.language`）。
+3. **異步任務輪詢（Task Polling）**：
+   - 透過 `Transcription.wait(task=task_response.output.task_id)` 或每隔 3 秒呼叫 `Transcription.fetch` 輪詢任務狀態。
+   - 當狀態為 `SUCCEEDED` 時，從回傳結果中取得 `transcription_url`，並使用 `requests.get()` 下載完整的識別結果 JSON。
+4. **解析回傳的 ASR JSON 數據**：
+   - 解析下載的 JSON 結構中的 `transcripts` -> `sentences`。
+   - 提取句子級別的信息（`text`, `begin_time`, `end_time`，單位：毫秒 ms）。
+   - 提取字級別信息（`words` 陣列，每個 word 包含 `text`, `begin_time`, `end_time`，單位：毫秒 ms）。
+5. **強制繁體中文輸出**：整合 `opencc-python-reimplemented`（設定為 `s2hk` 或 `s2twp`），將 API 回傳的所有中文字幕與單字（Words）強制轉換為**繁體中文**。
+6. **長句自動切分優化**：若單句歌詞字數過多（例如超過 16～18 個中文字）或詞與詞之間停頓過長（例如 `> 800 ms`），請根據 `words` 的時間戳自動拆分為兩個短句，避免單行字幕超出 MV 畫面。
+
+## 4. 產出 `.ass` 卡拉OK字幕檔（單行置中 + 逐字變色）
+- 產生符合 Advanced SubStation Alpha (`.ass`) 規範的字幕檔並儲存下來（檔名如 `<原檔名>_karaoke.ass`）。
+- **排版模式**：採用**單行底部置中模式（Alignment = 2）**，每次畫面底部正中央只顯示當前唱到的那一句歌詞，視覺乾淨不遮擋 MV。
+- **卡拉OK逐字變色標籤與單位換算（ms 轉 cs）**：
+  - 注意單位轉換：百煉 API 回傳的 `begin_time` 與 `end_time` 單位為**毫秒（ms）**，而 ASS 字幕的 `\kf` 標籤單位為**百分之一秒（Centiseconds, cs，即 `1 cs = 10 ms`）**。
+  - 每個字的持續時間：`duration_cs = max(1, round((word_end_ms - word_begin_ms) / 10))`。
+  - 使用 `{\kf<duration_cs>}<單字>`（平滑漸層填充變色）標籤組合整句歌詞。
+  - **字間停頓補償（Gap Handling）**：若同一句中前一個字的 `end_time` 與下一個字的 `begin_time` 之間存在停頓（例如差距 `> 50 ms`），請在兩個字之間插入空白時間標籤 `{\k<gap_cs>}`，確保變色進度條與歌手實際演唱節奏完全同步，不會提前變色。
+- **色彩轉換邏輯**：請撰寫一個 Helper Function，將用戶輸入的 `#RRGGBB` 網頁色碼正確轉換為 ASS 字幕要求的 `&H00BBGGRR`（BGR 反序）格式，確保 `PrimaryColour`（唱過的高亮色）與 `SecondaryColour`（未唱的底色）設定正確。
+
+## 5. 影片燒錄合成（可透過 `--sub-only` 跳過）
+- 若用戶**未啟用** `--sub-only`，則使用 `ffmpeg`（透過 `subprocess` 呼叫）將生成的 `.ass` 字幕檔燒錄進原始 MV 影片中，輸出為 `<原檔名>_karaoke.mp4`。
+- **路徑跳脫處理**：特別注意 Windows / macOS / Linux 下 `ffmpeg -vf "ass=..."` 濾鏡對檔案路徑中空白、冒號與斜線的跳脫字元（Escaping）問題（建議透過切換 `cwd` 工作目錄或使用相對路徑處理，避免路徑報錯）。
+- 保持原影片的解析度、幀率與原始音軌不變（音訊使用 `-c:a copy` 加速處理）。
+
+---
+
+# 輸出交付要求
+請提供以下完整內容：
+1. **專案結構與環境安裝指南**：包含 `requirements.txt`（必須包含 `dashscope`, `requests`, `python-dotenv`, `opencc-python-reimplemented` 等）與系統層級 `FFmpeg` 安裝說明。
+2. **完整可執行的 Python 程式碼（`main.py`）**：
+   - 程式碼必須模組化、結構清晰，包含完整的 Type Hints 與繁體中文註解。
+   - 具備良好的錯誤處理（如檢查 `DASHSCOPE_API_KEY`、API 異步狀態碼檢查、上傳失敗處理、找不到 FFmpeg 等友善提示）與步驟進度顯示（Logging）。
+   - 自動清理執行過程中產生的暫存 `.wav` 音訊檔（使用 `tempfile` 模組）。
+3. **CLI 使用範例**：列出 3 個終端機執行指令範例：
+   - 範例 1：預設模式（使用 `qwen-audio-3.1-asr-flash-filetrans` 自動上傳識別，同時產出 `.ass` 字幕檔與燒錄後的 `.mp4` 影片）。
+   - 範例 2：僅產出 `.ass` 字幕檔（使用 `--sub-only`）。
+   - 範例 3：開啟 `--separate-vocals` 人聲分離並自訂卡拉OK字幕顏色的進階用法。

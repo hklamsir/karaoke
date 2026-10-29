@@ -1,0 +1,11 @@
+# dashscope>=1.20.0      百煉 SDK（ASR 異步轉寫 + 檔案上傳）
+# requests>=2.31.0       下載 transcription_url
+# python-dotenv>=1.0.0   讀 .env
+# opencc-python-reimplemented>=1.1.7   簡→繁（s2hk），只喺有 CJK 時跑（ADR-012）
+#
+# ⚠️ ADR-012：LLM 歌詞校正已移除，`openai` 唔再需要。
+#    人聲分離（audio-separator）刻意唔放喺呢度，見 ADR-010。
+dashscope>=1.20.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+opencc-python-reimplemented>=1.1.7

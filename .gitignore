@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# 實測素材／輸出大檔（60MB+，唔入 repo；原始 ASR 證據 JSON 喺 _probe/out/ 會入）
+_smoke/
+
+# 規劃文件（慣例：先討論確認，排除於 production commit）
+docs/標點斷行計劃書.md
+
+# Agent 工作資料（工作日誌／記憶，唔屬於專案代碼）
+.workbuddy/
