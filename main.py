@@ -1091,6 +1091,7 @@ def style_from_args(args: argparse.Namespace, width: int, height: int) -> StyleC
         primary_color=args.primary_color,
         secondary_color=args.secondary_color,
         outline_color=args.outline_color,
+        margin_v=args.margin_v,
     )
 
 
@@ -1204,7 +1205,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     overrides = {k: v for k, v in (
         ("font_name", args.font_name), ("font_size", args.font_size),
         ("primary_color", args.primary_color), ("secondary_color", args.secondary_color),
-        ("outline_color", args.outline_color),
+        ("outline_color", args.outline_color), ("margin_v", args.margin_v),
     ) if v is not None}
     if overrides:
         style = replace(style, **overrides)
@@ -1298,6 +1299,12 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
     group.add_argument("--outline-color",
                        default=None if overrides else "#000000",
                        help="外框顏色，Hex" + ("（覆寫）" if overrides else ""))
+    group.add_argument("--margin-v", type=int,
+                       default=None if overrides else 0,
+                       help="底部垂直留白（px）" +
+                            ("（覆寫 timings.json 內嘅值）" if overrides else
+                            "；0 = 按 PlayResY 自動推算（1080p ≈ 59px）。"
+                            "MV 自帶內嵌字幕時調大（例如 160）避開佢"))
 
 
 def build_parser() -> argparse.ArgumentParser:

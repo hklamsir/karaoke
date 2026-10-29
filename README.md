@@ -131,6 +131,7 @@ python main.py burn -i "MV.mp4" -s "MV_karaoke.ass"
 | `--min-clause-ms 1500` | **ADR-013**：短句門檻時長（ms）；拖長音嘅短句照出一行，保留強調效果 |
 | `--keep-punctuation` | **ADR-013**：字幕保留標點。預設**剝走**：行尾標點刪、行中標點變半形空格 + `{\k<gap>}` 停頓 |
 | `--hold-ms 300` | 句尾多留幾多 ms 先換行 |
+| `--margin-v 160` | 底部垂直留白（px），`0` = 按 PlayResY 自動（1080p ≈ 59px）。**MV 自帶內嵌字幕時調大避開佢**；`render` 都有（覆寫用） |
 | `--save-raw` | 額外存 ASR 原始 JSON 方便除錯 |
 | `-v` | DEBUG 層級 log（`main.py -v generate ...` 或 `... generate ... -v` 都得） |
 
