@@ -127,8 +127,9 @@ python main.py burn -i "MV.mp4" -s "MV_karaoke.ass"
 | `--separate-vocals` | 先做人聲分離再送 ASR（背景音樂強烈時用） |
 | `--max-chars 16` | 每行最多字數，預設 18。**ADR-013 後係安全網**：斷行以**標點優先**（句讀 + sentence 邊界），淨係分句超長先兜底 |
 | `--gap-threshold 800` | 兜底斷句嘅停頓閾值（ms），淨喺超長分句內生效 |
-| `--min-clause-chars 3` | **ADR-013**：短句門檻字數（≤3 字 **且** 時長 <1500ms 先同鄰句合併） |
-| `--min-clause-ms 1500` | **ADR-013**：短句門檻時長（ms）；拖長音嘅短句照出一行，保留強調效果 |
+| `--min-clause-chars 5` | **ADR-013**：短句門檻字數（≤5 字 **且** 時長 <2500ms 先同鄰句合併） |
+| `--min-clause-ms 2500` | **ADR-013**：短句門檻時長（ms）；拖長音嘅短句照出一行，保留強調效果 |
+| `--merge-max-chars 16` | **ADR-013 修訂**：合併後嘅行不可超過嘅字數（兜底切行仍然用 `--max-chars`） |
 | `--keep-punctuation` | **ADR-013**：字幕保留標點。預設**剝走**：行尾標點刪、行中標點變半形空格 + `{\k<gap>}` 停頓 |
 | `--hold-ms 300` | 句尾多留幾多 ms 先換行 |
 | `--margin-v 160` | 底部垂直留白（px），`0` = 按 PlayResY 自動（1080p ≈ 59px）。**MV 自帶內嵌字幕時調大避開佢**；`render` 都有（覆寫用） |

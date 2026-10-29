@@ -48,8 +48,13 @@ DEFAULT_OPENCC_CONFIG = "s2hk"                    # ADR-008：唯一允許的 co
 TIMINGS_SCHEMA_VERSION = 2                        # ADR-013：v2 加 punctuation / break_reason
 
 # ADR-013：短句合併門檻 —— **雙條件**（字數 ≤ min 且 時長 < min）同時成立先算「太短」要合併
-MIN_CLAUSE_CHARS = 3
-MIN_CLAUSE_MS = 1500
+# （2026-10-29 修訂：3字/1500ms → 5字/2500ms，實測舊門檻太保守，4-5 字快句照出會太散）
+MIN_CLAUSE_CHARS = 5
+MIN_CLAUSE_MS = 2500
+
+# ADR-013 修訂：合併後嘅行**不可長過 16 字**（同 max_chars=18 分開 —— 合併係為咗避免
+# 短行，唔係為咗砌長行；兜底切長句仍然用 max_chars）
+MERGE_MAX_CHARS = 16
 
 # ADR-013：標點分級 —— soft（句讀，話未講完）定 hard（句末，一個完整樂句）
 # 用途：短句定向合併（hard → 向後併、soft → 向前併）
@@ -666,19 +671,21 @@ def split_into_lines(
     hold_ms: int = 300,
     min_clause_chars: int = MIN_CLAUSE_CHARS,
     min_clause_ms: int = MIN_CLAUSE_MS,
+    merge_max_chars: int = MERGE_MAX_CHARS,
 ) -> list[LyricLine]:
-    """標點優先斷句（ADR-013，計劃書 §5）。
+    """標點優先斷句（ADR-013，計劃書 §5；門檻 2026-10-29 修訂）。
 
     次序：
       1. 切分句（clause）：逢 WordGroup 帶 ``punctuation`` 或 ``sentence_end`` 就收結
       2. 定向合併太短 clause（**雙條件**：字數 ≤ ``min_clause_chars`` 且
          自身時長 < ``min_clause_ms``）：句末（hard）收尾 → **向後併**；
-         短句要向前併但會令行超 ``max_chars`` → 放棄、照出短行
+         短句要向前併但**合併後超 ``merge_max_chars``** → 放棄、照出短行
       3. 兜底：合併後仍超 ``max_chars`` 嘅 clause → 喺 WordGroup 邊界切，
          優先 ``gap > gap_threshold_ms`` 嘅位，記 ``max_chars`` / ``gap``
       4. 產生 ``LyricLine``，行尾留 ``hold_ms``（同下一行 begin 對齊）
 
-    ``max_chars`` / ``gap`` 喺標點優先之下只係**安全網**（實測呢首歌唔會觸發）。
+    ``max_chars`` / ``gap`` 喺標點優先之下只係**安全網**；``merge_max_chars``（16）
+    淨係約束「合併」 —— 合併係為咗消滅短行，唔係為咗砌長行。
     """
     # ---- Step 1：切分句（clause）----
     clauses: list[list[WordGroup]] = []
@@ -700,9 +707,14 @@ def split_into_lines(
                 and (gs[-1].end_ms - gs[0].begin_ms) < min_clause_ms)
 
     def _kind(gs: list[WordGroup]) -> str:
-        # 句末（hard）定句讀（soft）；sentence_end 當 hard（B2：隱含句末標點）
-        if any(ch in _PUNCT_HARD for ch in gs[-1].punctuation):
-            return "hard"
+        # 句末（hard）定句讀（soft）。
+        # ⚠️ word 自帶標點**優先**過 sentence_end：逗號收尾（話未講完）就算撞正
+        #    sentence 邊界都係 soft（向前併），sentence_end 只係「冇標點」時嘅
+        #    fallback（B2：隱含句末標點）。實測《每當變幻時》「逝去了的，都已逝去」
+        #    就係撞正呢個 case，向後併會拆散個 hook。
+        punct = gs[-1].punctuation
+        if punct:
+            return "hard" if any(ch in _PUNCT_HARD for ch in punct) else "soft"
         if gs[-1].sentence_end:
             return "hard"
         return "soft"
@@ -715,14 +727,14 @@ def split_into_lines(
         if not cur:
             cur = list(clause)
         elif force_forward:
-            if _chars(cur) + _chars(clause) <= max_chars:
+            if _chars(cur) + _chars(clause) <= merge_max_chars:
                 cur.extend(clause)          # 向前併（短句帶住下一句）
             else:
-                merged.append(cur)          # 併咗會超長 → 放棄，短行照出
+                merged.append(cur)          # 併咗會超 merge_max_chars → 放棄，短行照出
                 cur = list(clause)
         elif (_is_short(clause) and _kind(clause) == "hard"
-              and _chars(cur) + _chars(clause) <= max_chars):
-            cur.extend(clause)              # 句末收尾 → 向後併（R3：唔可以令上一行超長）
+              and _chars(cur) + _chars(clause) <= merge_max_chars):
+            cur.extend(clause)              # 句末收尾 → 向後併（R3：合併後唔可以超 merge_max_chars）
         else:
             merged.append(cur)
             cur = list(clause)
@@ -764,10 +776,10 @@ def split_into_lines(
                                 words=group_slice, break_reason=reason))
     reasons = {r: sum(1 for _, x in sliced if x == r) for r in
                ("punctuation", "sentence", "max_chars", "gap") if any(x == r for _, x in sliced)}
-    LOGGER.info("斷句完成：%d 行（標點優先 ADR-013；max_chars=%d, gap>%dms, 短句<=%d字/%dms）"
+    LOGGER.info("斷句完成：%d 行（標點優先 ADR-013；max_chars=%d, gap>%dms, 短句<=%d字/%dms, 合併上限%d字）"
                 "斷點來源 %s",
                 len(result), max_chars, gap_threshold_ms, min_clause_chars, min_clause_ms,
-                reasons or "{}")
+                merge_max_chars, reasons or "{}")
     return result
 
 
@@ -1142,7 +1154,8 @@ def cmd_generate(args: argparse.Namespace) -> int:
         lines = split_into_lines(groups, max_chars=args.max_chars,
                                  gap_threshold_ms=args.gap_threshold, hold_ms=args.hold_ms,
                                  min_clause_chars=args.min_clause_chars,
-                                 min_clause_ms=args.min_clause_ms)
+                                 min_clause_ms=args.min_clause_ms,
+                                 merge_max_chars=args.merge_max_chars)
         if not lines:
             LOGGER.error("冇產生任何字幕行，可能係 ASR 冇識別到內容。")
             return 4
@@ -1162,6 +1175,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             "hold_ms": args.hold_ms,
             "min_clause_chars": args.min_clause_chars,     # ADR-013
             "min_clause_ms": args.min_clause_ms,           # ADR-013
+            "merge_max_chars": args.merge_max_chars,       # ADR-013 修訂
             "strip_punctuation": not args.keep_punctuation,   # ADR-013
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
@@ -1340,6 +1354,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="短句門檻字數：字數 ≤N 且時長不足先會同鄰句合併（ADR-013）")
     g.add_argument("--min-clause-ms", type=int, default=MIN_CLAUSE_MS,
                    help="短句門檻時長（ms）：拖長音嘅短句照出一行，保留強調效果（ADR-013）")
+    g.add_argument("--merge-max-chars", type=int, default=MERGE_MAX_CHARS,
+                   help="合併後嘅行不可超過嘅字數（ADR-013 修訂；兜底切行仍然用 --max-chars）")
     g.add_argument("--keep-punctuation", action="store_true",
                    help="字幕保留標點（預設剝走：行尾刪、行中變空格，見 ADR-013）")
     g.add_argument("--poll-interval", type=int, default=3)
