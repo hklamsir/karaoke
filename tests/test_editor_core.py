@@ -202,9 +202,42 @@ def test_v7_split_merge_roundtrip() -> None:
           == [l.get("text") for l in before])
 
 
+# ---------------------------------------------------------------------------
+# C4 · 重新劃分（respread + 清 estimated）
+# ---------------------------------------------------------------------------
+
+def test_c4_respawn() -> None:
+    line = {"words": [{
+        "text": "你好嗎", "begin_ms": 1000, "end_ms": 4000, "estimated": True,
+        "punctuation": "",
+        "chars": [{"text": "你", "begin_ms": 1000, "end_ms": 3800},    # 拖過、唔均
+                  {"text": "好", "begin_ms": 3800, "end_ms": 3900},
+                  {"text": "嗎", "begin_ms": 3900, "end_ms": 4000}],
+    }]}
+    check("C4: respread 成功", models.respread_word(line, 0))
+    chars = line["words"][0]["chars"]
+    check("C4: char 按字數均分（1000..4000）",
+          [(c["begin_ms"], c["end_ms"]) for c in chars] == [(1000, 2000), (2000, 3000), (3000, 4000)])
+    check("C4: estimated 清除", line["words"][0]["estimated"] is False)
+
+    # 篩選（§4.4）：visible_lines 只返有估算字嘅行
+    st = EditorState()
+    st.doc = {"lines": [
+        {"words": [{"chars": [{"text": "a", "begin_ms": 0, "end_ms": 1}],
+                    "estimated": False, "text": "a"}]},
+        {"words": [{"chars": [{"text": "b", "begin_ms": 0, "end_ms": 1}],
+                    "estimated": True, "text": "b"}]},
+    ]}
+    check("篩選關：兩行都見", len(st.visible_lines()) == 2)
+    st.filter_estimated = True
+    check("篩選開：淨返有估算字嗰行",
+          [i for i, _ in st.visible_lines()] == [1])
+
+
 if __name__ == "__main__":
     test_v3_hit_test()
     test_v4_undo_random_100()
     test_v6_normalize()
     test_v7_split_merge_roundtrip()
+    test_c4_respawn()
     print(f"\nALL PASS ({len(PASS)} checks)")

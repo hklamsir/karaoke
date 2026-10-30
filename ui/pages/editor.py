@@ -119,8 +119,10 @@ class EditorPage(ttkb.Frame):
         self._replay_btn.pack(side="left", padx=2)
 
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
-        self._est_chip = ttkb.Label(bar, text="◻ 只顯示估算字", padding=(8, 3),
-                                    bootstyle="secondary")
+        self._est_on = tk.BooleanVar(value=False)
+        self._est_chip = ttkb.Checkbutton(bar, text="只顯示估算字", variable=self._est_on,
+                                          bootstyle="dark-round-toggle",
+                                          command=self._toggle_est_filter)
         self._est_chip.pack(side="left", padx=2)
         self._overlay_on = tk.BooleanVar(value=True)
         self._overlay_chip = ttkb.Checkbutton(
@@ -183,6 +185,8 @@ class EditorPage(ttkb.Frame):
                     command=self._split_at_word).pack(side="left", padx=(0, 2))
         ttkb.Button(row2, text="＋ 插入字", bootstyle="secondary", takefocus=False,
                     command=self._insert_char).pack(side="left", padx=2)
+        ttkb.Button(row2, text="↻ 重新劃分", bootstyle="secondary", takefocus=False,
+                    command=self._respawn_selected_word).pack(side="left", padx=2)
     # ------------------------------------------------------------------
     # 開檔 / 存檔（§5.3 / E2）
     # ------------------------------------------------------------------
@@ -472,6 +476,18 @@ class EditorPage(ttkb.Frame):
 
     def _toggle_overlay(self) -> None:
         self._preview.set_overlay_visible(self._overlay_on.get())
+
+    def _toggle_est_filter(self) -> None:
+        self._state.toggle_filter_estimated()
+
+    def _respawn_selected_word(self) -> None:
+        """↻ 重新劃分（C4）：選中 word 內部 char 按字數比例重分 → 清 estimated。"""
+        ref = self._state.selected
+        if ref is None:
+            messagebox.showinfo("重新劃分", "先選中一個字（劃分佢所屬嘅詞）。")
+            return
+        from ..commands import RespreadWord
+        self._state.push(RespreadWord(ref[0], ref[1]))
 
     def _relayout_right(self) -> None:
         """分隔條版面（§6.1）：預覽 / 時間軸按 ratio 分；下限 30% 上限 75%。"""

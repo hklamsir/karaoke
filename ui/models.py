@@ -261,6 +261,29 @@ def add_line(doc: dict, start_ms: int, end_ms: int, text: str, at_line_i: int | 
     return line
 
 
+def respread_word(line: dict, word_i: int) -> bool:
+    """重新劃分（C4）：word [begin,end] 內部 char 按字數比例重分 → 清 estimated。
+
+    人手拖過嘅不均 char 時間會被重置 —— 呢個係「重新劃分」嘅語意。
+    """
+    word = word_of(line, word_i)
+    if word is None or not (word.get("chars") or []):
+        return False
+    begin, end = int(word.get("begin_ms", 0)), int(word.get("end_ms", 0))
+    if end <= begin:
+        return False
+    spans = proportional_split(begin, end, len(word["chars"]))
+    for char, (b, e) in zip(word["chars"], spans):
+        char["begin_ms"], char["end_ms"] = b, e
+    word["estimated"] = False
+    return True
+
+
+def has_estimated(line: dict) -> bool:
+    """呢行有冇估算字（篩選 chip 用，§4.4）。"""
+    return any(w.get("estimated") for w in line.get("words") or [])
+
+
 # ---------------------------------------------------------------------------
 # 正規化（§7.2 N1–N7，儲存前必須跑）
 # ---------------------------------------------------------------------------

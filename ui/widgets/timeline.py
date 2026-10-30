@@ -28,16 +28,22 @@ CHAR_MIN_W = 3       # §4.3：細過就唔畫（聚合顯示）
 # ---------------------------------------------------------------------------
 
 def compute_layout(lines: list[dict], px_per_ms: float, view_start_ms: int,
-                   canvas_w: int, y_top: int, y_offset_px: int = 0
+                   canvas_w: int, y_top: int, y_offset_px: int = 0,
+                   indices: list[int] | None = None
                    ) -> list[tuple[int, int, int, float, float, float, float]]:
     """計算畫面內所有 char block 嘅矩形。
+
+    Args:
+        indices: 傳入時 = lines[] 對應 doc 原始索引（篩選模式用）；
+            None 就當 lines 已係原順序。
 
     Returns:
         list of (line_i, word_i, char_i, x0, y0, x1, y1)（可視範圍內，逐字一格）。
     """
     rects: list[tuple[int, int, int, float, float, float, float]] = []
-    for line_i, line in enumerate(lines):
-        y0 = y_top + line_i * LANE_H - y_offset_px
+    for row_i, line in enumerate(lines):
+        line_i = row_i if indices is None else indices[row_i]
+        y0 = y_top + row_i * LANE_H - y_offset_px
         if y0 + LANE_H < y_top - LANE_H or y0 > y_top + 10000:
             continue
         for word_i, word in enumerate(line.get("words") or []):
@@ -193,8 +199,11 @@ class TimelineCanvas(tk.Canvas):
                 self.create_line(pts_top, fill="#3AA0FF", width=1)
             y_top = wy1 + 4
 
-        # --- 逐字方塊（每行一條 lane）---
-        self._rects = compute_layout(lines, ppm, view, w, y_top)
+        # --- 逐字方塊（每行一條 lane；篩選模式只畫有估算字嘅行 §4.4）---
+        visible = st.visible_lines()
+        indices = [i for i, _ in visible]
+        view_lines = [l for _, l in visible]
+        self._rects = compute_layout(view_lines, ppm, view, w, y_top, indices=indices)
         current_line = st.current_line_i
         selected = st.selected
         for line_i, word_i, char_i, x0, y0, x1, y1 in self._rects:
@@ -214,6 +223,10 @@ class TimelineCanvas(tk.Canvas):
                 self.create_text((x0 + x1) / 2, (y0 + y1) / 2,
                                  text=word["chars"][char_i].get("text", ""),
                                  fill=theme.FG_MAIN, font=(theme.ui_font_family(), 10))
+
+        # --- 無字幕區段斜紋（R5）：>3 秒冇行覆蓋嘅 gap ---
+        lane_bottom = y_top + max(len(view_lines), 1) * LANE_H
+        self._draw_gaps(view, ppm, w, y_top, lane_bottom)
 
         # --- 播放頭 ---
         cx = (st.cursor_ms - view) * ppm
@@ -239,7 +252,37 @@ class TimelineCanvas(tk.Canvas):
                 self.create_rectangle(x0, oy + OVERVIEW_H - 4, max(x1, x0 + 1),
                                       oy + OVERVIEW_H - 2, fill="#5a5a6e", outline="")
 
-        self.configure(scrollregion=(0, 0, w, max(self.winfo_height(), y_top + len(lines) * LANE_H)))
+        self.configure(scrollregion=(0, 0, w, max(self.winfo_height(),
+                                                  y_top + max(len(view_lines), 1) * LANE_H)))
+
+    def _draw_gaps(self, view: int, ppm: float, w: int, y_top: int, y_bottom: int) -> None:
+        """無字幕區段斜紋（R5）：>3 秒冇行覆蓋嘅時間段畫灰斜紋。"""
+        st = self._state
+        lines = st.lines
+        if not lines or y_bottom <= y_top:
+            return
+        spans = sorted((int(l.get("start_ms", 0)), int(l.get("end_ms", 0))) for l in lines)
+        gaps: list[tuple[int, int]] = []
+        prev_end = 0
+        for start, end in spans:
+            if start - prev_end > 3000:
+                gaps.append((prev_end, start))
+            prev_end = max(prev_end, end)
+        for g0, g1 in gaps:
+            x0 = (g0 - view) * ppm
+            x1 = (g1 - view) * ppm
+            if x1 < 0 or x0 > w:
+                continue
+            x0, x1 = max(0, x0), min(w, x1)
+            if x1 - x0 < 6:
+                continue
+            self.create_rectangle(x0, y_top, x1, y_bottom, fill="#1c1c24",
+                                  outline=theme.BORDER, stipple="gray50")
+            self.create_line(x0, y_bottom, x1, y_top, fill="#2c2c38")
+            if x1 - x0 > 90:
+                self.create_text((x0 + x1) / 2, (y_top + y_bottom) / 2,
+                                 text="無字幕區段", fill=theme.FG_DIM,
+                                 font=(theme.ui_font_family(), 9))
 
     # ------------------------------------------------------------------
     # 互動

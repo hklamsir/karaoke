@@ -59,7 +59,7 @@ class LyricTree(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
-        if reason in ("load", "edit", "save"):
+        if reason in ("load", "edit", "save", "filter"):
             self.refresh()
         elif reason in ("select",):
             self._highlight_current()
@@ -67,7 +67,8 @@ class LyricTree(ttkb.Frame):
     def refresh(self) -> None:
         self._building = True
         self._tree.delete(*self._tree.get_children())
-        for i, line in enumerate(self._state.lines):
+        # 篩選模式（§4.4）：只列有估算字嘅行（iid 保留原始索引）
+        for i, line in self._state.visible_lines():
             est_count = sum(1 for w in line.get("words") or [] if w.get("estimated"))
             text = line.get("text") or ""
             tags = []

@@ -33,6 +33,8 @@ class EditorState:
         self.selected: tuple[int, int, int] | None = None
         #: 選中嘅 word（斷句掣用）= (line_i, word_i) | None
         self.selected_word: tuple[int, int] | None = None
+        #: 「只顯示估算字」篩選（§4.4）：歌詞樹 + 時間軸都只列有估算字嘅行
+        self.filter_estimated = False
 
     # ------------------------------------------------------------------
     # observer
@@ -138,6 +140,17 @@ class EditorState:
         self.view_start_ms = int(max(0, anchor - (anchor - self.view_start_ms)
                                      * (old_ppm / new_ppm)))
         self.notify("zoom")
+
+    def visible_lines(self) -> list[tuple[int, dict]]:
+        """(原始索引, 行) 列表；篩選開啟時只返有估算字嘅行（§4.4）。"""
+        lines = self.lines
+        if not self.filter_estimated:
+            return list(enumerate(lines))
+        return [(i, l) for i, l in enumerate(lines) if models.has_estimated(l)]
+
+    def toggle_filter_estimated(self) -> None:
+        self.filter_estimated = not self.filter_estimated
+        self.notify("filter")
 
     def stats(self) -> dict[str, Any]:
         return models.doc_stats(self.doc)

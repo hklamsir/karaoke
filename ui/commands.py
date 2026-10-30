@@ -184,6 +184,20 @@ class InsertWord(_LineSnapshotMixin):
         self._restore(state)
 
 
+class RespreadWord(_LineSnapshotMixin):
+    """重新劃分（C4）：word 內部 char 按字數比例重分 → 清 estimated。"""
+
+    def __init__(self, line_i: int, word_i: int) -> None:
+        self.line_i, self.word_i = line_i, word_i
+
+    def apply(self, state: Any) -> None:
+        self._snapshot(state, [self.line_i])
+        models.respread_word(state.doc["lines"][self.line_i], self.word_i)
+
+    def revert(self, state: Any) -> None:
+        self._restore(state)
+
+
 class AddLine(_LineSnapshotMixin):
     """新增整行（C6 場景 A）：拖時間範圍 → 文字按字數均分 → 全部 estimated。"""
 
