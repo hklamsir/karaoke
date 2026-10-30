@@ -149,7 +149,25 @@ class TimelineCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
+        if reason in ("select", "follow"):
+            # lane 堆疊超出可視高度（24 行 × 22px）→ 自動捲動到當前行，
+            # 唔係嘅話去到後面嘅句會「見唔到字塊」（用戶實測）
+            self._scroll_to_line(self._state.current_line_i)
         self._request_redraw()
+
+    def _scroll_to_line(self, line_i: int) -> None:
+        """垂直捲動令當前行 lane 入鏡（頂部留少少波形做 context）。"""
+        lines = self._state.lines
+        if not lines:
+            return
+        y_top = self.waveform_y_top() + 2
+        if self._peaks is not None and len(self._peaks) > 0:
+            y_top += WAVE_H + 4
+        lane_y = y_top + max(0, line_i) * LANE_H
+        view_h = max(1, self.winfo_height() - OVERVIEW_H - y_top)
+        content_h = max(view_h, len(lines) * LANE_H)
+        top = max(0, lane_y - LANE_H * 2)
+        self.yview_moveto(min(1.0, top / content_h))
 
     def set_waveform(self, peaks, duration_ms: int) -> None:
         """音訊載入完成後畀時間軸畫波形背景（§6.6）。"""

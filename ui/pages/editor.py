@@ -137,11 +137,21 @@ class EditorPage(ttkb.Frame):
         self._burn_btn = ttkb.Button(bar, text="🔥 燒錄", bootstyle=theme.ACCENT,
                                      takefocus=False, command=self._burn)
         self._burn_btn.pack(side="left", padx=2)
-        self._undo_btn = ttkb.Button(bar, text="⟲", width=3, bootstyle="secondary",
-                                     takefocus=False, command=self.undo)
+        # ↶/↷ glyph JhengHei UI 冇 → 專屬 style 用 Segoe UI Symbol
+        # （ttk Button 唔收 font 選項，要 style.configure）
+        _s = ttkb.Style()
+        _s.configure("Symbol.TButton", font=("Segoe UI Symbol", 11),
+                     background=theme.BG_HOVER, foreground=theme.FG_MAIN,
+                     bordercolor=theme.BORDER, lightcolor=theme.BG_HOVER,
+                     darkcolor=theme.BG_HOVER, relief="flat")
+        _s.map("Symbol.TButton",
+               background=[("active", theme.ACCENT_DIM), ("disabled", theme.BG_PANEL)],
+               foreground=[("disabled", theme.FG_DIM)])
+        self._undo_btn = ttkb.Button(bar, text="↶", width=3, takefocus=False,
+                                     command=self.undo, style="Symbol.TButton")
         self._undo_btn.pack(side="left", padx=2)
-        self._redo_btn = ttkb.Button(bar, text="⟳", width=3, bootstyle="secondary",
-                                     takefocus=False, command=self.redo)
+        self._redo_btn = ttkb.Button(bar, text="↷", width=3, takefocus=False,
+                                     command=self.redo, style="Symbol.TButton")
         self._redo_btn.pack(side="left", padx=2)
 
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
