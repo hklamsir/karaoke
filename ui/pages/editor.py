@@ -38,6 +38,7 @@ class EditorPage(ttkb.Frame):
         self._audio = None          # commit 6
         self._audio_note = ""
         self._thumbs = None         # commit 7
+        self._edit_target_i = None  # inline 修改歌詞目標行
 
         self._build_toolbar()
         body = ttkb.Frame(self, bootstyle="dark")
@@ -65,6 +66,27 @@ class EditorPage(ttkb.Frame):
         ttkb.Button(row, text="🗑 刪行", bootstyle="secondary", takefocus=False,
                     command=self._delete_line).pack(side="left", padx=2)
 
+        # --- inline 修改歌詞列（用戶回報彈窗「確定」兩次都冇生效 → 改 inline，
+        #     冇 grab/focus 陷阱；Enter 套用 / Esc 取消）---
+        self._edit_frame = ttkb.LabelFrame(left, text="修改歌詞", bootstyle="dark")
+        erow = ttkb.Frame(self._edit_frame, bootstyle="dark")
+        erow.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
+        self._edit_line_label = ttkb.Label(erow, text="第 -- 行", width=8,
+                                           bootstyle="secondary")
+        self._edit_line_label.pack(side="left")
+        self._edit_line_var = tk.StringVar()
+        self._edit_entry = ttkb.Entry(self._edit_frame, textvariable=self._edit_line_var)
+        self._edit_entry.pack(fill="x", padx=theme.SPACE)
+        self._edit_entry.bind("<Return>", lambda _e: self._apply_line_edit())
+        self._edit_entry.bind("<Escape>", lambda _e: self._hide_line_edit())
+        ebtns = ttkb.Frame(self._edit_frame, bootstyle="dark")
+        ebtns.pack(fill="x", padx=theme.SPACE, pady=(2, theme.SPACE))
+        ttkb.Button(ebtns, text="✓ 套用 (Enter)", bootstyle=theme.ACCENT, takefocus=False,
+                    command=self._apply_line_edit).pack(side="right", padx=2)
+        ttkb.Button(ebtns, text="取消 (Esc)", bootstyle="secondary", takefocus=False,
+                    command=self._hide_line_edit).pack(side="right")
+        # 預設收埋；pack 時用 before=self._ft_box 插喺逐字微調前面
+
         self._build_finetune(left)
 
         # --- 右欄：大 preview 窗 + 可拖曳分隔條 + 時間軸 ---
@@ -84,6 +106,11 @@ class EditorPage(ttkb.Frame):
 
         self._tl_box = ttkb.LabelFrame(self._right, text="時間軸 · 波形", bootstyle="dark")
         self._timeline = TimelineCanvas(self._tl_box, self._state, on_seek=self._on_seek)
+        # 圖例（用戶回報：唔知橙色係乜）—— 放 timeline 底
+        ttkb.Label(self._tl_box,
+                   text="字塊＝逐字時間（拖曳校）｜橙虛線＝估算字（要人手校）｜藍＝波形（參考）",
+                   bootstyle="secondary", font=(theme.ui_font_family(), 8)) \
+            .pack(side="bottom", fill="x", padx=theme.SPACE)
         self._timeline.pack(fill="both", expand=True, padx=2, pady=2)
         # 開檔後 fit（用戶需求 #3）：timeline 真正 layout 好（<Configure>，w>100）先量得準
         self._timeline.bind("<Configure>", lambda _e: self._zoom_fit_once())
@@ -167,7 +194,7 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_finetune(self, parent) -> None:
-        box = ttkb.LabelFrame(parent, text="逐字微調", bootstyle="dark")
+        self._ft_box = box = ttkb.LabelFrame(parent, text="逐字微調", bootstyle="dark")
         box.pack(fill="both", pady=(theme.SPACE, 0))
 
         mono = theme.mono_font_family()
@@ -470,19 +497,35 @@ class EditorPage(ttkb.Frame):
             engine.play(ms)
 
     def _edit_selected_line(self) -> None:
-        """✏ 修改（用戶指定互動）：點選句子 → 按掣 → 彈輸入框 → SetLineText。"""
+        """✏ 修改（inline 版）：點選句子 → 撳掣 → 歌詞樹下面出現編輯列。
+
+        彈窗版（_ask_text）兩輪修 grab/focus 之後用戶實機仍然回報冇生效，
+        改 inline 徹底鏟走 Toplevel 焦點問題。
+        """
         sel = self._tree.selected_lines()
         if not sel:
             messagebox.showinfo("修改歌詞", "先喺歌詞樹點選一行。")
             return
         line_i = sel[0]
-        line = self._state.lines[line_i]
-        current = line.get("text") or ""
-        new = _ask_text(self, "修改歌詞",
-                        f"第 {line_i + 1} 行新歌詞（字數唔同會重建時間軸並標估算）：",
-                        current)
-        if new is not None and new != current:
-            self._state.push(SetLineText(line_i, new))
+        self._edit_target_i = line_i
+        self._edit_line_label.configure(text=f"第 {line_i + 1} 行")
+        self._edit_line_var.set(self._state.lines[line_i].get("text") or "")
+        self._edit_frame.pack(fill="x", pady=(2, 0), before=self._ft_box)
+        self._edit_entry.focus_force()
+        self._edit_entry.select_range(0, "end")
+
+    def _apply_line_edit(self) -> None:
+        if self._edit_target_i is None:
+            return
+        new = self._edit_line_var.get().strip()
+        old = self._state.lines[self._edit_target_i].get("text") or ""
+        if new and new != old:
+            self._state.push(SetLineText(self._edit_target_i, new))
+        self._hide_line_edit()
+
+    def _hide_line_edit(self) -> None:
+        self._edit_target_i = None
+        self._edit_frame.pack_forget()
 
     # ------------------------------------------------------------------
     # 結構操作（斷句 / 合併 / 刪行 / 插入字）

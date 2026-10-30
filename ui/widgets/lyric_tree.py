@@ -63,8 +63,10 @@ class LyricTree(ttkb.Frame):
     def _on_state_change(self, reason: str) -> None:
         if reason in ("load", "edit", "save", "filter"):
             self.refresh()
-        elif reason in ("select", "follow"):
-            # "follow" = 播放中游標行變咗 → 高亮跟住郁（用戶需求 #2）
+        elif reason == "follow":
+            # 播放中游標行變咗 → **反白**當前句（用戶需求 #2：強制跟）
+            self._highlight_current(force=True)
+        elif reason in ("select",):
             self._highlight_current()
 
     def refresh(self) -> None:
@@ -85,14 +87,14 @@ class LyricTree(ttkb.Frame):
         self._building = False
         self._highlight_current()
 
-    def _highlight_current(self) -> None:
+    def _highlight_current(self, force: bool = False) -> None:
         i = str(self._state.current_line_i)
         if self._tree.exists(i):
             self._tree.see(i)
-            # 唔搶走用戶嘅多選（selectmode extended 畀合併用）
+            # force（跟播）→ 反白當前句；非 force 就唔搶用戶嘅多選（合併用）
             # ⚠️ selection_set 會觸發 <<TreeviewSelect>> → _on_tree_select → notify
             #    —— 用 _building flag 擋住防循環
-            if not self._tree.selection():
+            if force or not self._tree.selection():
                 self._building = True
                 try:
                     self._tree.selection_set(i)

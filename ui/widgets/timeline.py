@@ -210,8 +210,12 @@ class TimelineCanvas(tk.Canvas):
             word = st.lines[line_i]["words"][word_i]
             estimated = bool(word.get("estimated"))
             is_sel = selected == (line_i, word_i, char_i)
-            fill = "#3d3d4c" if line_i != current_line else "#4a4a5c"
-            outline = theme.WARNING if estimated else theme.BORDER
+            # 配色（用戶回報：普通字塊太暗以為冇用）—— 藍灰＝已確認，暗橙＝估算
+            if estimated:
+                fill = "#4a3c22"
+            else:
+                fill = "#3b4a63" if line_i != current_line else "#4a5d80"
+            outline = theme.WARNING if estimated else "#5a6d8c"
             width = 1
             if is_sel:
                 fill, outline, width = theme.ACCENT_DIM, theme.ACCENT, 2
