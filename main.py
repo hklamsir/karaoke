@@ -45,7 +45,8 @@ from typing import Any, Callable, Iterable, Sequence
 
 DEFAULT_ASR_MODEL = "qwen-audio-3.1-asr-flash-filetrans"
 DEFAULT_OPENCC_CONFIG = "s2hk"                    # ADR-008：唯一允許的 config
-TIMINGS_SCHEMA_VERSION = 2                        # ADR-013：v2 加 punctuation / break_reason
+# v3（字幕編輯器 UI）：break_reason 新增 "manual"（UI 手動斷句）；source 新增 edited_at/edited_by
+TIMINGS_SCHEMA_VERSION = 3
 
 # ADR-013：短句合併門檻 —— **雙條件**（字數 ≤ min 且 時長 < min）同時成立先算「太短」要合併
 # （2026-10-29 修訂：3字/1500ms → 5字/2500ms，實測舊門檻太保守，4-5 字快句照出會太散）
@@ -792,7 +793,11 @@ def lines_to_timings_doc(
     style: StyleConfig,
     meta: dict[str, Any],
 ) -> dict[str, Any]:
-    """LyricLine[] → timings.json 內容（兩層 words[]→chars[] + self-contained style）。"""
+    """LyricLine[] → timings.json 內容（兩層 words[]→chars[] + self-contained style）。
+
+    ``meta``（= doc ``source``）由呼叫方組裝；schema v3 起字幕編輯器 UI 儲存時會
+    額外帶 ``edited_at``（ISO 時間）/ ``edited_by``（"ui"），generate 產生嘅新檔冇呢兩個字段。
+    """
     return {
         "schema_version": TIMINGS_SCHEMA_VERSION,
         "source": meta,
@@ -813,7 +818,8 @@ def lines_to_timings_doc(
                 "start_ms": line.start_ms,
                 "end_ms": line.end_ms,
                 "text": line.display_text(),          # ADR-013：顯示用文字（已剝標點、含合併空格）
-                "break_reason": line.break_reason,    # ADR-013：punctuation/sentence/max_chars/gap
+                # ADR-013：punctuation/sentence/max_chars/gap；schema v3 起 UI 手動斷句 = "manual"
+                "break_reason": line.break_reason,
                 "words": [
                     {
                         "text": word.text,            # 純字（唔含標點）
@@ -839,12 +845,20 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
 
     ADR-013：``schema_version=1`` 舊檔自動相容 —— 標點黐喺 ``text`` 尾，讀入時自動
     拆返出嚟塞入 ``WordGroup.punctuation``（只 warn 唔 fail）。
+    v2 相容（schema v3 起）：v2 已有獨立 punctuation 字段，讀入邏輯同 v3 完全一致，
+    淨係 warn 提示舊版本；``break_reason`` 多出嘅 ``"manual"`` 值（UI 手動斷句）
+    會原樣讀入，ASS 渲染唔受影響。
     """
     version = doc.get("schema_version")
     if version != TIMINGS_SCHEMA_VERSION:
+        if version in (None, 1):
+            note = "已自動做 v1 標點相容處理"
+        elif version == 2:
+            note = "v2 舊檔，讀入相容（見 schema v3 說明）"
+        else:
+            note = "可能會唔相容"
         LOGGER.warning("timings.json schema_version=%r（本程式係 %d），%s",
-                       version, TIMINGS_SCHEMA_VERSION,
-                       "已自動做 v1 標點相容處理" if version in (None, 1) else "可能會唔相容")
+                       version, TIMINGS_SCHEMA_VERSION, note)
     is_v1 = version in (None, 1)   # v1：標點黐喺 text / chars[-1] 尾
 
     # ⚠️ 防禦性處理：JSON 可能係人手改過、或者由壞狀態產生（實測：舊版 generate 寫過 null 顏色）
