@@ -30,29 +30,54 @@ CHAR_MIN_W = 3       # §4.3：細過就唔畫（聚合顯示）
 def compute_layout(lines: list[dict], px_per_ms: float, view_start_ms: int,
                    canvas_w: int, y_top: int, y_offset_px: int = 0,
                    indices: list[int] | None = None
-                   ) -> list[tuple[int, int, int, float, float, float, float]]:
-    """計算畫面內所有 char block 嘅矩形。
+                   ) -> list[tuple[int, int, int, float, float, float, float, str]]:
+    """計算畫面內所有字塊矩形（§4.3 聚合顯示）。
 
-    Args:
-        indices: 傳入時 = lines[] 對應 doc 原始索引（篩選模式用）；
-            None 就當 lines 已係原順序。
+    fit 縮放下逐字方塊會細過 3px（實測用戶：見唔到字塊）→ 自動降級：
+    逐字 → 逐詞 → 逐行，每層塊闊度夠 3px 先用。
 
     Returns:
-        list of (line_i, word_i, char_i, x0, y0, x1, y1)（可視範圍內，逐字一格）。
+        list of (line_i, word_i, char_i, x0, y0, x1, y1, label)；
+        label = 該塊要顯示嘅文字（逐字=字 / 逐詞=詞 / 逐行=整句）。
     """
-    rects: list[tuple[int, int, int, float, float, float, float]] = []
+    rects: list[tuple[int, int, int, float, float, float, float, str]] = []
     for row_i, line in enumerate(lines):
         line_i = row_i if indices is None else indices[row_i]
         y0 = y_top + row_i * LANE_H - y_offset_px
-        if y0 + LANE_H < y_top - LANE_H or y0 > y_top + 10000:
+        words = list(enumerate(line.get("words") or []))
+        flat = [(wi, ci, c) for wi, w in words for ci, c in enumerate(w.get("chars") or [])]
+        if not flat:
             continue
-        for word_i, word in enumerate(line.get("words") or []):
-            for char_i, char in enumerate(word.get("chars") or []):
-                x0 = (int(char.get("begin_ms", 0)) - view_start_ms) * px_per_ms
-                x1 = (int(char.get("end_ms", 0)) - view_start_ms) * px_per_ms
-                if x1 < -CHAR_MIN_W or x0 > canvas_w + CHAR_MIN_W:
-                    continue
-                rects.append((line_i, word_i, char_i, x0, y0, x1, y0 + LANE_H - 4))
+        lx0 = (int(line.get("start_ms", 0)) - view_start_ms) * px_per_ms
+        lx1 = (int(line.get("end_ms", 0)) - view_start_ms) * px_per_ms
+        if lx1 < -CHAR_MIN_W or lx0 > canvas_w + CHAR_MIN_W:
+            continue
+
+        def _rect(b_ms: int, e_ms: int, ref: tuple[int, int, int], label: str) -> None:
+            x0 = (b_ms - view_start_ms) * px_per_ms
+            x1 = (e_ms - view_start_ms) * px_per_ms
+            if x1 < -CHAR_MIN_W or x0 > canvas_w + CHAR_MIN_W:
+                return
+            rects.append((ref[0], ref[1], ref[2], x0, y0, max(x0 + 1.0, x1),
+                          y0 + LANE_H - 4, label))
+
+        char_px = (lx1 - lx0) / max(1, len(flat))
+        if char_px >= CHAR_MIN_W:
+            # 逐字模式（原行為）
+            for wi, ci, c in flat:
+                _rect(int(c.get("begin_ms", 0)), int(c.get("end_ms", 0)),
+                      (line_i, wi, ci), c.get("text", ""))
+            continue
+        word_px = (lx1 - lx0) / max(1, len(words))
+        if word_px >= CHAR_MIN_W:
+            # 逐詞模式
+            for wi, w in words:
+                _rect(int(w.get("begin_ms", 0)), int(w.get("end_ms", 0)),
+                      (line_i, wi, 0), w.get("text", ""))
+            continue
+        # 逐行模式（fit 縮放）
+        _rect(int(line.get("start_ms", 0)), int(line.get("end_ms", 0)),
+              (line_i, 0, 0), line.get("text", ""))
     return rects
 
 
@@ -62,7 +87,8 @@ def hit_test(rects: list[tuple], x: float, y: float, edge_px: int = EDGE_PX
 
     V3 測試對象：字塊內 → body；字塊邊界 edge_px 內 → left/right；空白 → empty。
     """
-    for line_i, word_i, char_i, x0, y0, x1, y1 in reversed(rects):
+    for r in reversed(rects):
+        line_i, word_i, char_i, x0, y0, x1, y1 = r[:7]
         if y0 <= y <= y1 and x0 - edge_px <= x <= x1 + edge_px:
             if x - x0 <= edge_px and x1 - x0 > edge_px * 2:
                 return "left", (line_i, word_i, char_i)
@@ -206,7 +232,7 @@ class TimelineCanvas(tk.Canvas):
         self._rects = compute_layout(view_lines, ppm, view, w, y_top, indices=indices)
         current_line = st.current_line_i
         selected = st.selected
-        for line_i, word_i, char_i, x0, y0, x1, y1 in self._rects:
+        for line_i, word_i, char_i, x0, y0, x1, y1, label in self._rects:
             word = st.lines[line_i]["words"][word_i]
             estimated = bool(word.get("estimated"))
             is_sel = selected == (line_i, word_i, char_i)
@@ -222,10 +248,10 @@ class TimelineCanvas(tk.Canvas):
             self.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline,
                                   width=width,
                                   dash=(2, 2) if estimated else ())
-            # 文字：夠寬先畫字
+            # 文字：夠寬先畫（聚合模式 label = 詞/整句）
             if x1 - x0 >= 14:
                 self.create_text((x0 + x1) / 2, (y0 + y1) / 2,
-                                 text=word["chars"][char_i].get("text", ""),
+                                 text=label,
                                  fill=theme.FG_MAIN, font=(theme.ui_font_family(), 10))
 
         # --- 無字幕區段斜紋（R5）：>3 秒冇行覆蓋嘅 gap ---
@@ -255,6 +281,7 @@ class TimelineCanvas(tk.Canvas):
                 x1 = int(line.get("end_ms", 0)) / total * w
                 self.create_rectangle(x0, oy + OVERVIEW_H - 4, max(x1, x0 + 1),
                                       oy + OVERVIEW_H - 2, fill="#5a5a6e", outline="")
+            self._overview_y = oy   # 畀 hit-test 知概覽條範圍（可㩒可拖嚟平移）
 
         self.configure(scrollregion=(0, 0, w, max(self.winfo_height(),
                                                   y_top + max(len(view_lines), 1) * LANE_H)))
@@ -293,6 +320,12 @@ class TimelineCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_press(self, event) -> None:
+        st = self._state
+        # 概覽條（底部藍色）＝可㩒／拖曳平移（用戶回報：放大後卷軸移唔返左）
+        if event.y >= getattr(self, "_overview_y", 10 ** 9):
+            self._drag = {"mode": "oview"}
+            self._center_view_at(event.x)
+            return
         mode, ref = hit_test(self._rects, event.x, event.y)
         st = self._state
         if mode == "empty":
@@ -313,12 +346,25 @@ class TimelineCanvas(tk.Canvas):
             "orig_word_chars": [(int(c["begin_ms"]), int(c["end_ms"])) for c in word["chars"]],
         }
 
+    def _center_view_at(self, x: float) -> None:
+        """概覽條互動：將視窗中心移去 x 對應嘅時間（用戶需求 #2）。"""
+        st = self._state
+        w = max(self.winfo_width(), 100)
+        total = max(1, models_total_ms(st))
+        ms = x / w * total
+        view_span = w / st.px_per_ms
+        st.view_start_ms = int(max(0, min(ms - view_span / 2, max(0, total - view_span))))
+        st.notify("pan")
+
     def _on_motion(self, event) -> None:
         drag = self._drag
         if not drag:
             return
         st = self._state
         ppm = st.px_per_ms
+        if drag["mode"] == "oview":
+            self._center_view_at(event.x)
+            return
         if drag["mode"] == "scrub":
             ms = ms_at_x(event.x, ppm, st.view_start_ms)
             st.set_cursor(ms)
