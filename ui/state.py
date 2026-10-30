@@ -109,10 +109,15 @@ class EditorState:
         return max(0, min(i, len(self.lines) - 1))
 
     def set_current_line(self, i: int) -> None:
-        self.current_line_i = self.clamp_line_i(i)
+        i = self.clamp_line_i(i)
+        if i == self.current_line_i:
+            return   # 冪等：Treeview selection_set 會排隊觸發事件，冇變就唔好 notify（防事件循環）
+        self.current_line_i = i
         self.notify("select")
 
     def set_selection(self, sel: tuple[int, int, int] | None) -> None:
+        if sel == self.selected:
+            return   # 冪等：同上，防 <<TreeviewSelect>> 排隊事件造成無限循環（實測 freeze）
         self.selected = sel
         if sel is not None:
             self.current_line_i = self.clamp_line_i(sel[0])

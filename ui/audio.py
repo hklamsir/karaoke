@@ -86,7 +86,15 @@ class AudioEngine:
         self._channel = None
         try:
             import pygame
-            pygame.mixer.init(frequency=SAMPLE_RATE, channels=1)   # R3：統一 16-bit PCM
+            # R3：統一 16-bit PCM 16k 單聲道。
+            # ⚠️ allowedchanges=0 必須：SDL 預設允許裝置改頻率/聲道（AUDIO_ALLOW_*），
+            #    實測 16k mono 請求會被開成 48k stereo → 16k data 被當 48k stereo 播
+            #    = 3 倍速 + 怪聲。allowedchanges=0 強制 SDL 內部轉換到精確規格。
+            pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1,
+                              allowedchanges=0)
+            got = pygame.mixer.get_init()
+            if got is None or got[0] != SAMPLE_RATE or got[2] != 1:
+                LOGGER.warning("mixer 實際規格 %r ≠ 預期 (16000, -16, 1)；load() 會自動轉換 PCM", got)
             self._pygame = pygame
             self.available = True
         except Exception as exc:   # noqa: BLE001 — 冇 pygame / mixer 起唔到
@@ -97,13 +105,48 @@ class AudioEngine:
     # ------------------------------------------------------------------
 
     def load(self, wav_path: Path) -> bool:
-        """讀 WAV → PCM bytes + peaks。"""
-        with wave.open(str(wav_path), "rb") as f:
+        """讀 WAV → PCM bytes + peaks。 mixer 實際規格同 16k mono 唔一致就轉換。"""
+        import wave as _wave
+        with _wave.open(str(wav_path), "rb") as f:
             self._pcm = f.readframes(f.getnframes())
+        self._pcm = self._convert_to_mixer_spec(self._pcm, SAMPLE_RATE, 1, SAMPLE_WIDTH)
         self.peaks, self.duration_ms = extract_peaks(self._pcm)
         LOGGER.info("音訊載入完成：%.1f 秒 / %d peaks",
                     self.duration_ms / 1000, len(self.peaks))
         return True
+
+    def _convert_to_mixer_spec(self, pcm: bytes, src_freq: int, src_channels: int,
+                               src_width: int) -> bytes:
+        """PCM 轉換到 mixer 實際規格（防 allowedchanges 談判唔到 16k mono）。
+
+        線性插值重採樣 + mono→N 聲道複製。規格一致就原樣返（零開銷）。
+        """
+        if not self.available:
+            return pcm
+        try:
+            init = self._pygame.mixer.get_init()
+        except Exception:   # noqa: BLE001
+            return pcm
+        if init is None:
+            return pcm
+        dst_freq, dst_size, dst_channels = init
+        if dst_freq == src_freq and dst_channels == src_channels and abs(dst_size) == src_width:
+            return pcm
+        LOGGER.info("mixer 規格 %r ≠ 16k mono，轉換 PCM（一次性）", init)
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        if src_channels > 1:   # 先摺做 mono
+            samples = samples.reshape(-1, src_channels).mean(axis=1)
+        # 線性插值重採樣
+        n_src = len(samples)
+        n_dst = int(round(n_src * dst_freq / src_freq))
+        if n_dst > 0 and n_dst != n_src:
+            x_src = np.linspace(0.0, n_src - 1, num=n_dst)
+            samples = np.interp(x_src, np.arange(n_src), samples)
+        out = samples.astype(np.int16).tobytes()
+        if dst_channels > 1:   # mono → N 聲道交錯複製
+            frames = np.frombuffer(out, dtype=np.int16)
+            out = np.repeat(frames, dst_channels).tobytes()
+        return out
 
     def load_video_async(self, ffmpeg: str, video: Path,
                          on_done: Callable[["AudioEngine | None"], None],

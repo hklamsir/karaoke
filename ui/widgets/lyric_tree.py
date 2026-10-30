@@ -87,8 +87,14 @@ class LyricTree(ttkb.Frame):
         if self._tree.exists(i):
             self._tree.see(i)
             # 唔搶走用戶嘅多選（selectmode extended 畀合併用）
+            # ⚠️ selection_set 會觸發 <<TreeviewSelect>> → _on_tree_select → notify
+            #    —— 用 _building flag 擋住防循環
             if not self._tree.selection():
-                self._tree.selection_set(i)
+                self._building = True
+                try:
+                    self._tree.selection_set(i)
+                finally:
+                    self._building = False
 
     # ------------------------------------------------------------------
 

@@ -43,6 +43,8 @@ def cache_key(video: Path) -> str:
 class ThumbCache:
     """2fps PNG 縮圖快取（或長片按需抽）。"""
 
+    FPS = FPS     # class 屬性：畀 preview 之類嘅 caller 存取（例如 frame idx 換算）
+
     def __init__(self, video: Path, ffmpeg: str, ffprobe: str) -> None:
         self.video = video
         self.ffmpeg = ffmpeg

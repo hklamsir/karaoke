@@ -168,6 +168,7 @@ class EditorPage(ttkb.Frame):
         self._ft_tree.tag_configure("estimated", foreground=theme.WARNING)
         self._ft_tree.pack(fill="both", expand=True, padx=2, pady=2)
         self._ft_tree.bind("<<TreeviewSelect>>", self._on_ft_select)
+        self._ft_syncing = False   # 防 selection_set ↔ <<TreeviewSelect>> 無限循環
 
         row = ttkb.Frame(box, bootstyle="dark")
         row.pack(fill="x", padx=2, pady=2)
@@ -492,23 +493,29 @@ class EditorPage(ttkb.Frame):
         self._update_time_display()
     def _refresh_finetune(self) -> None:
         st = self._state
-        self._ft_tree.delete(*self._ft_tree.get_children())
-        if not st.lines:
-            return
-        line_i = st.clamp_line_i(st.current_line_i)
-        line = st.lines[line_i]
-        for word_i, word in enumerate(line.get("words") or []):
-            for char_i, char in enumerate(word.get("chars") or []):
-                self._ft_tree.insert("", "end", iid=f"{line_i},{word_i},{char_i}", values=(
-                    char.get("text", ""), word.get("text", ""),
-                    char.get("begin_ms", 0), char.get("end_ms", 0)),
-                    tags=("estimated",) if word.get("estimated") else ())
-        sel = st.selected
-        if sel is not None and sel[0] == line_i:
-            iid = ",".join(map(str, sel))
-            if self._ft_tree.exists(iid):
-                self._ft_tree.selection_set(iid)
-                self._ft_tree.see(iid)
+        # ⚠️ selection_set 會同步觸發 <<TreeviewSelect>> → _on_ft_select → set_selection
+        #    → notify → 呢度 —— 無限循環（實測 freeze）。程式化同步要 flag 擋住。
+        self._ft_syncing = True
+        try:
+            self._ft_tree.delete(*self._ft_tree.get_children())
+            if not st.lines:
+                return
+            line_i = st.clamp_line_i(st.current_line_i)
+            line = st.lines[line_i]
+            for word_i, word in enumerate(line.get("words") or []):
+                for char_i, char in enumerate(word.get("chars") or []):
+                    self._ft_tree.insert("", "end", iid=f"{line_i},{word_i},{char_i}", values=(
+                        char.get("text", ""), word.get("text", ""),
+                        char.get("begin_ms", 0), char.get("end_ms", 0)),
+                        tags=("estimated",) if word.get("estimated") else ())
+            sel = st.selected
+            if sel is not None and sel[0] == line_i:
+                iid = ",".join(map(str, sel))
+                if self._ft_tree.exists(iid):
+                    self._ft_tree.selection_set(iid)
+                    self._ft_tree.see(iid)
+        finally:
+            self._ft_syncing = False
         self._sync_ft_spinboxes()
 
     def _sync_ft_spinboxes(self) -> None:
@@ -524,6 +531,8 @@ class EditorPage(ttkb.Frame):
             self._end_var.set(str(char["end_ms"]))
 
     def _on_ft_select(self, _event=None) -> None:
+        if self._ft_syncing:
+            return   # 程式化 selection_set 觸發嘅事件，唔好迴響
         sel = self._ft_tree.selection()
         if not sel:
             return

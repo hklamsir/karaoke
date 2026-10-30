@@ -33,8 +33,10 @@ class PreviewPane(ttkb.Frame):
         self._on_seek = on_seek
         self._thumbs = None
         self._photo: tk.PhotoImage | None = None       # 防 GC（Tk image 唔自動回收）
+        self._photo_cache: dict[int, tk.PhotoImage] = {}   # frame idx → PhotoImage（LRU 3）
         self._strip_photos: list[tk.PhotoImage] = []
         self._strip_items: list[int] = []
+        self._strip_built_for: tuple | None = None     # (video_key, n_expected) 防重複建
         self._overlay_on = True
         self._thumb_progress_var = tk.StringVar(value="")
         self._progress: ttkb.Progressbar | None = None
@@ -135,7 +137,9 @@ class PreviewPane(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
-        if reason in ("load", "edit", "save", "select"):
+        # ⚠️ strip 重建只准喺 load —— "select"/"edit" 每次都重建會載入成百張
+        # PNG 而 freeze UI（實測 542 張）；行編輯唔影響 strip 內容
+        if reason == "load":
             self._build_strip()
         self._redraw_video()
         self._redraw_strip_playhead()
@@ -164,17 +168,27 @@ class PreviewPane(ttkb.Frame):
 
         self._photo = None
         if self._thumbs is not None:
-            path = self._thumbs.frame_path(self._state.cursor_ms)
-            if path is not None and Path(path).is_file():
-                try:
-                    self._photo = tk.PhotoImage(file=str(path))
-                    # 160 寬縮圖 → 放大至 fw（PhotoImage zoom 只支援整數倍）
-                    z = max(1, int(fw // self._photo.width()))
-                    if z > 1:
-                        self._photo = self._photo.zoom(z)
-                    canvas.create_image(x0, y0, image=self._photo, anchor="nw")
-                except Exception as exc:   # noqa: BLE001
-                    LOGGER.warning("縮圖載入失敗：%s", exc)
+            idx = max(0, min(self._thumbs.expected - 1,
+                             int(self._state.cursor_ms / 1000 * self._thumbs.FPS)))
+            # ⚠️ 播放時 notify("cursor") 每 30ms 一次 —— 唔可以每次重新載入 PNG
+            # （實測會卡）。cache by frame idx（LRU 3），同一幀直接重用。
+            photo = self._photo_cache.get(idx)
+            if photo is None:
+                path = self._thumbs.frame_path(idx * 1000 // self._thumbs.FPS)
+                if path is not None and Path(path).is_file():
+                    try:
+                        photo = tk.PhotoImage(file=str(path))
+                        z = max(1, int(fw // photo.width()))
+                        if z > 1:
+                            photo = photo.zoom(z)
+                        self._photo_cache[idx] = photo
+                        while len(self._photo_cache) > 3:
+                            self._photo_cache.pop(next(iter(self._photo_cache)))
+                    except Exception as exc:   # noqa: BLE001
+                        LOGGER.warning("縮圖載入失敗：%s", exc)
+            if photo is not None:
+                self._photo = photo
+                canvas.create_image(x0, y0, image=photo, anchor="nw")
         else:
             canvas.create_text(x0 + fw / 2, y0 + fh / 2, text="冇預覽畫面",
                                fill=theme.FG_DIM, font=(theme.ui_font_family(), 11))
@@ -224,34 +238,51 @@ class PreviewPane(ttkb.Frame):
     # scrub strip
     # ------------------------------------------------------------------
 
-    def _build_strip(self) -> None:
+    def _build_strip(self, start_i: int = 0) -> None:
+        """建 scrub strip。**增量分批**（每批 40 張，after 排程）——同步載幾百張
+        PNG 會 freeze UI（實測 542 張卡死）。長片 on-demand 模式只畫空條 + 播放頭。
+        """
         strip = self._strip
-        strip.delete("all")
-        self._strip_photos.clear()
-        self._strip_items.clear()
         if self._thumbs is None:
             return
+        key = (str(self._thumbs.video), self._thumbs.expected)
+        if start_i == 0:
+            if self._strip_built_for == key and self._strip_items:
+                return   # 已建過同一條片，唔好重建
+            strip.delete("all")
+            self._strip_photos.clear()
+            self._strip_items.clear()
+            self._strip_built_for = key
         w = max(strip.winfo_width(), 100)
-        total = max(1, self._thumbs.duration_ms)
         n = self._thumbs.expected
-        tw = max(2, w // max(1, n))
-        for i in range(min(n, w // 2)):
-            ms = i / self._thumbs.FPS if False else int(i / 2 * 1000)
+        if self._thumbs.on_demand:
+            self._redraw_strip_playhead()
+            return
+        # 抽稀：strip 每格起碼 ~10px，唔使 1:1 載全部縮圖
+        target_thumbs = max(1, w // 10)
+        step = max(1, -(-n // target_thumbs))
+        limit = n
+        batch_end = min(limit, start_i + 40)
+        for i in range(start_i, batch_end):
+            if i % step:
+                continue
             path = self._thumbs.cache_dir / f"{i:05d}.png"
             if not path.is_file():
-                if self._thumbs.on_demand:
-                    path = self._thumbs.frame_path(ms) or path
-                if not Path(path).is_file():
-                    continue
+                continue
             try:
                 photo = tk.PhotoImage(file=str(path))
             except Exception:   # noqa: BLE001
                 continue
             self._strip_photos.append(photo)
-            x = i * tw
+            x = i / n * w
             item = strip.create_image(x, STRIP_H // 2, image=photo, anchor="w")
             self._strip_items.append(item)
-            strip.create_rectangle(x, 2, x + tw, STRIP_H - 2, outline=theme.BORDER)
+            strip.create_rectangle(x, 2, x + max(2, w / n), STRIP_H - 2,
+                                   outline=theme.BORDER)
+        if batch_end < limit:
+            self.after(24, lambda: self._build_strip(batch_end))
+        else:
+            self._redraw_strip_playhead()
 
     def _redraw_strip_playhead(self) -> None:
         strip = self._strip
