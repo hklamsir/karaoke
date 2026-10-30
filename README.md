@@ -248,3 +248,21 @@ python main.py burn -i "MV.mp4" -s "MV_karaoke.ass"
 - **單字雜訊**：ASR 有時喺片尾吐出單字殘句（實測 `"用。"`）→ `generate` 已自動丟棄少於 2 個有效字嘅句子。
 - **冇 LLM 歌詞校正**（ADR-012 刻意移除）：錯字要喺 UI 人手改。書面語歌的 ASR 準確度約 **89.7%**。
 - 口語比重高 / 咬字含糊嘅歌**未驗證**（本工具定位係書面語歌）。
+
+## 8. GUI 使用指南
+
+字幕編輯器 UI 已經內置（`ui/`，ttkbootstrap 深色主題）：
+
+```bash
+py -3 -m venv .venv-ui
+.venv-ui/Scripts/python.exe -m pip install -r requirements-ui.txt
+.venv-ui/Scripts/python.exe -m ui
+```
+
+- **主頁**：揀 MV → 揀屬性（三層：基本/樣式/進階）→ 開始生成（五階段進度）；或直接「開啟現有 `*_timings.json`」
+- **編輯器**：歌詞樹 + 波形時間軸 + 逐字微調 + 大 preview 窗（字幕疊圖）+ 2fps 縮圖 scrub strip；估算字橙色標示、可篩選、可重新劃分；Ctrl+S 儲存（atomic + .bak）
+- **燒錄**：編輯器工具列「🔥 燒錄」（自動 render 最新 .ass + ffmpeg）
+- **設定**：API key（env 優先）/ ffmpeg 路徑 / 預設資料夾 / 主題
+- **幫助**：UI + CLI 完整使用方法（CLI 參數表動態生成，永不過時）；內容源 `docs/使用說明.md`
+
+> CLI 三命令（generate / render / burn）行為不變；UI 透過 `import main` 呼叫同一條 pipeline。
