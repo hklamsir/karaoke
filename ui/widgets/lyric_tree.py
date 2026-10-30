@@ -21,10 +21,12 @@ class LyricTree(ttkb.Frame):
     COLUMNS = ("num", "text", "start", "end", "est")
 
     def __init__(self, master, state, *,
-                 on_select_line: Callable[[int], None] | None = None) -> None:
+                 on_select_line: Callable[[int], None] | None = None,
+                 on_play_line: Callable[[int], None] | None = None) -> None:
         super().__init__(master, bootstyle="dark")
         self._state = state
         self._on_select_line = on_select_line
+        self._on_play_line = on_play_line
         self._building = False
 
         mono = theme.mono_font_family()
@@ -112,17 +114,17 @@ class LyricTree(ttkb.Frame):
                 self._on_select_line(sel[0])
 
     def _on_double_click(self, event) -> None:
-        """雙擊改字（C1）：彈輸入框 → SetLineText command。"""
+        """雙擊句子 = 跳到該句開始時間播放（預覽 + 時間軸同步）。
+
+        改字改為「點選句子 → 按工具列 ✏ 修改」（用戶指定互動）。
+        """
         iid = self._tree.identify_row(event.y)
         if not iid:
             return
         line_i = int(iid)
-        line = self._state.lines[line_i]
-        current = line.get("text") or ""
-        from ..commands import SetLineText
-        new = _ask_text(self, "改歌詞", "新歌詞（字數唔同會重建時間軸並標估算）：", current)
-        if new is not None and new != current:
-            self._state.push(SetLineText(line_i, new))
+        self._state.set_current_line(line_i)
+        if self._on_play_line:
+            self._on_play_line(line_i)
 
     def _add_line_tail(self) -> None:
         last_end = 0
@@ -135,11 +137,14 @@ class LyricTree(ttkb.Frame):
 
 
 def _ask_text(parent, title: str, prompt: str, initial: str = "") -> str | None:
-    """深色主題下嘅簡單文字輸入對話框（simpledialog 白底唔襯）。"""
+    """深色主題下嘅簡單文字輸入對話框（simpledialog 白底唔襯）。
+
+    ⚠️ grab_set 喺視窗未 viewable 之前呼叫會拋 TclError，令 wait_window 後面
+    全部跳過（實測：用戶撳確定冇生效）——所以要先 wait_visibility + try/except。
+    """
     import ttkbootstrap as ttkb
     dlg = ttkb.Toplevel(title=title, size=(380, 150))
     dlg.transient(parent.winfo_toplevel())
-    dlg.grab_set()
     result: list[str | None] = [None]
 
     ttkb.Label(dlg, text=prompt, wraplength=340, bootstyle="secondary").pack(
@@ -163,5 +168,10 @@ def _ask_text(parent, title: str, prompt: str, initial: str = "") -> str | None:
     ttkb.Button(btns, text="取消", bootstyle="secondary", command=cancel).pack(side="right")
     dlg.bind("<Return>", ok)
     dlg.bind("<Escape>", cancel)
+    try:
+        dlg.wait_visibility()
+        dlg.grab_set()
+    except tk.TclError:
+        pass   # 攞唔到 grab 都照用（z-order 輸啲啲，功能不受影響）
     dlg.wait_window()
     return result[0]

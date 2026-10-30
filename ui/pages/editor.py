@@ -19,7 +19,7 @@ from pathlib import Path
 import ttkbootstrap as ttkb
 
 from .. import models, state, theme
-from ..commands import DeleteLine, InsertWord, MergeLines, SetCharTiming, SplitLine
+from ..commands import DeleteLine, InsertWord, MergeLines, SetCharTiming, SetLineText, SplitLine
 from ..widgets.lyric_tree import LyricTree, _ask_text
 from ..widgets.progress import QueueLogHandler
 from ..widgets.timeline import TimelineCanvas
@@ -50,13 +50,16 @@ class EditorPage(ttkb.Frame):
 
         tree_box = ttkb.LabelFrame(left, text="歌詞樹", bootstyle="dark")
         tree_box.pack(fill="both", expand=True)
-        self._tree = LyricTree(tree_box, self._state)
+        self._tree = LyricTree(tree_box, self._state,
+                               on_play_line=self._play_line)
         self._tree.pack(fill="both", expand=True, padx=2, pady=2)
 
         row = ttkb.Frame(left, bootstyle="dark")
         row.pack(fill="x", pady=(2, 0))
+        ttkb.Button(row, text="✏ 修改", bootstyle="secondary", takefocus=False,
+                    command=self._edit_selected_line).pack(side="left", padx=(0, 2))
         ttkb.Button(row, text="✂ 斷句", bootstyle="secondary", takefocus=False,
-                    command=self._split_at_word).pack(side="left", padx=(0, 2))
+                    command=self._split_at_word).pack(side="left", padx=2)
         ttkb.Button(row, text="🔗 合併", bootstyle="secondary", takefocus=False,
                     command=self._merge_selected).pack(side="left", padx=2)
         ttkb.Button(row, text="🗑 刪行", bootstyle="secondary", takefocus=False,
@@ -436,6 +439,34 @@ class EditorPage(ttkb.Frame):
         """時間軸 seek：音訊播放同步由 commit 6 接手（而家淨係移游標）。"""
         if self._audio is not None:
             self._audio.seek(ms)
+
+    def _play_line(self, line_i: int) -> None:
+        """雙擊歌詞樹句子：跳到該句開始時間並播放（預覽 + 時間軸同步）。"""
+        lines = self._state.lines
+        if not (0 <= line_i < len(lines)):
+            return
+        self._state.set_current_line(line_i)
+        ms = int(lines[line_i].get("start_ms", 0))
+        self._state.set_cursor(ms)
+        self._on_seek(ms)
+        engine = self._audio
+        if engine is not None and engine.available and not engine.playing:
+            engine.play(ms)
+
+    def _edit_selected_line(self) -> None:
+        """✏ 修改（用戶指定互動）：點選句子 → 按掣 → 彈輸入框 → SetLineText。"""
+        sel = self._tree.selected_lines()
+        if not sel:
+            messagebox.showinfo("修改歌詞", "先喺歌詞樹點選一行。")
+            return
+        line_i = sel[0]
+        line = self._state.lines[line_i]
+        current = line.get("text") or ""
+        new = _ask_text(self, "修改歌詞",
+                        f"第 {line_i + 1} 行新歌詞（字數唔同會重建時間軸並標估算）：",
+                        current)
+        if new is not None and new != current:
+            self._state.push(SetLineText(line_i, new))
 
     # ------------------------------------------------------------------
     # 結構操作（斷句 / 合併 / 刪行 / 插入字）

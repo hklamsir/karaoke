@@ -19,7 +19,8 @@ BG_PANEL = "#1e1e26"       # sidebar / 卡片
 BG_HOVER = "#2b2b36"       # 按鈕 hover、輸入框 focus
 BORDER = "#3a3a48"         # 分隔線、Treeview 格線
 FG_MAIN = "#e6e6ec"        # 文字（主）
-FG_DIM = "#8a8a9c"         # 文字（次）
+FG_DIM = "#a8a8bc"         # 文字（次）—— 實測 #8a8a9c 喺深色底太難看清（用戶回報），調亮
+FG_DIMMER = "#7a7a8c"      # 文字（裝飾性極次：tick 標籤等，唔重要先好用）
 ACCENT = "#3AA0FF"         # 主按鈕、focus ring、選取行、游標線
 ACCENT_DIM = "#1E6FBF"     # accent pressed
 SUCCESS = "#3DD68C"        # 完成、已驗證
@@ -111,4 +112,9 @@ def apply_ttkbootstrap_theme(root) -> str:
     # "dark.TLabelframe.Label" 呢個 variant，要一併 configure）
     for lf in ("TLabelframe.Label", "dark.TLabelframe.Label"):
         style.configure(lf, foreground=FG_MAIN, font=(ui_font_family(), 10))
+    # secondary 文字（提示/標籤）用調亮咗嘅 FG_DIM；secondary 按鈕文字用主色
+    for lbl in ("secondary.TLabel", "info.TLabel"):
+        style.configure(lbl, foreground=FG_DIM)
+    style.configure("secondary.TButton", foreground=FG_MAIN)
+    style.configure("Treeview.Heading", foreground=FG_DIM)
     return "darkly"
