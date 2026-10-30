@@ -14,9 +14,9 @@ from typing import Any, Callable
 
 from .. import theme
 
-#: 時間軸各段高度（§6.1：波形 64 + 刻度 18 + 字塊 + 概覽 16）
+#: 時間軸各段高度（§6.1：波形 128 + 刻度 18 + 字塊 + 概覽 16）
 RULER_H = 18
-WAVE_H = 64   # 波形垂直拉大（用戶回報：44px 太扁難睇清波峰）
+WAVE_H = 128  # 波形垂直拉大（用戶需求：再拉高 100%；最大化視窗下空間足夠）
 LANE_H = 22
 OVERVIEW_H = 16
 EDGE_PX = 5          # 字塊邊界 5px 內 = 拖邊界

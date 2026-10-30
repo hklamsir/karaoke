@@ -37,7 +37,7 @@ class App(ttkb.Window):
 
     def __init__(self) -> None:
         super().__init__(title="Karaoke 字幕編輯器", size=(1180, 760), minsize=(960, 640))
-        self.place_window_center()
+        self.state("zoomed")   # 預設最大化（用戶需求：開窗即全畫面顯示）
         self._settings = settings.load()
 
         # R1 對策：ttkbootstrap 相容性喺度驗證；失敗直接拋（唔靜默降級）
