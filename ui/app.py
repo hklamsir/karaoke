@@ -50,6 +50,7 @@ class App(ttkb.Window):
         self._build_sidebar()
         self._build_statusbar()
         self._build_pages()
+        self._build_sidebar_handle()
         self._bind_shortcuts()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -69,10 +70,16 @@ class App(ttkb.Window):
     # ------------------------------------------------------------------
 
     def _build_sidebar(self) -> None:
-        """左側 sidebar（§4.5.3：標題 + 分隔線 + 4 項導航 + 底部狀態卡）。"""
-        bar = ttkb.Frame(self, width=theme.SIDEBAR_W, bootstyle="dark")
-        bar.place(x=0, y=0, width=theme.SIDEBAR_W, relheight=1.0)
+        """左側 sidebar（§4.5.3：標題 + 分隔線 + 4 項導航 + 底部狀態卡）。
+
+        闊度由 ``self._sidebar_w`` 控制（用戶需求 #2：可拖曳調整），
+        _relayout_sidebar() 統一重擺 sidebar / 分隔條 / 頁面 / 狀態列。
+        """
+        self._sidebar_w = theme.SIDEBAR_W
+        bar = ttkb.Frame(self, width=self._sidebar_w, bootstyle="dark")
+        bar.place(x=0, y=0, width=self._sidebar_w, relheight=1.0)
         bar.pack_propagate(False)
+        self._sidebar_bar = bar
 
         ttkb.Label(bar, text="Karaoke", font=(theme.ui_font_family(), 16, "bold"),
                    bootstyle=f"inverse-{theme.ACCENT}") \
@@ -105,7 +112,8 @@ class App(ttkb.Window):
     def _build_statusbar(self) -> None:
         """底部狀態列（§4.3：28px）。"""
         bar = ttkb.Frame(self, height=theme.STATUSBAR_H, bootstyle="dark")
-        bar.place(x=theme.SIDEBAR_W, rely=1.0, relwidth=1.0, y=-theme.STATUSBAR_H)
+        bar.place(x=self._sidebar_w, rely=1.0, relwidth=1.0, y=-theme.STATUSBAR_H)
+        self._statusbar_bar = bar
         self._status_var = tk.StringVar(value=f"v0.1 · {self._applied_theme}")
         ttkb.Label(bar, textvariable=self._status_var,
                    font=(theme.ui_font_family(), 9), bootstyle="secondary") \
@@ -119,11 +127,51 @@ class App(ttkb.Window):
             mod = importlib.import_module(mod_name)
             cls = getattr(mod, cls_name)
             page = cls(self)
-            margin_x = theme.SIDEBAR_W + theme.SPACE
-            page.place(in_=self, x=margin_x, y=theme.SPACE,
-                       relwidth=1.0, width=-(margin_x + theme.SPACE),
-                       relheight=1.0, height=-(theme.SPACE + theme.STATUSBAR_H + theme.SPACE))
+            self._place_page(page)
             self._pages[key] = page
+
+    def _place_page(self, page) -> None:
+        margin_x = self._sidebar_w + theme.SPACE
+        page.place(in_=self, x=margin_x, y=theme.SPACE,
+                   relwidth=1.0, width=-(margin_x + theme.SPACE),
+                   relheight=1.0, height=-(theme.SPACE + theme.STATUSBAR_H + theme.SPACE))
+
+    # ------------------------------------------------------------------
+    # sidebar 闊度拖曳（用戶需求 #2）
+    # ------------------------------------------------------------------
+
+    #: sidebar 闊度範圍（theme.SIDEBAR_W 註釋：可拖曳 160~280）
+    SIDEBAR_MIN_W = 160
+    SIDEBAR_MAX_W = 420
+
+    def _build_sidebar_handle(self) -> None:
+        """sidebar 右邊緣嘅垂直拖曳條：拉闊／收窄 sidebar + 同步重排頁面。"""
+        self._side_handle = tk.Canvas(
+            self, width=4, bg=theme.BG_HOVER, highlightthickness=0,
+            cursor="sb_h_double_arrow")
+        self._side_handle.place(x=self._sidebar_w, y=0, relheight=1.0)
+        self._side_handle.bind("<Button-1>", self._on_side_handle_press)
+        self._side_handle.bind("<B1-Motion>", self._on_side_handle_drag)
+        self._side_handle.bind("<ButtonRelease-1>", lambda _e: self._relayout_sidebar())
+
+    def _on_side_handle_press(self, event) -> None:
+        pass   # B1-Motion 直接用指標位置計，唔需要 press state
+
+    def _on_side_handle_drag(self, event) -> None:
+        pointer_x = self._side_handle.winfo_x() + event.x   # root 內指標位置
+        new_w = max(self.SIDEBAR_MIN_W, min(self.SIDEBAR_MAX_W, pointer_x))
+        if new_w != self._sidebar_w:
+            self._sidebar_w = new_w
+            self._relayout_sidebar()
+
+    def _relayout_sidebar(self) -> None:
+        """sidebar 闊度變咗 → 重擺 sidebar / 分隔條 / 頁面 / 狀態列。"""
+        self._sidebar_bar.place(x=0, y=0, width=self._sidebar_w, relheight=1.0)
+        self._side_handle.place(x=self._sidebar_w, y=0, relheight=1.0)
+        self._statusbar_bar.place(x=self._sidebar_w, rely=1.0, relwidth=1.0,
+                                  y=-theme.STATUSBAR_H)
+        for page in self._pages.values():
+            self._place_page(page)
 
     # ------------------------------------------------------------------
     # 導航 / 快捷鍵

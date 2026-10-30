@@ -20,7 +20,7 @@ import ttkbootstrap as ttkb
 
 from .. import models, state, theme
 from ..commands import DeleteLine, InsertWord, MergeLines, SetCharTiming, SetLineText, SplitLine
-from ..widgets.lyric_tree import LyricTree, _ask_text
+from ..widgets.lyric_tree import LyricTree
 from ..widgets.progress import QueueLogHandler
 from ..widgets.timeline import TimelineCanvas
 
@@ -45,14 +45,15 @@ class EditorPage(ttkb.Frame):
         body.pack(fill="both", expand=True, pady=(theme.SPACE, 0))
 
         # --- 左欄：歌詞樹 + 逐字微調 ---
-        left = ttkb.Frame(body, bootstyle="dark", width=260)
+        self._left = left = ttkb.Frame(body, bootstyle="dark", width=260)
         left.pack(side="left", fill="y", padx=(0, theme.SPACE))
         left.pack_propagate(False)
 
         tree_box = ttkb.LabelFrame(left, text="歌詞樹", bootstyle="dark")
         tree_box.pack(fill="both", expand=True)
         self._tree = LyricTree(tree_box, self._state,
-                               on_play_line=self._play_line)
+                               on_play_line=self._play_line,
+                               on_add_line=self._show_add_line_bar)
         self._tree.pack(fill="both", expand=True, padx=2, pady=2)
 
         row = ttkb.Frame(left, bootstyle="dark")
@@ -65,6 +66,14 @@ class EditorPage(ttkb.Frame):
                     command=self._merge_selected).pack(side="left", padx=2)
         ttkb.Button(row, text="🗑 刪行", bootstyle="secondary", takefocus=False,
                     command=self._delete_line).pack(side="left", padx=2)
+
+        # --- 可拖曳分隔條（用戶需求 #2）：調整左欄（歌詞樹/逐字微調）闊度 ---
+        self._left_w = 260
+        self._left_sep = tk.Canvas(body, width=5, bg=theme.BG_HOVER,
+                                   highlightthickness=0, cursor="sb_h_double_arrow")
+        self._left_sep.pack(side="left", fill="y")
+        self._left_sep.bind("<Button-1>", self._on_leftsep_press)
+        self._left_sep.bind("<B1-Motion>", self._on_leftsep_drag)
 
         # --- inline 修改歌詞列（用戶回報彈窗「確定」兩次都冇生效 → 改 inline，
         #     冇 grab/focus 陷阱；Enter 套用 / Esc 取消）---
@@ -85,6 +94,28 @@ class EditorPage(ttkb.Frame):
                     command=self._apply_line_edit).pack(side="right", padx=2)
         ttkb.Button(ebtns, text="取消 (Esc)", bootstyle="secondary", takefocus=False,
                     command=self._hide_line_edit).pack(side="right")
+        # 預設收埋；pack 時用 before=self._ft_box 插喺逐字微調前面
+
+        # --- inline 插字 / 新增歌詞行列（用戶回報 _ask_text 彈窗冇生效 →
+        #     同「修改歌詞」一樣改 inline，徹底鏟走 Toplevel 焦點陷阱）---
+        self._ask_mode: str | None = None      # "char" | "line" | None
+        self._ask_ref: tuple[int, int, int] | None = None
+        self._ask_frame = ttkb.LabelFrame(left, text="插入", bootstyle="dark")
+        arow = ttkb.Frame(self._ask_frame, bootstyle="dark")
+        arow.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
+        self._ask_label = ttkb.Label(arow, text="", bootstyle="secondary")
+        self._ask_label.pack(side="left")
+        self._ask_var = tk.StringVar()
+        self._ask_entry = ttkb.Entry(self._ask_frame, textvariable=self._ask_var)
+        self._ask_entry.pack(fill="x", padx=theme.SPACE)
+        self._ask_entry.bind("<Return>", lambda _e: self._apply_ask())
+        self._ask_entry.bind("<Escape>", lambda _e: self._hide_ask())
+        ttkb.Button(self._ask_frame, text="✓ 確定 (Enter)", bootstyle=theme.ACCENT,
+                    takefocus=False, command=self._apply_ask) \
+            .pack(side="right", padx=(2, theme.SPACE), pady=(2, theme.SPACE))
+        ttkb.Button(self._ask_frame, text="取消 (Esc)", bootstyle="secondary",
+                    takefocus=False, command=self._hide_ask) \
+            .pack(side="right", pady=(2, theme.SPACE))
         # 預設收埋；pack 時用 before=self._ft_box 插喺逐字微調前面
 
         self._build_finetune(left)
@@ -580,15 +611,66 @@ class EditorPage(ttkb.Frame):
         for line_i in reversed(sel):
             self._state.push(DeleteLine(line_i))
     def _insert_char(self) -> None:
+        """＋ 插字（inline 版）：新字插喺選中字前面，原字時間軸不變。
+
+        用戶回報 _ask_text 彈窗冇生效 → 改 inline 列（同「修改歌詞」同款）。
+        """
         ref = self._state.selected
         if ref is None:
-            messagebox.showinfo("插入字", "先選中一個字（新字會插喺佢前面）。")
+            messagebox.showinfo("插入字", "先喺時間軸 / 逐字微調選中一個字（新字會插喺佢前面）。")
             return
-        from ..widgets.lyric_tree import _ask_text
-        text = _ask_text(self, "插入字", "要插入嘅字（原字時間軸不變，唔會推遞）：")
-        if text and len(text) == 1:
-            line_i, word_i, _char_i = ref
+        line_i, word_i, char_i = ref
+        # 插入後舊 ref 可能過期（words/chars 已變）→ 過期就要求重新選（用戶實測 IndexError）
+        try:
+            char = self._state.lines[line_i]["words"][word_i]["chars"][char_i]
+        except IndexError:
+            self._state.set_selection(None)
+            messagebox.showinfo("插入字", "之前選嘅字已經變咗（可能啱啱插過字），請重新選一次。")
+            return
+        self._show_ask_bar(
+            "char", ref,
+            f"新字會插喺「{char.get('text', '')}」前面（原字時間軸不變）：")
+
+    def _show_add_line_bar(self) -> None:
+        """＋ 新增歌詞行（inline 版）：由歌詞樹掣觸發，時間 = 尾行後 +3 秒。"""
+        self._show_ask_bar("line", None, "新行歌詞（時間：尾行後 +3 秒，之後喺時間軸校）：")
+
+    def _show_ask_bar(self, mode: str, ref, prompt: str) -> None:
+        self._ask_mode = mode
+        self._ask_ref = ref
+        self._ask_label.configure(text=prompt, bootstyle="secondary")
+        self._ask_var.set("")
+        self._ask_frame.pack(fill="x", pady=(2, 0), before=self._ft_box)
+        self._ask_entry.focus_force()
+
+    def _hide_ask(self) -> None:
+        self._ask_mode = None
+        self._ask_ref = None
+        self._ask_frame.pack_forget()
+
+    def _apply_ask(self) -> None:
+        text = self._ask_var.get().strip()
+        if self._ask_mode == "char":
+            # 之前 len != 1 會靜默唔做（用戶以為冇生效）→ 而家 inline 提示
+            if len(text) != 1:
+                self._ask_label.configure(
+                    text="請輸入**一個**字（淨係收一個字；要加多字請逐個插）",
+                    bootstyle="danger")
+                return
+            line_i, word_i, _char_i = self._ask_ref
             self._state.push(InsertWord(line_i, word_i, text))
+        elif self._ask_mode == "line":
+            if not text:
+                self._ask_label.configure(text="請輸入歌詞", bootstyle="danger")
+                return
+            from ..commands import AddLine
+            last_end = 0
+            if self._state.lines:
+                last_end = int(self._state.lines[-1].get("end_ms", 0))
+            self._state.push(AddLine(last_end + 500, last_end + 3500, text))
+        else:
+            return
+        self._hide_ask()
 
     # ------------------------------------------------------------------
     # 逐字微調
@@ -824,6 +906,24 @@ class EditorPage(ttkb.Frame):
         dy = event.y_root - getattr(self, "_sep_y0", event.y_root)
         self._preview_ratio = max(0.30, min(0.75, self._sep_ratio0 + dy / h))
         self._relayout_right()
+
+    # ------------------------------------------------------------------
+    # 左欄闊度拖曳（用戶需求 #2：歌詞樹 / 逐字微調欄可調寬）
+    # ------------------------------------------------------------------
+
+    LEFT_MIN_W = 200   # 歌詞樹 4 欄最少要嘅闊度
+    LEFT_MAX_W = 560   # 唔好食埋右欄（預覽 + 時間軸）
+
+    def _on_leftsep_press(self, event) -> None:
+        pass   # B1-Motion 直接用指標位置計
+
+    def _on_leftsep_drag(self, event) -> None:
+        pointer_x = self._left_sep.winfo_x() + event.x     # body 內指標位置
+        new_w = max(self.LEFT_MIN_W, min(self.LEFT_MAX_W,
+                                         pointer_x - theme.SPACE))
+        if new_w != self._left_w:
+            self._left_w = new_w
+            self._left.configure(width=new_w)
 
     def _refresh_buttons(self) -> None:
         self._undo_btn.configure(

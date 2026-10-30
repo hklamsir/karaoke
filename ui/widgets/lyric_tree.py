@@ -22,11 +22,13 @@ class LyricTree(ttkb.Frame):
 
     def __init__(self, master, state, *,
                  on_select_line: Callable[[int], None] | None = None,
-                 on_play_line: Callable[[int], None] | None = None) -> None:
+                 on_play_line: Callable[[int], None] | None = None,
+                 on_add_line: Callable[[], None] | None = None) -> None:
         super().__init__(master, bootstyle="dark")
         self._state = state
         self._on_select_line = on_select_line
         self._on_play_line = on_play_line
+        self._on_add_line = on_add_line
         self._building = False
 
         mono = theme.mono_font_family()
@@ -130,6 +132,10 @@ class LyricTree(ttkb.Frame):
             self._on_play_line(line_i)
 
     def _add_line_tail(self) -> None:
+        # 用戶回報 _ask_text 彈窗冇生效 → 由 editor page 提供 inline 輸入列
+        if self._on_add_line is not None:
+            self._on_add_line()
+            return
         last_end = 0
         if self._state.lines:
             last_end = int(self._state.lines[-1].get("end_ms", 0))
