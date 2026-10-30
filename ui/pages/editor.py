@@ -371,9 +371,13 @@ class EditorPage(ttkb.Frame):
             try:
                 _main.burn_video(video, ass_path, output, progress_cb=prog.report)
             except SystemExit as exc:
-                self.after(0, lambda: on_error(f"ffmpeg 失敗（exit {exc.code}），詳見 log"))
+                # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
+                code = exc.code
+                self.after(0, lambda code=code: on_error(
+                    f"ffmpeg 失敗（exit {code}），詳見 log"))
             except Exception as exc:   # noqa: BLE001
-                self.after(0, lambda: on_error(str(exc)))
+                err = str(exc)
+                self.after(0, lambda err=err: on_error(err))
             else:
                 prog.succeed("完成 ✅")
                 self.after(0, lambda: self._on_burn_done(output))

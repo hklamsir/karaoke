@@ -1,10 +1,11 @@
 @echo off
-rem Karaoke 字幕編輯器 UI 啟動器（ADR-014 R24：UI 必須用 .venv-ui，唔係 .venv）
+rem Karaoke UI launcher (ADR-014 R24: UI needs .venv-ui, NOT .venv)
+rem NOTE: keep this file ASCII-only - cmd.exe mis-reads UTF-8 Chinese as GBK
 if not exist "%~dp0.venv-ui\Scripts\python.exe" (
-    echo [run_ui] 首次使用：建立 .venv-ui 並安裝依賴…
+    echo [run_ui] First run: creating .venv-ui and installing dependencies...
     py -3 -m venv "%~dp0.venv-ui"
     "%~dp0.venv-ui\Scripts\python.exe" -m pip install -r "%~dp0requirements-ui.txt"
-    rem CLI 依賴都要：UI 會 import main（測試連線用 dashscope、生成用 opencc 等）
+    rem CLI deps too: the UI imports main (dashscope for key test, opencc, etc.)
     "%~dp0.venv-ui\Scripts\python.exe" -m pip install -r "%~dp0requirements.txt"
 )
 "%~dp0.venv-ui\Scripts\python.exe" -m ui %*

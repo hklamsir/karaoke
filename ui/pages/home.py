@@ -463,9 +463,14 @@ class HomePage(ttkb.Frame):
             try:
                 result = main.generate_timings(opts, progress_cb=self._progress.report)
             except SystemExit as exc:      # main 用 sys.exit 報錯（保留 CLI exit code）
-                self.after(0, lambda: on_error(RuntimeError(f"exit code {exc.code}，詳見 log")))
+                # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
+                # → 必須即刻捕獲值（default arg 綁定）
+                code = exc.code
+                self.after(0, lambda code=code: on_error(
+                    RuntimeError(f"exit code {code}，詳見 log")))
             except Exception as exc:       # noqa: BLE001
-                self.after(0, lambda: on_error(exc))
+                err = exc
+                self.after(0, lambda err=err: on_error(err))
             else:
                 self._progress.succeed("完成 ✅")
                 self.after(0, lambda: self._on_generate_done(result))
