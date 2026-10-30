@@ -106,6 +106,12 @@ class EditorPage(ttkb.Frame):
 
         self._tl_box = ttkb.LabelFrame(self._right, text="時間軸 · 波形", bootstyle="dark")
         self._timeline = TimelineCanvas(self._tl_box, self._state, on_seek=self._on_seek)
+        # 水平捲軸（用戶需求 #1）：控制 view_start；follow 自動翻頁時同步
+        self._hscroll_syncing = False
+        self._hscroll = ttkb.Scale(self._tl_box, from_=0, to=1000,
+                                   orient="horizontal", command=self._on_hscroll,
+                                   bootstyle="secondary")
+        self._hscroll.pack(side="bottom", fill="x", padx=2)
         # 圖例（用戶回報：唔知橙色係乜）—— 放 timeline 底
         ttkb.Label(self._tl_box,
                    text="字塊＝逐字時間（拖曳校）｜橙虛線＝估算字（要人手校）｜藍＝波形（參考）",
@@ -178,6 +184,8 @@ class EditorPage(ttkb.Frame):
             bar, text="字幕疊圖", variable=self._overlay_on,
             bootstyle="dark-round-toggle", command=self._toggle_overlay)
         self._overlay_chip.pack(side="left", padx=2)
+        ttkb.Button(bar, text="🎨", width=3, bootstyle="secondary", takefocus=False,
+                    command=self._edit_style).pack(side="left", padx=2)
 
         # 時間軸縮放掣（用戶需求 #3）
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
@@ -590,6 +598,8 @@ class EditorPage(ttkb.Frame):
     def _on_state_change(self, reason: str) -> None:
         if reason in ("load", "edit", "save", "select", "follow"):
             self._refresh_finetune()
+        if reason in ("pan", "zoom", "load"):
+            self._sync_hscroll()
         self._refresh_buttons()
         self._refresh_status()
         self._update_time_display()
@@ -672,6 +682,109 @@ class EditorPage(ttkb.Frame):
 
     def _toggle_est_filter(self) -> None:
         self._state.toggle_filter_estimated()
+
+    # ------------------------------------------------------------------
+    # 水平捲軸（用戶需求 #1）＋ 樣式色彩（用戶需求 #3）
+    # ------------------------------------------------------------------
+
+    def _sync_hscroll(self) -> None:
+        """view_start ↔ 捲軸同步（pan/zoom/load 後；playing 翻頁都會 pan）。"""
+        st = self._state
+        total = models.total_duration_ms(st.doc)
+        view_span = max(1.0, self._timeline.winfo_width() / st.px_per_ms)
+        max_start = max(0.0, total - view_span)
+        self._hscroll_syncing = True
+        try:
+            self._hscroll.configure(to=max(1.0, max_start))
+            self._hscroll.set(min(max(0.0, st.view_start_ms), max_start))
+        finally:
+            self._hscroll_syncing = False
+
+    def _on_hscroll(self, value) -> None:
+        if self._hscroll_syncing:
+            return
+        st = self._state
+        v = int(float(value))
+        if v != st.view_start_ms:
+            st.view_start_ms = v
+            st.notify("pan")
+
+    def _edit_style(self) -> None:
+        """🎨 樣式：直接改**現有 doc** 嘅唱過/未唱/描邊色（疊圖即時生效，
+        儲存後持久）。主頁揀色只影響下次生成 —— 載入舊檔要喺呢度改。"""
+        import tkinter.colorchooser as colorchooser
+        style = self._state.doc.setdefault("style", {})
+        defaults = {"primary_color": theme.SUB_PRIMARY,
+                    "secondary_color": theme.SUB_SECONDARY,
+                    "outline_color": "#000000"}
+        labels = {"primary_color": "唱過色", "secondary_color": "未唱色",
+                  "outline_color": "描邊色"}
+        dlg = ttkb.Toplevel(title="樣式顏色", size=(330, 190))
+        vars_: dict[str, tk.StringVar] = {}
+        swatches: dict[str, tk.Canvas] = {}
+        for key, label in labels.items():
+            row = ttkb.Frame(dlg, bootstyle="dark")
+            row.pack(fill="x", padx=12, pady=4)
+            ttkb.Label(row, text=label, width=8, bootstyle="secondary").pack(side="left")
+            cur = style.get(key) or defaults[key]
+
+            def pick(k=key, v=vars_) -> None:
+                rgb = colorchooser.askcolor(color=swatches[k]["bg"], parent=dlg)
+                if rgb and rgb[1]:
+                    vars_[k].set("#{:02X}{:02X}{:02X}".format(*[round(c) for c in rgb[0]]))
+
+            sw = tk.Canvas(row, width=26, height=20, bg=cur, highlightthickness=1,
+                           highlightbackground=theme.BORDER, cursor="hand2")
+            sw.pack(side="left")
+            sw.bind("<Button-1>", lambda _e, p=pick: p())
+            swatches[key] = sw
+            var = tk.StringVar(value=cur)
+            var.trace_add("write", lambda *_a, k=key: self._safe_swatch(swatches, k, vars_))
+            ttkb.Entry(row, textvariable=var, width=10).pack(side="left", padx=(4, 0))
+            vars_[key] = var
+
+        def apply() -> None:
+            changed = False
+            for key, var in vars_.items():
+                v = var.get().strip()
+                if len(v) == 6:
+                    v = "#" + v
+                if len(v) == 7:
+                    try:
+                        int(v[1:], 16)
+                    except ValueError:
+                        continue
+                    if style.get(key) != v:
+                        style[key] = v
+                        changed = True
+            if changed:
+                self._state.dirty = True
+                self._state.notify("edit")
+            dlg.destroy()
+
+        btns = ttkb.Frame(dlg, bootstyle="dark")
+        btns.pack(fill="x", padx=12, pady=10)
+        ttkb.Button(btns, text="確定", bootstyle=theme.ACCENT, command=apply) \
+            .pack(side="right", padx=4)
+        ttkb.Button(btns, text="取消", bootstyle="secondary",
+                    command=dlg.destroy).pack(side="right")
+        try:
+            dlg.wait_visibility()
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+
+    @staticmethod
+    def _safe_swatch(swatches: dict, key: str, vars_: dict) -> None:
+        value = vars_[key].get().strip()
+        if len(value) == 6:
+            value = "#" + value
+        if len(value) == 7:
+            try:
+                int(value[1:], 16)
+                swatches[key]["bg"] = value
+            except ValueError:
+                pass
 
     def _respawn_selected_word(self) -> None:
         """↻ 重新劃分（C4）：選中 word 內部 char 按字數比例重分 → 清 estimated。"""

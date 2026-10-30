@@ -12,8 +12,8 @@ from typing import Any, Callable
 
 from . import commands, models
 
-#: 縮放 4 級（R2 對策：唔做連續 zoom）：px per second
-ZOOM_LEVELS = [0.25, 1.0, 4.0, 16.0]
+#: 縮放層級（用戶需求 #2：加到 6 級）：px per second
+ZOOM_LEVELS = [0.25, 1.0, 4.0, 16.0, 32.0, 64.0]
 
 
 class EditorState:

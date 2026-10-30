@@ -117,12 +117,18 @@ def ms_at_x(x: float, px_per_ms: float, view_start_ms: int) -> int:
 
 
 def nice_tick_interval(px_per_ms: float, canvas_w: int) -> int:
-    """揀一個靚嘅刻度間隔（ms）：目標每 80px 一格。"""
-    target_ms = 80_000 / max(px_per_ms, 1e-9)
-    for step in (100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000, 300_000):
+    """揀一個靚嘅刻度間隔（ms）：目標每 80px 一格。
+
+    ⚠️ 80 / px_per_ms（px per ms → ms per 80px）；之前寫 80_000 差 1000 倍，
+    令 ruler 粗到成個畫面只有一個 0m 標記（用戶回報）。
+    用戶需求 #2：細縮放時要見到 1m/2m/5m 等分鐘標記 → 補 2m/20m 步進。
+    """
+    target_ms = 80 / max(px_per_ms, 1e-9)
+    for step in (100, 250, 500, 1000, 2500, 5000, 10_000, 30_000, 60_000,
+                 120_000, 300_000, 600_000, 1_200_000):
         if step >= target_ms:
             return step
-    return 600_000
+    return 1_800_000
 
 
 # ---------------------------------------------------------------------------
@@ -163,9 +169,17 @@ class TimelineCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
-        # 固定 lane 版（用戶三次回報垂直堆疊/跟播捲動問題後重構）：
-        # 全部句子按時間 first-fit 分配入固定 lane，永遠全部同時可見——
-        # 冇垂直捲動、冇漂移、冇「見唔到字塊」。
+        if reason == "follow":
+            # 播放跟播：播放頭出畫（近右邊界）就翻頁——播放頭移去畫面左 20%
+            # （DAW 式 page-flip；用戶需求 #1：去到第 18 句要自動捲向右）
+            st = self._state
+            w = max(self.winfo_width(), 100)
+            px = (st.cursor_ms - st.view_start_ms) * st.px_per_ms
+            view_span = w / st.px_per_ms
+            if px < 0 or px > w * 0.9:
+                st.view_start_ms = int(max(0, st.cursor_ms - view_span * 0.2))
+                st.notify("pan")
+        # 固定 lane 版：全部句子按時間 first-fit 分配入固定 lane，永遠全部同時可見
         self._request_redraw()
 
     def _scroll_to_line(self, line_i: int) -> None:
