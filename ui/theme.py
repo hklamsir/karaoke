@@ -107,4 +107,8 @@ def apply_ttkbootstrap_theme(root) -> str:
               foreground=[("selected", "#000000")])
     style.configure("Treeview.Heading", background=BG_HOVER, foreground=FG_DIM,
                     borderwidth=0)
+    # LabelFrame 標題（darkly 預設太暗，幾乎睇唔到；bootstyle=dark 會產生
+    # "dark.TLabelframe.Label" 呢個 variant，要一併 configure）
+    for lf in ("TLabelframe.Label", "dark.TLabelframe.Label"):
+        style.configure(lf, foreground=FG_MAIN, font=(ui_font_family(), 10))
     return "darkly"

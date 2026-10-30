@@ -139,6 +139,13 @@ class App(ttkb.Window):
     def refresh_tool_status(self) -> None:
         self._ffmpeg_status_var.set(self._tool_status_text())
 
+    def open_editor_with(self, timings_path) -> None:
+        """帶一份 timings.json 跳入編輯器（主頁「新任務完成」/「開啟現有」共用）。"""
+        editor = self._pages["editor"]
+        if hasattr(editor, "load_timings"):
+            editor.load_timings(timings_path)
+        self.show_page("editor")
+
     def _bind_shortcuts(self) -> None:
         """全域快捷鍵（§5.5.4 §3）：數字鍵 1-4 切頁。"""
         for key, _, num, _, _ in _PAGES:
