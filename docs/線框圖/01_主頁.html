@@ -1,0 +1,247 @@
+<svg viewBox="0 0 1180 760" width="1180" height="760" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>主頁 · 版面線框圖</title>
+<desc>字幕編輯器 UI 的主頁完整線框圖：左側 sidebar 導航、工具列、基本設定（影片／語言／輸出資料夾）、樣式設定（字體／字級／三色／留白）含即時預覽、進階設定、產出清單與分階段進度。</desc>
+<style>
+.ui{font-family:"Microsoft JhengHei UI","Microsoft JhengHei","Noto Sans CJK TC",sans-serif}
+.mono{font-family:"Cascadia Mono","Cascadia Code",Consolas,monospace}
+.t{font-size:11px}.t2{font-size:12px}.t3{font-size:13px}.lbl{font-size:12px;fill:#8a8a9c}
+.h{font-size:13px;fill:#e6e6ec;font-weight:500}
+</style>
+
+<rect x="0" y="0" width="1180" height="760" fill="#16161d"/>
+
+<rect x="8" y="8" width="100" height="744" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui t" x="20" y="30" fill="#e6e6ec" font-weight="500">Karaoke</text>
+<rect x="16" y="42" width="84" height="1" fill="#3a3a48"/>
+
+<rect x="8" y="56" width="3" height="28" rx="1.5" fill="#3AA0FF"/>
+<circle cx="24" cy="70" r="3.5" fill="#3AA0FF"/>
+<text class="ui t2" x="36" y="74" fill="#e6e6ec">主頁</text>
+
+<circle cx="24" cy="104" r="3.5" fill="#5f5e5a"/>
+<text class="ui t2" x="36" y="108" fill="#8a8a9c">編輯器</text>
+
+<circle cx="24" cy="138" r="3.5" fill="#5f5e5a"/>
+<text class="ui t2" x="36" y="142" fill="#8a8a9c">設定</text>
+
+<circle cx="24" cy="172" r="3.5" fill="#5f5e5a"/>
+<text class="ui t2" x="36" y="176" fill="#8a8a9c">幫助</text>
+
+<rect x="16" y="700" width="84" height="40" rx="6" fill="#2b2b36"/>
+<text class="ui t" x="26" y="716" fill="#8a8a9c">FFmpeg</text>
+<circle cx="30" cy="730" r="3" fill="#3DD68C"/>
+<text class="ui t" x="40" y="734" fill="#8a8a9c">v7.1 ✓</text>
+
+<rect x="116" y="8" width="1056" height="36" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui t2" x="132" y="30" fill="#e6e6ec">主頁</text>
+<rect x="178" y="16" width="1" height="20" fill="#3a3a48"/>
+<text class="ui t" x="192" y="30" fill="#5f5e5a">揀片 → 揀屬性 → 生成 → 編輯 → 燒錄</text>
+<rect x="900" y="16" width="120" height="20" rx="10" fill="#2b2b36" stroke="#3a3a48"/>
+<circle cx="914" cy="26" r="3.5" fill="#3DD68C"/>
+<text class="ui t" x="924" y="30" fill="#e6e6ec">API Key 已設定</text>
+<rect x="1030" y="16" width="128" height="20" rx="10" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="1042" y="30" fill="#e6e6ec">主題 darkly ▾</text>
+
+<rect x="116" y="52" width="664" height="228" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="136" y="76">基本</text>
+
+<text class="ui t2" x="136" y="102" fill="#8a8a9c">MV 影片</text>
+<rect x="136" y="112" width="420" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="146" y="131" fill="#e6e6ec">C:\Videos\1080p - 林家謙《普渡眾生》MV.mp4</text>
+<rect x="566" y="112" width="88" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="596" y="131" fill="#e6e6ec">選擇…</text>
+<rect x="662" y="112" width="66" height="30" rx="5" fill="#1e1e26" stroke="#3a3a48"/>
+<text class="ui t2" x="682" y="131" fill="#8a8a9c">清除</text>
+
+<circle cx="141" cy="163" r="3.5" fill="#3DD68C"/>
+<text class="mono t" x="152" y="167" fill="#8a8a9c">1920×1080 · 180.07 s · 20.5 MB · AV1 60fps</text>
+<text class="ui t" x="440" y="167" fill="#5f5e5a">ffprobe ✓ 讀取成功</text>
+
+<text class="ui t2" x="136" y="196" fill="#8a8a9c">語言提示</text>
+<circle cx="150" cy="192" r="6" fill="#3AA0FF"/>
+<circle cx="150" cy="192" r="2.5" fill="#0b1a2b"/>
+<text class="ui t2" x="162" y="196" fill="#e6e6ec">粵語／中文</text>
+<circle cx="252" cy="192" r="6" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="264" y="196" fill="#8a8a9c">英文</text>
+<rect x="336" y="180" width="188" height="24" rx="12" fill="#2b2b36"/>
+<text class="mono t" x="348" y="196" fill="#8a8a9c">language_hints=['zh']</text>
+<text class="ui t" x="540" y="196" fill="#5f5e5a">ADR-001：唔可以直接傳 yue</text>
+
+<text class="ui t2" x="136" y="232" fill="#8a8a9c">輸出資料夾</text>
+<rect x="136" y="242" width="420" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="146" y="261" fill="#e6e6ec">C:\Videos\subs</text>
+<rect x="566" y="242" width="88" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="596" y="261" fill="#e6e6ec">選擇…</text>
+<rect x="662" y="242" width="66" height="30" rx="5" fill="#1e1e26" stroke="#3a3a48"/>
+<text class="ui t" x="676" y="261" fill="#8a8a9c">用預設</text>
+
+<rect x="116" y="288" width="664" height="272" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="136" y="312">樣式</text>
+<text class="ui t" x="180" y="312" fill="#5f5e5a">即時寫入 timings.json 的 style 段（ADR-012 self-contained）</text>
+
+<text class="ui t2" x="136" y="342" fill="#8a8a9c">字體</text>
+<rect x="136" y="352" width="220" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="146" y="371" fill="#e6e6ec">Microsoft JhengHei UI</text>
+<path d="M338 363 L344 369 L350 363 Z" fill="#8a8a9c"/>
+
+<text class="ui t2" x="378" y="342" fill="#8a8a9c">字級</text>
+<rect x="378" y="352" width="76" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t2" x="388" y="371" fill="#e6e6ec">48</text>
+<rect x="460" y="352" width="30" height="30" rx="5" fill="#1e1e26" stroke="#3a3a48"/>
+<text class="ui t2" x="470" y="371" fill="#8a8a9c">−</text>
+<rect x="494" y="352" width="30" height="30" rx="5" fill="#1e1e26" stroke="#3a3a48"/>
+<text class="ui t2" x="504" y="371" fill="#8a8a9c">＋</text>
+
+<text class="ui t2" x="136" y="404" fill="#8a8a9c">唱過色</text>
+<rect x="136" y="414" width="30" height="30" rx="5" fill="#FFFF00" stroke="#3a3a48"/>
+<rect x="172" y="414" width="92" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t2" x="182" y="433" fill="#e6e6ec">#FFFF00</text>
+
+<text class="ui t2" x="282" y="404" fill="#8a8a9c">未唱底色</text>
+<rect x="282" y="414" width="30" height="30" rx="5" fill="#FFFFFF" stroke="#3a3a48"/>
+<rect x="318" y="414" width="92" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t2" x="328" y="433" fill="#e6e6ec">#FFFFFF</text>
+
+<text class="ui t2" x="428" y="404" fill="#8a8a9c">描邊色</text>
+<rect x="428" y="414" width="30" height="30" rx="5" fill="#000000" stroke="#3a3a48"/>
+<rect x="464" y="414" width="92" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t2" x="474" y="433" fill="#e6e6ec">#000000</text>
+
+<text class="ui t2" x="580" y="404" fill="#8a8a9c">描邊粗幼</text>
+<rect x="580" y="414" width="120" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="590" y="433" fill="#e6e6ec">自動</text>
+<path d="M682 425 L688 431 L694 425 Z" fill="#8a8a9c"/>
+
+<text class="ui t2" x="136" y="466" fill="#8a8a9c">底部留白</text>
+<rect x="136" y="476" width="92" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t2" x="146" y="495" fill="#e6e6ec">0</text>
+<text class="ui t" x="238" y="495" fill="#5f5e5a">0 = 自動（1080p ≈ 59px）</text>
+
+<text class="ui t2" x="428" y="466" fill="#8a8a9c">對齊</text>
+<rect x="428" y="476" width="120" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="438" y="495" fill="#e6e6ec">底部置中</text>
+<path d="M530 487 L536 493 L542 487 Z" fill="#8a8a9c"/>
+<text class="ui t" x="560" y="495" fill="#5f5e5a">ASS Alignment=2</text>
+
+<text class="ui t2" x="136" y="530" fill="#8a8a9c">字幕預覽位置</text>
+<rect x="136" y="540" width="452" height="8" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<rect x="136" y="540" width="452" height="8" rx="4" fill="#3AA0FF" opacity="0.45"/>
+<line x1="364" y1="534" x2="364" y2="554" stroke="#3AA0FF" stroke-width="2"/>
+<text class="ui t" x="600" y="549" fill="#5f5e5a">拖曳調整留白</text>
+
+<rect x="116" y="568" width="664" height="132" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<path d="M136 582 L144 588 L136 594 Z" fill="#8a8a9c"/>
+<text class="ui h" x="154" y="594">進階</text>
+<text class="ui t" x="200" y="594" fill="#5f5e5a">8 項 · 已摺疊</text>
+
+<text class="ui t2" x="136" y="622" fill="#8a8a9c">保留標點</text>
+<rect x="212" y="610" width="16" height="16" rx="3" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="242" y="622" fill="#8a8a9c">每行最多字數</text>
+<rect x="330" y="610" width="52" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="344" y="623" fill="#e6e6ec">18</text>
+<text class="ui t2" x="400" y="622" fill="#8a8a9c">停頓閾值</text>
+<rect x="466" y="610" width="60" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="478" y="623" fill="#e6e6ec">800</text>
+<text class="ui t" x="534" y="622" fill="#5f5e5a">ms</text>
+<text class="ui t2" x="580" y="622" fill="#8a8a9c">合併後上限</text>
+<rect x="666" y="610" width="52" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="680" y="623" fill="#e6e6ec">16</text>
+
+<text class="ui t2" x="136" y="652" fill="#8a8a9c">短句門檻</text>
+<rect x="204" y="640" width="46" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="218" y="653" fill="#e6e6ec">5</text>
+<text class="ui t" x="256" y="653" fill="#5f5e5a">字 且</text>
+<rect x="292" y="640" width="56" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="302" y="653" fill="#e6e6ec">2500</text>
+<text class="ui t" x="354" y="653" fill="#5f5e5a">ms</text>
+<text class="ui t2" x="400" y="653" fill="#8a8a9c">句尾停留</text>
+<rect x="466" y="640" width="60" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="478" y="653" fill="#e6e6ec">300</text>
+<text class="ui t" x="534" y="653" fill="#5f5e5a">ms</text>
+<text class="ui t2" x="580" y="653" fill="#8a8a9c">人聲分離</text>
+<rect x="646" y="640" width="16" height="16" rx="3" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="672" y="653" fill="#5f5e5a">懶安裝</text>
+
+<text class="ui t2" x="136" y="684" fill="#8a8a9c">儲存 ASR 原始 JSON</text>
+<rect x="252" y="672" width="16" height="16" rx="3" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="282" y="684" fill="#5f5e5a">方便除錯</text>
+<text class="ui t2" x="400" y="684" fill="#8a8a9c">ASR 模型</text>
+<rect x="466" y="672" width="252" height="18" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="476" y="685" fill="#e6e6ec">qwen-audio-3.1-asr-flash-filetrans</text>
+
+<rect x="788" y="52" width="384" height="316" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="808" y="76">即時預覽</text>
+<text class="ui t" x="1046" y="76" fill="#5f5e5a">示意比例</text>
+
+<rect x="808" y="90" width="344" height="180" rx="5" fill="#0d1117" stroke="#3a3a48"/>
+<rect x="808" y="90" width="344" height="120" fill="#16202c"/>
+<rect x="808" y="210" width="344" height="60" fill="#12181f"/>
+<ellipse cx="980" cy="160" rx="34" ry="46" fill="#2a3646"/>
+<text class="ui" x="978" y="238" text-anchor="middle" font-size="24" fill="#FFFF00">輪迴</text>
+<text class="ui" x="1030" y="238" text-anchor="middle" font-size="24" fill="#FFFFFF">塵間的人</text>
+<rect x="808" y="90" width="344" height="180" rx="5" fill="none" stroke="#3a3a48"/>
+
+<rect x="808" y="292" width="14" height="14" rx="3" fill="#FFFF00" stroke="#3a3a48"/>
+<text class="ui t" x="830" y="303" fill="#8a8a9c">唱過（已唱）</text>
+<rect x="920" y="292" width="14" height="14" rx="3" fill="#FFFFFF" stroke="#3a3a48"/>
+<text class="ui t" x="942" y="303" fill="#8a8a9c">未唱（底色）</text>
+<rect x="1032" y="292" width="14" height="14" rx="3" fill="#000000" stroke="#3a3a48"/>
+<text class="ui t" x="1054" y="303" fill="#8a8a9c">描邊</text>
+
+<text class="ui t" x="808" y="336" fill="#5f5e5a">改任何樣式參數即時重繪 · 預覽卡用真實字體渲染</text>
+<text class="ui t" x="808" y="356" fill="#5f5e5a">字級 48 → 預覽卡以 1/3 比例顯示（避免 48px 超出畫面）</text>
+
+<rect x="788" y="376" width="384" height="132" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="808" y="400">產出</text>
+
+<rect x="808" y="412" width="344" height="26" rx="4" fill="#2b2b36"/>
+<rect x="818" y="420" width="10" height="10" rx="2" fill="#3AA0FF"/>
+<text class="ui t2" x="838" y="430" fill="#e6e6ec">普渡眾生_timings.json</text>
+<text class="ui t" x="1060" y="430" fill="#5f5e5a">canonical · 編輯後寫回</text>
+
+<rect x="808" y="442" width="344" height="26" rx="4" fill="#2b2b36"/>
+<rect x="818" y="450" width="10" height="10" rx="2" fill="#8a8a9c"/>
+<text class="ui t2" x="838" y="460" fill="#e6e6ec">普渡眾生_karaoke.ass</text>
+<text class="ui t" x="1060" y="460" fill="#5f5e5a">衍生物 · render 產生</text>
+
+<rect x="808" y="472" width="344" height="26" rx="4" fill="#2b2b36"/>
+<rect x="818" y="480" width="10" height="10" rx="2" fill="#5f5e5a"/>
+<text class="ui t2" x="838" y="490" fill="#e6e6ec">普渡眾生_karaoke.mp4</text>
+<text class="ui t" x="1060" y="490" fill="#5f5e5a">需燒錄 · 編輯器工具列</text>
+
+<circle cx="813" cy="506" r="3.5" fill="#F5A623"/>
+<text class="ui t" x="824" y="510" fill="#8a8a9c">唔可以直接寫 .ass — 下次 render 會覆寫</text>
+
+<rect x="788" y="516" width="384" height="40" rx="6" fill="#3AA0FF"/>
+<text class="ui t3" x="920" y="541" fill="#0b1a2b" font-weight="500">開始生成</text>
+<path d="M996 529 L996 543 L1008 536 Z" fill="#0b1a2b"/>
+
+<rect x="788" y="564" width="384" height="136" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="808" y="588">進度</text>
+<text class="ui t" x="1080" y="588" fill="#5f5e5a">查看完整 log ▸</text>
+
+<rect x="808" y="600" width="52" height="26" rx="5" fill="#2b2b36" stroke="#3DD68C"/>
+<text class="ui t" x="826" y="617" fill="#3DD68C">抽音</text>
+<rect x="866" y="600" width="52" height="26" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="884" y="617" fill="#8a8a9c">上傳</text>
+<rect x="924" y="600" width="52" height="26" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="942" y="617" fill="#8a8a9c">ASR</text>
+<rect x="982" y="600" width="52" height="26" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="1000" y="617" fill="#8a8a9c">斷句</text>
+<rect x="1040" y="600" width="52" height="26" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="1058" y="617" fill="#8a8a9c">渲染</text>
+
+<rect x="808" y="640" width="344" height="10" rx="5" fill="#2b2b36"/>
+<rect x="808" y="640" width="104" height="10" rx="5" fill="#3AA0FF"/>
+<text class="ui t" x="808" y="672" fill="#8a8a9c">上傳中…（實測 3 秒 ~ 3 分鐘，屬正常）</text>
+<text class="mono t" x="808" y="692" fill="#5f5e5a">log: Files.upload → pre-signed URL → task_id → poll</text>
+
+<rect x="116" y="708" width="1056" height="44" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<circle cx="130" cy="730" r="3.5" fill="#3DD68C"/>
+<text class="mono t" x="142" y="734" fill="#8a8a9c">ffmpeg ✓ C:\Users\pslam\Documents\Programs\ffmpeg\bin\ffmpeg.exe</text>
+<circle cx="560" cy="730" r="3.5" fill="#3DD68C"/>
+<text class="mono t" x="572" y="734" fill="#8a8a9c">ffprobe ✓</text>
+<circle cx="660" cy="730" r="3.5" fill="#3DD68C"/>
+<text class="mono t" x="672" y="734" fill="#8a8a9c">DASHSCOPE_API_KEY ✓（環境變數優先）</text>
+<text class="mono t" x="1050" y="734" fill="#5f5e5a">v0.1 · darkly</text>
+</svg>
