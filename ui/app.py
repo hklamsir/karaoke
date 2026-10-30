@@ -170,6 +170,7 @@ class App(ttkb.Window):
         self.bind("<Control-y>", self._dispatch("redo"))
         self.bind("<Left>", self._dispatch_cursor(-FETCH_MS, -FINE_MS, -FRAME_MS))
         self.bind("<Right>", self._dispatch_cursor(+FETCH_MS, +FINE_MS, +FRAME_MS))
+        self.bind("<space>", self._dispatch("toggle_play"))
 
     def _dispatch(self, method: str):
         """轉發畀編輯器（save/undo/redo；淨係喺編輯器頁生效）。"""

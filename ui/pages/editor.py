@@ -32,6 +32,7 @@ class EditorPage(ttkb.Frame):
         super().__init__(master, bootstyle="dark")
         self._state = state.EditorState()
         self._audio = None          # commit 6
+        self._audio_note = ""
         self._thumbs = None         # commit 7
 
         self._build_toolbar()
@@ -106,13 +107,12 @@ class EditorPage(ttkb.Frame):
                                      takefocus=False, command=lambda: self._jump_line(-1))
         self._btn_home.pack(side="left", padx=2)
         self._play_btn = ttkb.Button(bar, text="▶", width=3, bootstyle="secondary",
-                                     takefocus=False, command=self._toggle_play, state="disabled")
+                                     takefocus=False, command=self._toggle_play)
         self._play_btn.pack(side="left", padx=2)
         ttkb.Button(bar, text="⏭", width=3, bootstyle="secondary", takefocus=False,
                     command=lambda: self._jump_line(+1)).pack(side="left", padx=2)
         self._replay_btn = ttkb.Button(bar, text="重播3秒", bootstyle="secondary",
-                                       takefocus=False, state="disabled",
-                                       command=lambda: None)
+                                       takefocus=False, command=self._replay_3s)
         self._replay_btn.pack(side="left", padx=2)
 
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
@@ -183,7 +183,7 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def load_timings(self, path: str | Path) -> None:
-        """主頁 / 快捷鍵入口：讀 timings.json + 驗證原片存在（R8）。"""
+        """主頁 / 快捷鍵入口：讀 timings.json + 驗證原片存在（R8）+ 背景載入音訊。"""
         try:
             self._state.load(path)
         except Exception as exc:   # noqa: BLE001
@@ -198,6 +198,92 @@ class EditorPage(ttkb.Frame):
                     filetypes=[("影片檔", "*.mp4 *.mkv *.mov *.webm *.avi"), ("全部檔案", "*.*")])
                 if new:
                     self._state.reassign_video(new)
+        self._load_audio()
+
+    def _load_audio(self) -> None:
+        """背景解碼音訊 + 波形（§6.6）；失敗靜音降級，其他功能照用。"""
+        video = self._state.video_path
+        if video is None or not video.is_file():
+            self._audio_status("冇原片，靜音模式")
+            return
+        from .. import settings as ui_settings
+        from ..audio import AudioEngine
+        if self._audio is None:
+            self._audio = AudioEngine()
+        if not self._audio.available:
+            self._audio_status("未裝 pygame，無法播放音訊（pip install pygame）")
+            return
+        ffmpeg = ui_settings.detect_ffmpeg(self.master.settings_data)
+        if not ffmpeg:
+            self._audio_status("搵唔到 ffmpeg，無法解碼音訊")
+            return
+        self._audio_status("抽取音訊中…")
+
+        def on_done(engine) -> None:
+            if engine is None or engine.peaks is None:
+                self.after(0, lambda: self._audio_status("音訊解碼失敗（其他功能照用）"))
+                return
+            self.after(0, self._on_audio_ready)
+
+        engine = self._audio
+        engine.load_video_async(
+            ffmpeg, video, on_done,
+            on_progress=lambda msg: self.after(0, lambda m=msg: self._audio_status(m)))
+
+    def _on_audio_ready(self) -> None:
+        engine = self._audio
+        if engine is None or engine.peaks is None:
+            return
+        self._timeline.set_waveform(engine.peaks, engine.duration_ms)
+        self._audio_status(f"● 音訊 {engine.duration_ms / 1000:.0f}s 已載入")
+        self._poll_position()
+
+    def _audio_status(self, text: str) -> None:
+        self._audio_note = text
+        self._refresh_status()
+
+    def _status_tail(self) -> str:
+        st = self._state
+        if st.path is None:
+            return "未開檔"
+        s = st.stats()
+        est_pct = f"{s['estimated_ratio'] * 100:.0f}%" if s["estimated_total_words"] else "—"
+        dirty = "●未儲存" if st.dirty else "已儲存"
+        total = models.total_duration_ms(st.doc)
+        return (f"游標 {_fmt_ms(st.cursor_ms)}/{_fmt_ms(total)} │ "
+                f"{s['num_lines']}行·{s['num_chars']}字 │ ●估算 {s['estimated_words']}詞 {est_pct} │ "
+                f"{dirty} │ {st.path.name}")
+
+    def _poll_position(self) -> None:
+        """播放中每 30ms 更新游標（§6.6）。"""
+        engine = self._audio
+        if engine is None or not engine.available:
+            return
+        if engine.playing:
+            self._state.set_cursor(engine.position_ms())
+            if self._play_btn["text"] != "⏸":
+                self._play_btn.configure(text="⏸")
+        else:
+            if self._play_btn["text"] != "▶":
+                self._play_btn.configure(text="▶")
+        self.after(30, self._poll_position)
+
+    def _toggle_play(self) -> None:
+        engine = self._audio
+        if engine is None or not engine.available:
+            messagebox.showinfo("靜音模式", "音訊未載入（未裝 pygame 或冇原片）。")
+            return
+        if engine.playing:
+            # 暫停：記住而家位置做下次起點
+            self._state.set_cursor(engine.position_ms())
+        engine.toggle(self._state.cursor_ms)
+
+    def _replay_3s(self) -> None:
+        """「重播 3 秒」跟唱：播 [游標−1s, 游標+2s]（§6.6）。"""
+        engine = self._audio
+        if engine is None or not engine.available:
+            return
+        engine.play_range(self._state.cursor_ms - 1000, self._state.cursor_ms + 2000)
 
     def save(self) -> None:
         if self._state.path is None:
@@ -300,7 +386,6 @@ class EditorPage(ttkb.Frame):
         self._refresh_buttons()
         self._refresh_status()
         self._update_time_display()
-
     def _refresh_finetune(self) -> None:
         st = self._state
         self._ft_tree.delete(*self._ft_tree.get_children())
@@ -376,16 +461,10 @@ class EditorPage(ttkb.Frame):
     def _refresh_status(self) -> None:
         st = self._state
         if st.path is None:
-            self._status_var.set("未開檔")
+            self._status_var.set(self._audio_note or "未開檔")
             return
-        s = st.stats()
-        est_pct = f"{s['estimated_ratio'] * 100:.0f}%" if s["estimated_total_words"] else "—"
-        dirty = "●未儲存" if st.dirty else "已儲存"
-        total = models.total_duration_ms(st.doc)
-        self._status_var.set(
-            f"游標 {_fmt_ms(st.cursor_ms)}/{_fmt_ms(total)} │ "
-            f"{s['num_lines']}行·{s['num_chars']}字 │ ●估算 {s['estimated_words']}詞 {est_pct} │ {dirty} │ "
-            f"{st.path.name}")
+        note = f"{self._audio_note}　│　" if self._audio_note else ""
+        self._status_var.set(note + self._status_tail())
 
     def _set_status_dirty(self) -> None:
         self._refresh_status()

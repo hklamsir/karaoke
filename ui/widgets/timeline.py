@@ -14,8 +14,9 @@ from typing import Any, Callable
 
 from .. import theme
 
-#: 時間軸各段高度（§6.1：波形 44 + 刻度 18 + 字塊 + 概覽 16；波形 commit 6 加）
+#: 時間軸各段高度（§6.1：波形 44 + 刻度 18 + 字塊 + 概覽 16）
 RULER_H = 18
+WAVE_H = 44
 LANE_H = 22
 OVERVIEW_H = 16
 EDGE_PX = 5          # 字塊邊界 5px 內 = 拖邊界
@@ -98,6 +99,8 @@ class TimelineCanvas(tk.Canvas):
         self._rects: list[tuple] = []
         self._drag: dict[str, Any] | None = None
         self._redraw_pending = False
+        self._peaks = None            # np.ndarray（commit 6 波形）
+        self._peaks_duration_ms = 0
 
         state.add_observer(self._on_state_change)
         self.bind("<Configure>", lambda _e: self._request_redraw())
@@ -115,6 +118,15 @@ class TimelineCanvas(tk.Canvas):
 
     def _on_state_change(self, reason: str) -> None:
         self._request_redraw()
+
+    def set_waveform(self, peaks, duration_ms: int) -> None:
+        """音訊載入完成後畀時間軸畫波形背景（§6.6）。"""
+        self._peaks = peaks
+        self._peaks_duration_ms = duration_ms
+        self._request_redraw()
+
+    def waveform_y_top(self) -> int:
+        return RULER_H + 2
 
     def _request_redraw(self) -> None:
         """R7：拖曳連續重繪用 after debounce（~16ms 一幀）。"""
@@ -157,8 +169,31 @@ class TimelineCanvas(tk.Canvas):
                                  fill=theme.FG_DIM, font=(theme.mono_font_family(), 8))
             t += interval
 
-        # --- 逐字方塊（每行一條 lane）---
+        # --- 波形（§6.6：filled polygon；載入音訊後先有）---
         y_top = RULER_H + 2
+        if self._peaks is not None and len(self._peaks) > 0:
+            wy0, wy1 = y_top, y_top + WAVE_H
+            ms_per_bin = self._peaks_duration_ms / len(self._peaks)
+            # 每 px 想畫 1 點：bins per px = 1 / (ms_per_bin * ppm)
+            step = max(1, int(round(1.0 / (ms_per_bin * ppm))))
+            pts_top: list[tuple[float, float]] = []
+            pts_bot: list[tuple[float, float]] = []
+            for i in range(0, len(self._peaks), step):
+                x = (i * ms_per_bin - view) * ppm
+                if x < -2:
+                    continue
+                if x > w + 2:
+                    break
+                h = max(0.5, float(self._peaks[i]) * (WAVE_H / 2))
+                pts_top.append((x, (wy0 + wy1) / 2 - h))
+                pts_bot.append((x, (wy0 + wy1) / 2 + h))
+            if len(pts_top) >= 2:
+                poly = pts_top + pts_bot[::-1]
+                self.create_polygon(poly, fill="#2a3a52", outline="", smooth=True)
+                self.create_line(pts_top, fill="#3AA0FF", width=1)
+            y_top = wy1 + 4
+
+        # --- 逐字方塊（每行一條 lane）---
         self._rects = compute_layout(lines, ppm, view, w, y_top)
         current_line = st.current_line_i
         selected = st.selected
