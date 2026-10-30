@@ -18,6 +18,11 @@ from . import settings, theme
 
 LOGGER = logging.getLogger("karaoke.ui")
 
+#: ←→ 游標步長（§6.2）：普通 ±100ms / Shift ±10ms / Ctrl ±1 帧 @60fps
+FETCH_MS = 100
+FINE_MS = 10
+FRAME_MS = 17
+
 #: 頁面註冊表：（key, 標題, 快捷鍵數字 1-4, 模組路徑, 類名）
 _PAGES: list[tuple[str, str, int, str, str]] = [
     ("home", "主頁", 1, "ui.pages.home", "HomePage"),
@@ -46,9 +51,18 @@ class App(ttkb.Window):
         self._build_statusbar()
         self._build_pages()
         self._bind_shortcuts()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.show_page("home")
         LOGGER.info("UI 啟動完成（theme=%s）", self._applied_theme)
+
+    def _on_close(self) -> None:
+        """關視窗前：編輯器有未儲存修改就提示（E2）。"""
+        editor = self._pages.get("editor")
+        if editor is not None and hasattr(editor, "on_close_request"):
+            if not editor.on_close_request():
+                return
+        self.destroy()
 
     # ------------------------------------------------------------------
     # 版面
@@ -147,9 +161,40 @@ class App(ttkb.Window):
         self.show_page("editor")
 
     def _bind_shortcuts(self) -> None:
-        """全域快捷鍵（§5.5.4 §3）：數字鍵 1-4 切頁。"""
+        """全域快捷鍵（§5.5.4 §3）：數字鍵 1-4 切頁；Ctrl+S/Z/Shift+Z/O；←→；空白鍵。"""
         for key, _, num, _, _ in _PAGES:
             self.bind(f"<Key-{num}>", lambda _e, k=key: self.show_page(k))
+        self.bind("<Control-s>", self._dispatch("save"))
+        self.bind("<Control-z>", self._dispatch("undo"))
+        self.bind("<Control-Z>", self._dispatch("redo"))     # Shift 已入 modifier 大寫
+        self.bind("<Control-y>", self._dispatch("redo"))
+        self.bind("<Left>", self._dispatch_cursor(-FETCH_MS, -FINE_MS, -FRAME_MS))
+        self.bind("<Right>", self._dispatch_cursor(+FETCH_MS, +FINE_MS, +FRAME_MS))
+
+    def _dispatch(self, method: str):
+        """轉發畀編輯器（save/undo/redo；淨係喺編輯器頁生效）。"""
+        def handler(_event=None) -> str:
+            if self._current_key != "editor":
+                return "break"
+            editor = self._pages.get("editor")
+            if editor is not None and hasattr(editor, method):
+                getattr(editor, method)()
+            return "break"
+        return handler
+
+    def _dispatch_cursor(self, normal: int, fine: int, frame: int):
+        def handler(event) -> str:
+            editor = self._pages.get("editor")
+            if self._current_key != "editor" or editor is None:
+                return "break"
+            if event.state & 0x0001:       # Shift
+                editor.on_cursor_step(fine)
+            elif event.state & 0x0004:     # Ctrl ≈ 1 帧 @60fps
+                editor.on_cursor_step(frame)
+            else:
+                editor.on_cursor_step(normal)
+            return "break"
+        return handler
 
     # ------------------------------------------------------------------
     # 設定存取（頁面共用）
