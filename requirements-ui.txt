@@ -1,0 +1,7 @@
+# 字幕編輯器 UI 依賴（同 CLI 嘅 requirements.txt 分離，見計劃書 §3.3）
+ttkbootstrap>=1.10.1     # darkly 主題（純 ttk 生態）
+numpy>=1.26.0            # WAV peak 提取畫波形
+pygame>=2.5.0            # 音訊播放 + 游標同步（缺則降級靜音模式）
+
+# 可選：tkinterdnd2（拖放檔案入主頁；裝咗先開拖放）
+# tkinterdnd2>=0.4.0
