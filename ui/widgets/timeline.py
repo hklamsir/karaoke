@@ -29,21 +29,35 @@ CHAR_MIN_W = 3       # §4.3：細過就唔畫（聚合顯示）
 
 def compute_layout(lines: list[dict], px_per_ms: float, view_start_ms: int,
                    canvas_w: int, y_top: int, y_offset_px: int = 0,
-                   indices: list[int] | None = None
+                   indices: list[int] | None = None,
+                   n_lanes: int | None = None
                    ) -> list[tuple[int, int, int, float, float, float, float, str]]:
-    """計算畫面內所有字塊矩形（§4.3 聚合顯示）。
+    """計算畫面內所有字塊矩形（§4.3 聚合顯示 + 固定 lane 分配）。
 
-    fit 縮放下逐字方塊會細過 3px（實測用戶：見唔到字塊）→ 自動降級：
-    逐字 → 逐詞 → 逐行，每層塊闊度夠 3px 先用。
+    - fit 縮放下逐字方塊會細過 3px（實測用戶：見唔到字塊）→ 自動降級：
+      逐字 → 逐詞 → 逐行，每層塊闊度夠 3px 先用。
+    - ``n_lanes``：固定 lane 數（= 畫面容到幾多行）。句子按**時間 first-fit**
+      分配入 lane —— 全部句子永遠同時可見，冇垂直捲動（用戶兩次回報垂直
+      堆疊＋跟播捲動體感極差）。None = 每行一條 lane（舊行為，測試用）。
 
     Returns:
         list of (line_i, word_i, char_i, x0, y0, x1, y1, label)；
         label = 該塊要顯示嘅文字（逐字=字 / 逐詞=詞 / 逐行=整句）。
     """
     rects: list[tuple[int, int, int, float, float, float, float, str]] = []
+    lane_end: list[int] = [-1] * n_lanes if n_lanes else []
     for row_i, line in enumerate(lines):
         line_i = row_i if indices is None else indices[row_i]
-        y0 = y_top + row_i * LANE_H - y_offset_px
+        if n_lanes:
+            # first-fit：揀第一條時間冇重疊嘅 lane（N5 保證行間唔重疊，
+            # 實務上兩三條 lane 就夠循環用）
+            start_ms = int(line.get("start_ms", 0))
+            lane = next((l for l in range(n_lanes) if lane_end[l] <= start_ms),
+                        row_i % n_lanes)
+            lane_end[lane] = int(line.get("end_ms", 0))
+        else:
+            lane = row_i
+        y0 = y_top + lane * LANE_H - y_offset_px
         words = list(enumerate(line.get("words") or []))
         flat = [(wi, ci, c) for wi, w in words for ci, c in enumerate(w.get("chars") or [])]
         if not flat:
@@ -149,11 +163,9 @@ class TimelineCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
-        if reason == "select":
-            # 淨係「用戶手動點選」先自動捲動；播放跟播（follow）唔好捲——
-            # 52 行嘅歌每幾秒跳一版，體感係「捲軸黐住時間郁最終消失」（用戶兩次回報）。
-            # 播放時歌詞樹反白已經夠導航，用戶自己決定幾時捲。
-            self._scroll_to_line(self._state.current_line_i)
+        # 固定 lane 版（用戶三次回報垂直堆疊/跟播捲動問題後重構）：
+        # 全部句子按時間 first-fit 分配入固定 lane，永遠全部同時可見——
+        # 冇垂直捲動、冇漂移、冇「見唔到字塊」。
         self._request_redraw()
 
     def _scroll_to_line(self, line_i: int) -> None:
@@ -256,7 +268,11 @@ class TimelineCanvas(tk.Canvas):
         visible = st.visible_lines()
         indices = [i for i, _ in visible]
         view_lines = [l for _, l in visible]
-        self._rects = compute_layout(view_lines, ppm, view, w, y_top, indices=indices)
+        # 固定 lane 數 = 畫布容到幾多行（至少 2）；全部句子永遠可見
+        lane_area = max(2 * LANE_H, self.winfo_height() - OVERVIEW_H - y_top)
+        n_lanes = max(2, int(lane_area // LANE_H))
+        self._rects = compute_layout(view_lines, ppm, view, w, y_top,
+                                     indices=indices, n_lanes=n_lanes)
         current_line = st.current_line_i
         selected = st.selected
         for line_i, word_i, char_i, x0, y0, x1, y1, label in self._rects:
@@ -282,7 +298,7 @@ class TimelineCanvas(tk.Canvas):
                                  fill=theme.FG_MAIN, font=(theme.ui_font_family(), 10))
 
         # --- 無字幕區段斜紋（R5）：>3 秒冇行覆蓋嘅 gap ---
-        lane_bottom = y_top + max(len(view_lines), 1) * LANE_H
+        lane_bottom = y_top + n_lanes * LANE_H
         self._draw_gaps(view, ppm, w, y_top, lane_bottom)
 
         # --- 播放頭 ---
@@ -310,8 +326,8 @@ class TimelineCanvas(tk.Canvas):
                                       oy + OVERVIEW_H - 2, fill="#5a5a6e", outline="")
             self._overview_y = oy   # 畀 hit-test 知概覽條範圍（可㩒可拖嚟平移）
 
-        self.configure(scrollregion=(0, 0, w, max(self.winfo_height(),
-                                                  y_top + max(len(view_lines), 1) * LANE_H)))
+        # 固定 lane：scrollregion 鎖死畫布大小 —— 冇垂直捲動
+        self.configure(scrollregion=(0, 0, w, self.winfo_height()))
 
     def _draw_gaps(self, view: int, ppm: float, w: int, y_top: int, y_bottom: int) -> None:
         """無字幕區段斜紋（R5）：>3 秒冇行覆蓋嘅時間段畫灰斜紋。"""
