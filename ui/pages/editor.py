@@ -60,25 +60,28 @@ class EditorPage(ttkb.Frame):
 
         self._build_finetune(left)
 
-        # --- 右欄：preview（commit 7）+ 分隔條 + 時間軸 ---
-        right = ttkb.Frame(body, bootstyle="dark")
-        right.pack(side="left", fill="both", expand=True)
+        # --- 右欄：大 preview 窗 + 可拖曳分隔條 + 時間軸 ---
+        self._right = ttkb.Frame(body, bootstyle="dark")
+        self._right.pack(side="left", fill="both", expand=True)
 
-        self._preview_slot = ttkb.LabelFrame(right, text="影片預覽（commit 7 填入）",
-                                             bootstyle="dark")
-        self._preview_slot.pack(fill="both", expand=True)
-        ttkb.Label(self._preview_slot, text="大 preview 窗：16:9 畫面 + 字幕疊圖 + 2fps scrub strip",
-                   bootstyle="secondary").pack(expand=True)
+        self._preview_slot = ttkb.LabelFrame(self._right, text="影片預覽", bootstyle="dark")
+        from ..widgets.preview import PreviewPane
+        self._preview = PreviewPane(self._preview_slot, self._state, on_seek=self._on_seek)
+        self._preview.pack(fill="both", expand=True, padx=2, pady=2)
 
-        self._separator = tk.Canvas(right, height=8, bg=theme.BG_HOVER,
+        # 可拖曳分隔條（§6.7.2：預覽 30%–75%；V17）
+        self._separator = tk.Canvas(self._right, height=8, bg=theme.BG_HOVER,
                                     highlightthickness=0, cursor="sb_v_double_arrow")
-        self._separator.pack(fill="x", pady=2)
+        self._separator.bind("<Button-1>", self._on_separator_press)
+        self._separator.bind("<B1-Motion>", self._on_separator_drag)
 
-        tl_box = ttkb.LabelFrame(right, text="時間軸 · 波形", bootstyle="dark")
-        tl_box.pack(fill="both", expand=True)
-        self._timeline = TimelineCanvas(tl_box, self._state,
-                                        on_seek=self._on_seek)
+        self._tl_box = ttkb.LabelFrame(self._right, text="時間軸 · 波形", bootstyle="dark")
+        self._timeline = TimelineCanvas(self._tl_box, self._state, on_seek=self._on_seek)
         self._timeline.pack(fill="both", expand=True, padx=2, pady=2)
+
+        self._preview_ratio = 0.55
+        self._right.bind("<Configure>", lambda _e: self._relayout_right())
+        self._relayout_right()
 
         # --- 狀態列 ---
         self._build_statusbar()
@@ -119,8 +122,10 @@ class EditorPage(ttkb.Frame):
         self._est_chip = ttkb.Label(bar, text="◻ 只顯示估算字", padding=(8, 3),
                                     bootstyle="secondary")
         self._est_chip.pack(side="left", padx=2)
-        self._overlay_chip = ttkb.Label(bar, text="◻ 字幕疊圖", padding=(8, 3),
-                                        bootstyle="secondary")
+        self._overlay_on = tk.BooleanVar(value=True)
+        self._overlay_chip = ttkb.Checkbutton(
+            bar, text="字幕疊圖", variable=self._overlay_on,
+            bootstyle="dark-round-toggle", command=self._toggle_overlay)
         self._overlay_chip.pack(side="left", padx=2)
 
         self._time_var = tk.StringVar(value="00:00.000 / 00:00.000")
@@ -199,6 +204,19 @@ class EditorPage(ttkb.Frame):
                 if new:
                     self._state.reassign_video(new)
         self._load_audio()
+        self._load_thumbs()
+
+    def _load_thumbs(self) -> None:
+        """縮圖抽取（§6.7.4）：背景 thread + 快取；冇原片就顯示提示。"""
+        from .. import settings as ui_settings
+        video = self._state.video_path
+        data = self.master.settings_data
+        ffmpeg = ui_settings.detect_ffmpeg(data)
+        ffprobe = ui_settings.detect_ffprobe(data)
+        if video is None or not video.is_file() or not ffmpeg or not ffprobe:
+            self._preview.start_thumbs(None, "", "")
+            return
+        self._preview.start_thumbs(video, ffmpeg, ffprobe)
 
     def _load_audio(self) -> None:
         """背景解碼音訊 + 波形（§6.6）；失敗靜音降級，其他功能照用。"""
@@ -451,6 +469,31 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
     # 狀態顯示
     # ------------------------------------------------------------------
+
+    def _toggle_overlay(self) -> None:
+        self._preview.set_overlay_visible(self._overlay_on.get())
+
+    def _relayout_right(self) -> None:
+        """分隔條版面（§6.1）：預覽 / 時間軸按 ratio 分；下限 30% 上限 75%。"""
+        h = self._right.winfo_height()
+        if h < 120:
+            return
+        prev_h = int(h * self._preview_ratio)
+        self._preview_slot.place(x=0, y=0, relwidth=1.0, height=max(100, prev_h))
+        sep_y = max(100, prev_h)
+        self._separator.place(x=0, y=sep_y, relwidth=1.0, height=8)
+        tl_y = sep_y + 8
+        self._tl_box.place(x=0, y=tl_y, relwidth=1.0, relheight=1.0, height=-tl_y)
+
+    def _on_separator_press(self, event) -> None:
+        self._sep_y0 = event.y_root
+        self._sep_ratio0 = self._preview_ratio
+
+    def _on_separator_drag(self, event) -> None:
+        h = max(self._right.winfo_height(), 1)
+        dy = event.y_root - getattr(self, "_sep_y0", event.y_root)
+        self._preview_ratio = max(0.30, min(0.75, self._sep_ratio0 + dy / h))
+        self._relayout_right()
 
     def _refresh_buttons(self) -> None:
         self._undo_btn.configure(
