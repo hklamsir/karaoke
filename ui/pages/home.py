@@ -422,11 +422,16 @@ class HomePage(ttkb.Frame):
         except (ValueError, tk.TclError):
             messagebox.showerror("樣式參數錯誤", "字級 / 留白要係整數。", parent=self)
             return None
+        # API key 優先序（同設定頁一致）：env > .env > settings.json
+        # ⚠️ main.resolve_api_key 淨係識讀 env/.env，settings.json 嗰個要 UI 傳入
+        from .. import settings as ui_settings
+        api_key, _key_source = ui_settings.resolve_api_key(self.master.settings_data)
         return main.GenerateOptions(
             input=video,
             output_dir=Path(self._output_var.get().strip()) if self._output_var.get().strip() else None,
             model=self._model_var.get().strip(),
             language=self._lang_var.get(),
+            api_key=api_key or None,
             separate_vocals=self._separate_var.get(),
             max_chars=int(self._adv_spins["max_chars"].get()),
             gap_threshold_ms=int(self._adv_spins["gap_threshold_ms"].get()),
