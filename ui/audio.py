@@ -159,6 +159,20 @@ class AudioEngine:
         self._play_t0 = __import__("time").monotonic()
         self._start_offset_ms = start
 
+    def seek(self, ms: int) -> None:
+        """游標跳轉（時間軸拖曳 / ⏮⏭ / 主頁 seek 共用）。
+
+        播放中 → 由新位置重新起播（拖曳會連續重啟，聽感係「跟手跳段」，
+        §6.6 粒度 10-20ms 對 40-100ms 字級夠用）；停咗 → 只記住起點。
+        """
+        if not self.available or not self._pcm:
+            return
+        ms = max(0, min(ms, self.duration_ms - 1))
+        if self._playing:
+            self.play(ms)
+        else:
+            self._start_offset_ms = ms
+
     def stop(self) -> None:
         if self.available and self._channel is not None:
             try:

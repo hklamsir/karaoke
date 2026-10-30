@@ -421,9 +421,6 @@ class EditorPage(ttkb.Frame):
         if not self._state.redo():
             self.winfo_toplevel().bell()
 
-    def _toggle_play(self) -> None:
-        pass   # commit 6（pygame）
-
     def _jump_line(self, direction: int) -> None:
         lines = self._state.lines
         if not lines:
