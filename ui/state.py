@@ -66,6 +66,7 @@ class EditorState:
         self.view_start_ms = 0
         self.selected = None
         self.selected_word = None
+        self._refresh_texts()   # 舊檔 line.text 可能有幽靈空格，開檔即以 words 重建
         self.notify("load")
 
     def save(self) -> None:
@@ -109,7 +110,14 @@ class EditorState:
         唔做嘅話歌詞樹顯示嘅係**舊 cached text**，用戶會以為操作冇生效
         （實測：斷句新增嗰行顯示空白）。完整 N1–N7（時間 clip 等）留返 save()。
         """
+        import re
         for line in self.lines:
+            # 詞文本以 chars 為準重建（改字重建嗰陣空格可能藏咗入 word text 中間，
+            # strip() 清唔到 —— 用戶兩次回報歌詞樹幽靈空格）
+            for word in line.get("words") or []:
+                chars = word.get("chars") or []
+                if chars:
+                    word["text"] = "".join(c.get("text", "") for c in chars)
             line["text"] = models.display_text(line)
 
     # ------------------------------------------------------------------

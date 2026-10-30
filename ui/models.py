@@ -81,9 +81,9 @@ def display_text(line: dict, strip_punctuation: bool = True) -> str:
     parts: list[str] = []
     n = len(words)
     for i, word in enumerate(words):
-        # strip()：詞文本可能有殘留空格（用戶實測：改字/合併後 tree 顯示幽靈空格，
-        # 但 words/chars 乾淨）—— 顯示層一律清走，唔影響時間軸
-        parts.append((word.get("text") or "").strip())
+        # 清走詞文本所有空白（唔止頭尾）—— 改字/合併後空格可能藏喺 word text
+        # 中間（用戶兩次回報歌詞樹幽靈空格）；行中空格只由 punctuation 規則產生
+        parts.append(re.sub(r"\s+", "", word.get("text") or ""))
         punct = word.get("punctuation") or ""
         if not punct:
             continue

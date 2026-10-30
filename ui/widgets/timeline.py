@@ -149,9 +149,10 @@ class TimelineCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
-        if reason in ("select", "follow"):
-            # lane 堆疊超出可視高度（24 行 × 22px）→ 自動捲動到當前行，
-            # 唔係嘅話去到後面嘅句會「見唔到字塊」（用戶實測）
+        if reason == "select":
+            # 淨係「用戶手動點選」先自動捲動；播放跟播（follow）唔好捲——
+            # 52 行嘅歌每幾秒跳一版，體感係「捲軸黐住時間郁最終消失」（用戶兩次回報）。
+            # 播放時歌詞樹反白已經夠導航，用戶自己決定幾時捲。
             self._scroll_to_line(self._state.current_line_i)
         self._request_redraw()
 
