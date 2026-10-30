@@ -8,6 +8,7 @@ _smoke/
 
 # 規劃文件（慣例：先討論確認，排除於 production commit）
 docs/標點斷行計劃書.md
+docs/字幕編輯器計劃書.md
 
 # Agent 工作資料（工作日誌／記憶，唔屬於專案代碼）
 .workbuddy/
