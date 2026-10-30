@@ -156,18 +156,26 @@ class TimelineCanvas(tk.Canvas):
         self._request_redraw()
 
     def _scroll_to_line(self, line_i: int) -> None:
-        """垂直捲動令當前行 lane 入鏡（頂部留少少波形做 context）。"""
+        """垂直捲動令當前行 lane 入鏡——**已經入鏡就唔捲**。
+
+        ⚠️ content_h 必須同 _redraw_now 嘅 scrollregion 一致（要計 y_top），
+        唔係嘅話 fraction 偏大，跟播會愈捲愈上直至 lane 消失（用戶實測）。
+        """
         lines = self._state.lines
         if not lines:
             return
         y_top = self.waveform_y_top() + 2
         if self._peaks is not None and len(self._peaks) > 0:
             y_top += WAVE_H + 4
+        content_h = y_top + max(1, len(lines)) * LANE_H
         lane_y = y_top + max(0, line_i) * LANE_H
+        view_top = self.yview()[0] * content_h
         view_h = max(1, self.winfo_height() - OVERVIEW_H - y_top)
-        content_h = max(view_h, len(lines) * LANE_H)
-        top = max(0, lane_y - LANE_H * 2)
-        self.yview_moveto(min(1.0, top / content_h))
+        # 已入鏡（上下各留一行 buffer）就唔好郁
+        if view_top + LANE_H <= lane_y <= view_top + view_h - LANE_H:
+            return
+        top = max(0.0, min(content_h - view_h, lane_y - y_top - LANE_H * 2))
+        self.yview_moveto(top / content_h)
 
     def set_waveform(self, peaks, duration_ms: int) -> None:
         """音訊載入完成後畀時間軸畫波形背景（§6.6）。"""

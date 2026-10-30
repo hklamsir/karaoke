@@ -235,16 +235,18 @@ class EditorPage(ttkb.Frame):
         ttkb.Spinbox(row, textvariable=self._end_var, from_=0, to=10_000_000,
                      increment=10, width=8,
                      font=(mono, 9)).pack(side="left", padx=2)
-        ttkb.Button(row, text="套用", bootstyle="secondary", takefocus=False,
-                    command=self._apply_ft).pack(side="left", padx=theme.SPACE)
+        # ⚠️ 套用掣原本喺呢行尾——左欄 260px 唔夠闊，被裁出畫面外（用戶實測
+        # 「冇確定掣」）。搬落 row2 頭，同斷句/插入字並排。
 
         row2 = ttkb.Frame(box, bootstyle="dark")
         row2.pack(fill="x", padx=2, pady=(0, 2))
-        ttkb.Button(row2, text="✂ 斷句（選中詞後）", bootstyle="secondary", takefocus=False,
-                    command=self._split_at_word).pack(side="left", padx=(0, 2))
-        ttkb.Button(row2, text="＋ 插入字", bootstyle="secondary", takefocus=False,
+        ttkb.Button(row2, text="✓ 確定", bootstyle="secondary", takefocus=False,
+                    command=self._apply_ft).pack(side="left", padx=(0, 2))
+        ttkb.Button(row2, text="✂ 斷句", bootstyle="secondary", takefocus=False,
+                    command=self._split_at_word).pack(side="left", padx=2)
+        ttkb.Button(row2, text="＋ 插字", bootstyle="secondary", takefocus=False,
                     command=self._insert_char).pack(side="left", padx=2)
-        ttkb.Button(row2, text="↻ 重新劃分", bootstyle="secondary", takefocus=False,
+        ttkb.Button(row2, text="↻ 重劃", bootstyle="secondary", takefocus=False,
                     command=self._respawn_selected_word).pack(side="left", padx=2)
     # ------------------------------------------------------------------
     # 開檔 / 存檔（§5.3 / E2）
