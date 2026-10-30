@@ -1,0 +1,222 @@
+<svg viewBox="0 0 1180 760" width="1180" height="760" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>設定頁 · 版面線框圖</title>
+<desc>字幕編輯器 UI 的設定頁線框圖：左側 sidebar 導航、DashScope API 設定、工具路徑、預設值、外觀四張卡片，右側狀態檢查、快取與暫存、關於三張卡片，底部狀態列。</desc>
+<style>
+.ui{font-family:"Microsoft JhengHei UI","Microsoft JhengHei","Noto Sans CJK TC",sans-serif}
+.mono{font-family:"Cascadia Mono","Cascadia Code",Consolas,monospace}
+.t{font-size:11px}.t2{font-size:12px}.lbl{font-size:12px;fill:#8a8a9c}
+.h{font-size:13px;fill:#e6e6ec;font-weight:500}
+</style>
+
+<rect x="0" y="0" width="1180" height="760" fill="#16161d"/>
+
+<rect x="8" y="8" width="100" height="744" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui t" x="20" y="30" fill="#e6e6ec" font-weight="500">Karaoke</text>
+<rect x="16" y="42" width="84" height="1" fill="#3a3a48"/>
+
+<circle cx="24" cy="70" r="3.5" fill="#5f5e5a"/>
+<text class="ui t2" x="36" y="74" fill="#8a8a9c">主頁</text>
+
+<circle cx="24" cy="104" r="3.5" fill="#5f5e5a"/>
+<text class="ui t2" x="36" y="108" fill="#8a8a9c">編輯器</text>
+
+<rect x="8" y="126" width="3" height="28" rx="1.5" fill="#3AA0FF"/>
+<circle cx="24" cy="140" r="3.5" fill="#3AA0FF"/>
+<text class="ui t2" x="36" y="144" fill="#e6e6ec">設定</text>
+
+<circle cx="24" cy="174" r="3.5" fill="#5f5e5a"/>
+<text class="ui t2" x="36" y="178" fill="#8a8a9c">幫助</text>
+
+<rect x="16" y="700" width="84" height="40" rx="6" fill="#2b2b36"/>
+<text class="ui t" x="26" y="716" fill="#8a8a9c">FFmpeg</text>
+<circle cx="30" cy="730" r="3" fill="#3DD68C"/>
+<text class="ui t" x="40" y="734" fill="#8a8a9c">v7.1 ✓</text>
+
+<rect x="116" y="8" width="1056" height="36" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui t2" x="132" y="30" fill="#e6e6ec">設定</text>
+<rect x="166" y="16" width="1" height="20" fill="#3a3a48"/>
+<text class="ui t" x="180" y="30" fill="#5f5e5a">所有改動即時儲存到 ~/.karaoke/settings.json</text>
+<rect x="1012" y="16" width="146" height="20" rx="10" fill="#2b2b36" stroke="#3a3a48"/>
+<circle cx="1026" cy="26" r="3.5" fill="#3DD68C"/>
+<text class="ui t" x="1036" y="30" fill="#e6e6ec">已儲存 · 剛剛</text>
+
+<rect x="116" y="52" width="584" height="144" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="136" y="76">DashScope API</text>
+<rect x="516" y="62" width="168" height="20" rx="10" fill="#2b2b36" stroke="#3DD68C"/>
+<circle cx="530" cy="72" r="3.5" fill="#3DD68C"/>
+<text class="ui t" x="540" y="76" fill="#8a8a9c">已設定 · 環境變數優先</text>
+
+<text class="ui t2" x="136" y="106" fill="#8a8a9c">API Key</text>
+<rect x="136" y="116" width="300" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t2" x="146" y="135" fill="#8a8a9c">••••••••••••••••••••••</text>
+<rect x="444" y="116" width="62" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="458" y="135" fill="#e6e6ec">顯示</text>
+<rect x="514" y="116" width="100" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="530" y="135" fill="#e6e6ec">測試連線</text>
+
+<text class="ui t" x="136" y="168" fill="#5f5e5a">優先序：--api-key 參數 &gt; 環境變數 DASHSCOPE_API_KEY &gt; .env &gt; settings.json</text>
+<text class="ui t" x="136" y="186" fill="#5f5e5a">Windows 上可選 DPAPI 加密 · 離開電腦唔會同步</text>
+
+<rect x="116" y="204" width="584" height="164" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="136" y="228">工具路徑</text>
+<rect x="536" y="216" width="16" height="16" rx="3" fill="#3AA0FF"/>
+<path d="M539 224 L543 228 L550 220" stroke="#0b1a2b" stroke-width="2" fill="none" stroke-linecap="round"/>
+<text class="ui t" x="560" y="228" fill="#8a8a9c">自動偵測（優先用 PATH）</text>
+
+<text class="ui t2" x="136" y="256" fill="#8a8a9c">FFmpeg</text>
+<rect x="136" y="262" width="380" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="146" y="281" fill="#e6e6ec">C:\Users\pslam\Documents\Programs\ffmpeg\bin\ffmpeg.exe</text>
+<rect x="526" y="262" width="88" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="556" y="281" fill="#e6e6ec">瀏覽…</text>
+<circle cx="640" cy="277" r="4" fill="#3DD68C"/>
+<text class="ui t" x="652" y="281" fill="#5f5e5a">7.1 · libass ✓</text>
+
+<text class="ui t2" x="136" y="308" fill="#8a8a9c">FFprobe</text>
+<rect x="136" y="314" width="380" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="mono t" x="146" y="333" fill="#e6e6ec">C:\Users\pslam\Documents\Programs\ffmpeg\bin\ffprobe.exe</text>
+<rect x="526" y="314" width="88" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="556" y="333" fill="#e6e6ec">瀏覽…</text>
+<circle cx="640" cy="329" r="4" fill="#3DD68C"/>
+<text class="ui t" x="652" y="333" fill="#5f5e5a">7.1 ✓</text>
+
+<text class="ui t" x="136" y="360" fill="#5f5e5a">留空則自動用 PATH 搜尋（shutil.which）· 燒錄需要 ffmpeg + ffprobe</text>
+
+<rect x="116" y="376" width="584" height="192" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="136" y="400">預設值</text>
+
+<text class="ui t2" x="136" y="426" fill="#8a8a9c">預設輸入資料夾</text>
+<rect x="136" y="434" width="380" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="146" y="453" fill="#e6e6ec">C:\Users\pslam\Videos</text>
+<rect x="526" y="434" width="88" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="556" y="453" fill="#e6e6ec">瀏覽…</text>
+
+<text class="ui t2" x="136" y="478" fill="#8a8a9c">預設輸出資料夾</text>
+<rect x="136" y="486" width="380" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="146" y="505" fill="#e6e6ec">C:\Users\pslam\Videos\subs</text>
+<rect x="526" y="486" width="88" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="556" y="505" fill="#e6e6ec">瀏覽…</text>
+
+<text class="ui t2" x="136" y="534" fill="#8a8a9c">預設語言</text>
+<circle cx="150" cy="530" r="6" fill="#3AA0FF"/>
+<circle cx="150" cy="530" r="2.5" fill="#0b1a2b"/>
+<text class="ui t2" x="162" y="534" fill="#e6e6ec">粵語／中文</text>
+<circle cx="250" cy="530" r="6" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="262" y="534" fill="#8a8a9c">英文</text>
+
+<text class="ui t2" x="360" y="534" fill="#8a8a9c">預設樣式</text>
+<rect x="360" y="520" width="16" height="16" rx="3" fill="#3AA0FF"/>
+<path d="M363 528 L367 532 L374 524" stroke="#0b1a2b" stroke-width="2" fill="none" stroke-linecap="round"/>
+<text class="ui t" x="384" y="534" fill="#8a8a9c">沿用上次任務</text>
+<text class="mono t" x="500" y="534" fill="#5f5e5a">JhengHei · 48 · #FFFF00</text>
+
+<text class="ui t" x="136" y="560" fill="#5f5e5a">預設值會預填喺主頁，但唔會覆蓋你當次嘅選擇</text>
+
+<rect x="116" y="576" width="584" height="124" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="136" y="600">外觀</text>
+
+<text class="ui t2" x="136" y="626" fill="#8a8a9c">主題</text>
+<rect x="136" y="634" width="180" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="146" y="653" fill="#e6e6ec">darkly</text>
+<path d="M296 645 L302 651 L308 645 Z" fill="#8a8a9c"/>
+
+<text class="ui t2" x="360" y="626" fill="#8a8a9c">字體大小</text>
+<rect x="360" y="634" width="140" height="30" rx="5" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t2" x="370" y="653" fill="#e6e6ec">100%</text>
+<path d="M480 645 L486 651 L492 645 Z" fill="#8a8a9c"/>
+
+<text class="ui t2" x="136" y="686" fill="#8a8a9c">動畫效果</text>
+<rect x="136" y="672" width="16" height="16" rx="3" fill="#3AA0FF"/>
+<path d="M139 680 L143 684 L150 676" stroke="#0b1a2b" stroke-width="2" fill="none" stroke-linecap="round"/>
+<text class="ui t" x="160" y="686" fill="#8a8a9c">開啟（拖曳字塊時嘅回饋 · 系統「減少動態效果」時自動關閉）</text>
+
+<rect x="708" y="52" width="464" height="244" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="728" y="76">狀態檢查</text>
+<rect x="1086" y="62" width="70" height="22" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="1096" y="77" fill="#e6e6ec">重新檢查</text>
+
+<circle cx="733" cy="102" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="106" fill="#e6e6ec">ffmpeg</text>
+<text class="mono t" x="1100" y="106" fill="#8a8a9c" text-anchor="end">7.1 · libass ✓</text>
+<line x1="728" y1="112" x2="1152" y2="112" stroke="#2b2b36"/>
+
+<circle cx="733" cy="124" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="128" fill="#e6e6ec">ffprobe</text>
+<text class="mono t" x="1100" y="128" fill="#8a8a9c" text-anchor="end">7.1</text>
+<line x1="728" y1="134" x2="1152" y2="134" stroke="#2b2b36"/>
+
+<circle cx="733" cy="146" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="150" fill="#e6e6ec">DashScope API Key</text>
+<text class="mono t" x="1100" y="150" fill="#8a8a9c" text-anchor="end">環境變數優先</text>
+<line x1="728" y1="156" x2="1152" y2="156" stroke="#2b2b36"/>
+
+<circle cx="733" cy="168" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="172" fill="#e6e6ec">Python · tkinter</text>
+<text class="mono t" x="1100" y="172" fill="#8a8a9c" text-anchor="end">3.13.14 · 8.6.13</text>
+<line x1="728" y1="178" x2="1152" y2="178" stroke="#2b2b36"/>
+
+<circle cx="733" cy="190" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="194" fill="#e6e6ec">ttkbootstrap</text>
+<text class="mono t" x="1100" y="194" fill="#8a8a9c" text-anchor="end">1.10.1</text>
+<line x1="728" y1="200" x2="1152" y2="200" stroke="#2b2b36"/>
+
+<circle cx="733" cy="212" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="216" fill="#e6e6ec">numpy</text>
+<text class="mono t" x="1100" y="216" fill="#8a8a9c" text-anchor="end">2.1.0</text>
+<line x1="728" y1="222" x2="1152" y2="222" stroke="#2b2b36"/>
+
+<circle cx="733" cy="234" r="4" fill="#3DD68C"/>
+<text class="ui t2" x="746" y="238" fill="#e6e6ec">pygame</text>
+<text class="mono t" x="1100" y="238" fill="#8a8a9c" text-anchor="end">2.5.2</text>
+<line x1="728" y1="244" x2="1152" y2="244" stroke="#2b2b36"/>
+
+<circle cx="733" cy="256" r="4" fill="#FF5C5C"/>
+<text class="ui t2" x="746" y="260" fill="#e6e6ec">tkinterdnd2</text>
+<text class="mono t" x="1100" y="260" fill="#8a8a9c" text-anchor="end">未安裝 · 拖放已停用</text>
+
+<rect x="708" y="304" width="464" height="164" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="728" y="328">快取與暫存</text>
+
+<text class="ui t2" x="728" y="358" fill="#e6e6ec">影片縮圖快取</text>
+<text class="mono t" x="1152" y="358" fill="#8a8a9c" text-anchor="end">12 個影片 · 48.2 MB</text>
+<line x1="728" y1="368" x2="1152" y2="368" stroke="#2b2b36"/>
+
+<text class="ui t2" x="728" y="390" fill="#e6e6ec">解碼 WAV 暫存</text>
+<text class="mono t" x="1152" y="390" fill="#8a8a9c" text-anchor="end">0.4 MB · 每次開檔自動清</text>
+<line x1="728" y1="400" x2="1152" y2="400" stroke="#2b2b36"/>
+
+<text class="ui t2" x="728" y="422" fill="#e6e6ec">ASR 原始 JSON</text>
+<text class="mono t" x="1152" y="422" fill="#8a8a9c" text-anchor="end">留喺輸出資料夾</text>
+
+<rect x="728" y="434" width="140" height="26" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="740" y="451" fill="#e6e6ec">清除縮圖快取</text>
+<rect x="876" y="434" width="140" height="26" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="888" y="451" fill="#e6e6ec">開啟快取資料夾</text>
+
+<rect x="708" y="476" width="464" height="224" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<text class="ui h" x="728" y="500">關於</text>
+<text class="ui" x="728" y="530" font-size="16" fill="#e6e6ec" font-weight="500">Karaoke 字幕產生器</text>
+<text class="mono t" x="728" y="550" fill="#8a8a9c">v0.1 · ttkbootstrap darkly · Python 3.13</text>
+<line x1="728" y1="564" x2="1152" y2="564" stroke="#2b2b36"/>
+
+<text class="ui t2" x="728" y="588" fill="#8a8a9c">設定檔</text>
+<text class="mono t" x="1152" y="588" fill="#8a8a9c" text-anchor="end">~/.karaoke/settings.json</text>
+<text class="ui t2" x="728" y="610" fill="#8a8a9c">縮圖快取</text>
+<text class="mono t" x="1152" y="610" fill="#8a8a9c" text-anchor="end">~/.karaoke/thumbs/</text>
+<text class="ui t2" x="728" y="632" fill="#8a8a9c">使用說明</text>
+<text class="mono t" x="1152" y="632" fill="#8a8a9c" text-anchor="end">docs/使用說明.md</text>
+<text class="ui t2" x="728" y="654" fill="#8a8a9c">架構決策紀錄</text>
+<text class="mono t" x="1152" y="654" fill="#8a8a9c" text-anchor="end">ADR-001 ~ ADR-014</text>
+
+<rect x="728" y="664" width="110" height="26" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="740" y="681" fill="#e6e6ec">開啟設定檔</text>
+<rect x="846" y="664" width="120" height="26" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="858" y="681" fill="#e6e6ec">開啟說明文件</text>
+<rect x="974" y="664" width="100" height="26" rx="4" fill="#2b2b36" stroke="#3a3a48"/>
+<text class="ui t" x="986" y="681" fill="#e6e6ec">檢查更新</text>
+
+<rect x="116" y="708" width="1056" height="44" rx="8" fill="#1e1e26" stroke="#3a3a48" stroke-width="1"/>
+<circle cx="132" cy="730" r="3.5" fill="#3DD68C"/>
+<text class="ui t" x="144" y="734" fill="#8a8a9c">設定已儲存 · ~/.karaoke/settings.json</text>
+<text class="ui t" x="420" y="734" fill="#5f5e5a">環境變數 DASHSCOPE_API_KEY 永遠優先過 settings.json（避免本機 dev 環境同 UI 設定打架）</text>
+<text class="mono t" x="1152" y="734" fill="#5f5e5a" text-anchor="end">v0.1</text>
+</svg>
