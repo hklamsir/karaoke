@@ -37,7 +37,7 @@ import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 # ---------------------------------------------------------------------------
 # 常數與預設值
@@ -1096,25 +1096,74 @@ def resolve_api_key(cli_key: str | None) -> str:
     sys.exit(2)
 
 
-def style_from_args(args: argparse.Namespace, width: int, height: int) -> StyleConfig:
-    return StyleConfig(
-        play_res_x=width, play_res_y=height,
-        font_name=args.font_name, font_size=args.font_size,
-        primary_color=args.primary_color,
-        secondary_color=args.secondary_color,
-        outline_color=args.outline_color,
-        margin_v=args.margin_v,
-    )
+# ---------------------------------------------------------------------------
+# 純 API 層（字幕編輯器 UI 經 import main 呼叫；CLI cmd_* 係薄包裝）
+# ---------------------------------------------------------------------------
+
+#: 階段回呼：stage ∈ {"抽音","上傳","ASR","斷句","渲染","燒錄"}；message 係人讀進度說明。
+#: UI 靠呢個做分階段進度燈（B4 決定），CLI 傳 None 完全不受影響。
+ProgressCB = Callable[[str, str], None]
 
 
-def cmd_generate(args: argparse.Namespace) -> int:
-    video = Path(args.input).expanduser()
+@dataclass
+class GenerateOptions:
+    """generate 全部參數（UI / CLI 共用；對應 CLI 旗標見 build_parser）。"""
+
+    input: Path
+    output_dir: Path | None = None
+    model: str = DEFAULT_ASR_MODEL
+    language: str | None = None
+    api_key: str | None = None
+    separate_vocals: bool = False
+    max_chars: int = 18
+    gap_threshold_ms: int = 800
+    hold_ms: int = 300
+    min_clause_chars: int = MIN_CLAUSE_CHARS
+    min_clause_ms: int = MIN_CLAUSE_MS
+    merge_max_chars: int = MERGE_MAX_CHARS
+    keep_punctuation: bool = False
+    save_raw: bool = False
+    poll_interval_s: int = 3
+    #: PlayRes 會由 generate_timings 按原片實測改寫（ADR-006），UI 唔使預先填
+    style: StyleConfig = field(default_factory=StyleConfig)
+
+
+@dataclass
+class GenerateResult:
+    """generate_timings() 回傳：UI 用嚟列產出清單 + 跳編輯器。"""
+
+    json_path: Path
+    ass_path: Path
+    raw_asr_path: Path | None
+    num_lines: int
+    num_chars: int
+    num_estimated_words: int
+
+
+def generate_timings(opts: GenerateOptions, *,
+                     progress_cb: ProgressCB | None = None) -> GenerateResult:
+    """影片 → 百煉 ASR → timings.json + ass（唔出影片）。
+
+    行為同舊 cmd_generate 完全一致（log 逐句相同）；錯誤路徑用 ``sys.exit``
+    保持 CLI exit code —— UI 背景 thread 呼叫時要 ``except BaseException``。
+
+    Args:
+        opts: 全部 generate 參數。
+        progress_cb: 階段回呼（可選），stage ∈ 抽音/上傳/ASR/斷句/渲染。
+
+    Returns:
+        GenerateResult：產出路徑 + 統計。
+
+    Raises:
+        SystemExit: 輸入唔存在 / API key 缺 / ASR 失敗等（保留 CLI exit code）。
+    """
+    video = opts.input
     if not video.is_file():
         LOGGER.error("輸入影片唔存在：%s", video)
-        return 2
+        sys.exit(2)
 
-    api_key = resolve_api_key(args.api_key)
-    output_dir = Path(args.output_dir).expanduser() if args.output_dir else video.parent
+    api_key = resolve_api_key(opts.api_key)
+    output_dir = opts.output_dir or video.parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ffmpeg = find_ffmpeg()
@@ -1131,52 +1180,66 @@ def cmd_generate(args: argparse.Namespace) -> int:
 
     workdir = Path(tempfile.mkdtemp(prefix="karaoke_"))
     try:
+        if progress_cb:
+            progress_cb("抽音", "抽取 16kHz 單聲道音訊 …")
         asr_source = extract_temp_audio(ffmpeg, video, workdir)
-        if args.separate_vocals:
+        if opts.separate_vocals:
+            if progress_cb:
+                progress_cb("抽音", "人聲分離（首次需下載模型）…")
             asr_source = separate_vocals(asr_source, workdir)
 
+        if progress_cb:
+            progress_cb("上傳", "上傳音訊到百煉臨時儲存 …")
         uploaded_url = upload_audio(asr_source)
 
-        hints, warn = resolve_language_hints(args.language)
+        hints, warn = resolve_language_hints(opts.language)
         if warn:
             LOGGER.warning(warn)
+        if progress_cb:
+            progress_cb("ASR", "提交異步轉寫任務並輪詢 …")
         raw = submit_and_wait_transcription(
-            model=args.model, uploaded_url=uploaded_url, language_hints=hints,
-            poll_interval_s=args.poll_interval,
+            model=opts.model, uploaded_url=uploaded_url, language_hints=hints,
+            poll_interval_s=opts.poll_interval_s,
         )
-        if args.save_raw:
-            (output_dir / f"{video.stem}_raw_asr.json").write_text(
+        raw_asr_path: Path | None = None
+        if opts.save_raw:
+            raw_asr_path = output_dir / f"{video.stem}_raw_asr.json"
+            raw_asr_path.write_text(
                 json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        if progress_cb:
+            progress_cb("斷句", "解析 ASR 結果、拆字、OpenCC、斷句 …")
         sentences = parse_asr_result(raw)
         groups = build_word_groups(sentences)
         groups = normalize_groups_opencc(groups)
-        lines = split_into_lines(groups, max_chars=args.max_chars,
-                                 gap_threshold_ms=args.gap_threshold, hold_ms=args.hold_ms,
-                                 min_clause_chars=args.min_clause_chars,
-                                 min_clause_ms=args.min_clause_ms,
-                                 merge_max_chars=args.merge_max_chars)
+        lines = split_into_lines(groups, max_chars=opts.max_chars,
+                                 gap_threshold_ms=opts.gap_threshold_ms, hold_ms=opts.hold_ms,
+                                 min_clause_chars=opts.min_clause_chars,
+                                 min_clause_ms=opts.min_clause_ms,
+                                 merge_max_chars=opts.merge_max_chars)
         if not lines:
             LOGGER.error("冇產生任何字幕行，可能係 ASR 冇識別到內容。")
-            return 4
+            sys.exit(4)
 
-        style = style_from_args(args, width, height)
+        style = replace(opts.style, play_res_x=width, play_res_y=height)   # ADR-006
+        if progress_cb:
+            progress_cb("渲染", "寫出 timings.json + ASS …")
         transcripts = (raw.get("transcripts") or [{}])[0]
         meta = {
             "video": str(video),
             "video_width": width,
             "video_height": height,
-            "model": args.model,
+            "model": opts.model,
             "language_hints": hints,
             "asr_content_duration_ms": transcripts.get("content_duration_in_milliseconds"),
             "opencc": DEFAULT_OPENCC_CONFIG if has_cjk(lines[0].text) else None,
-            "max_chars": args.max_chars,
-            "gap_threshold_ms": args.gap_threshold,
-            "hold_ms": args.hold_ms,
-            "min_clause_chars": args.min_clause_chars,     # ADR-013
-            "min_clause_ms": args.min_clause_ms,           # ADR-013
-            "merge_max_chars": args.merge_max_chars,       # ADR-013 修訂
-            "strip_punctuation": not args.keep_punctuation,   # ADR-013
+            "max_chars": opts.max_chars,
+            "gap_threshold_ms": opts.gap_threshold_ms,
+            "hold_ms": opts.hold_ms,
+            "min_clause_chars": opts.min_clause_chars,     # ADR-013
+            "min_clause_ms": opts.min_clause_ms,           # ADR-013
+            "merge_max_chars": opts.merge_max_chars,       # ADR-013 修訂
+            "strip_punctuation": not opts.keep_punctuation,   # ADR-013
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         }
         doc = lines_to_timings_doc(lines, style, meta)
@@ -1185,12 +1248,13 @@ def cmd_generate(args: argparse.Namespace) -> int:
         LOGGER.info("timings.json 已輸出：%s", json_path)
 
         ass_text = build_karaoke_ass(lines, style,
-                                     strip_punctuation=not args.keep_punctuation)
+                                     strip_punctuation=not opts.keep_punctuation)
         ass_path.write_text(ass_text, encoding="utf-8")
         LOGGER.info("ASS 字幕已輸出：%s", ass_path)
+        num_chars = sum(len(list(ln.iter_chars())) for ln in lines)
+        num_estimated = sum(1 for ln in lines for w in ln.words if w.estimated)
         LOGGER.info("  %d 行 / %d 個 CharSlot / 其中 %d 個係估算出嚟（estimated）",
-                    len(lines), sum(len(list(ln.iter_chars())) for ln in lines),
-                    sum(1 for ln in lines for w in ln.words if w.estimated))
+                    len(lines), num_chars, num_estimated)
         LOGGER.info("  第一行：%s", lines[0].display_text())
     finally:
         if workdir.is_dir():
@@ -1199,12 +1263,52 @@ def cmd_generate(args: argparse.Namespace) -> int:
     LOGGER.info("完成 ✅（淨係出字幕，要出影片請再行 burn）")
     LOGGER.info("  timings : %s", json_path)
     LOGGER.info("  ass     : %s", ass_path)
+    return GenerateResult(json_path=json_path, ass_path=ass_path, raw_asr_path=raw_asr_path,
+                          num_lines=len(lines), num_chars=num_chars,
+                          num_estimated_words=num_estimated)
+
+
+def cmd_generate(args: argparse.Namespace) -> int:
+    """CLI 薄包裝：argparse.Namespace → GenerateOptions → generate_timings()。"""
+    generate_timings(GenerateOptions(
+        input=Path(args.input).expanduser(),
+        output_dir=Path(args.output_dir).expanduser() if args.output_dir else None,
+        model=args.model,
+        language=args.language,
+        api_key=args.api_key,
+        separate_vocals=args.separate_vocals,
+        max_chars=args.max_chars,
+        gap_threshold_ms=args.gap_threshold,
+        hold_ms=args.hold_ms,
+        min_clause_chars=args.min_clause_chars,
+        min_clause_ms=args.min_clause_ms,
+        merge_max_chars=args.merge_max_chars,
+        keep_punctuation=args.keep_punctuation,
+        save_raw=args.save_raw,
+        poll_interval_s=args.poll_interval,
+    ))
     return 0
 
 
 # ---------------------------------------------------------------------------
 # Subcommand: render
 # ---------------------------------------------------------------------------
+
+def render_timings(doc: dict[str, Any], style: StyleConfig | None = None, *,
+                   strip_punctuation: bool = True) -> str:
+    """timings.json dict → ASS 文字（UI 入口）。
+
+    Args:
+        doc: timings.json 反序列化後嘅 dict。
+        style: 覆寫樣式；None 就用 doc 內嵌 style。
+        strip_punctuation: ADR-013 標點處理（UI 對應 doc ``source.strip_punctuation``）。
+
+    Returns:
+        完整 ASS 文字。
+    """
+    lines, doc_style = timings_doc_to_lines(doc)
+    return build_karaoke_ass(lines, style or doc_style, strip_punctuation=strip_punctuation)
+
 
 def cmd_render(args: argparse.Namespace) -> int:
     src = Path(args.timings).expanduser()
@@ -1254,16 +1358,24 @@ def cmd_render(args: argparse.Namespace) -> int:
 # Subcommand: burn
 # ---------------------------------------------------------------------------
 
-def cmd_burn(args: argparse.Namespace) -> int:
-    video = Path(args.input).expanduser()
-    ass_path = Path(args.subtitle).expanduser()
-    if not video.is_file():
-        LOGGER.error("輸入影片唔存在：%s", video)
-        return 2
-    if not ass_path.is_file():
-        LOGGER.error("字幕檔唔存在：%s", ass_path)
-        return 2
+def burn_video(video: Path, ass_path: Path, output_path: Path, *,
+               progress_cb: ProgressCB | None = None) -> Path:
+    """影片 + .ass → 燒錄 mp4（UI 入口；CLI 見 cmd_burn）。
 
+    ADR-012：座標系由 .ass 自己讀出，唔使依賴 timings.json。
+
+    Args:
+        video: 原始 MV 影片。
+        ass_path: 要燒錄嘅 .ass 檔。
+        output_path: 輸出 mp4 路徑。
+        progress_cb: 階段回呼（stage = "燒錄"）。
+
+    Returns:
+        輸出 mp4 路徑。
+
+    Raises:
+        SystemExit: 燒錄失敗（exit code 5，保留 CLI 行為）。
+    """
     ffmpeg = find_ffmpeg()
     ffprobe = find_ffprobe()
 
@@ -1277,11 +1389,29 @@ def cmd_burn(args: argparse.Namespace) -> int:
         LOGGER.warning("ASS 冇寫 PlayRes，改用原片解像度 %dx%d", width, height)
 
     audio_codec = probe_audio_codec(ffprobe, video)
+    if progress_cb:
+        progress_cb("燒錄", "開始燒錄字幕（libx264 crf18 medium）…")
+    burn_subtitles(ffmpeg=ffmpeg, video=video, ass_path=ass_path, output_path=output_path,
+                   play_res_x=width, play_res_y=height, audio_codec=audio_codec)
+    if progress_cb:
+        progress_cb("燒錄", "完成")
+    return output_path
+
+
+def cmd_burn(args: argparse.Namespace) -> int:
+    video = Path(args.input).expanduser()
+    ass_path = Path(args.subtitle).expanduser()
+    if not video.is_file():
+        LOGGER.error("輸入影片唔存在：%s", video)
+        return 2
+    if not ass_path.is_file():
+        LOGGER.error("字幕檔唔存在：%s", ass_path)
+        return 2
+
     output = Path(args.output).expanduser() if args.output else video.with_name(
         f"{video.stem}_karaoke.mp4")
 
-    burn_subtitles(ffmpeg=ffmpeg, video=video, ass_path=ass_path, output_path=output,
-                   play_res_x=width, play_res_y=height, audio_codec=audio_codec)
+    burn_video(video, ass_path, output)
     LOGGER.info("完成 ✅  影片：%s", output)
     return 0
 
