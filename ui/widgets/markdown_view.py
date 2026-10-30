@@ -36,27 +36,28 @@ class MarkdownView(tk.Text):
         super().__init__(master, wrap="word", height=height, state="disabled",
                          bg=theme.BG_PANEL, fg=theme.FG_MAIN, relief="flat",
                          padx=12, pady=10, insertwidth=0,
-                         font=(theme.ui_font_family(), 10))
+                         font=(theme.ui_font_family(), 12))
         mono = theme.mono_font_family()
         ui = theme.ui_font_family()
+        # 用戶需求 #4：幫助頁文字放大 2 級（原 base 10 → 12）
         for tag, cfg in {
-            "h1": ({"font": (ui, 15, "bold"), "foreground": theme.ACCENT,
+            "h1": ({"font": (ui, 17, "bold"), "foreground": theme.ACCENT,
+                    "spacing1": 12, "spacing3": 5}),
+            "h2": ({"font": (ui, 15, "bold"), "foreground": theme.ACCENT,
                     "spacing1": 10, "spacing3": 4}),
-            "h2": ({"font": (ui, 13, "bold"), "foreground": theme.ACCENT,
-                    "spacing1": 8, "spacing3": 3}),
-            "h3": ({"font": (ui, 11, "bold"), "foreground": theme.FG_MAIN,
-                    "spacing1": 6}),
-            "h4": ({"font": (ui, 10, "bold"), "foreground": theme.FG_DIM}),
-            "code": ({"font": (mono, 9), "background": theme.BG_DEEP,
+            "h3": ({"font": (ui, 13, "bold"), "foreground": theme.FG_MAIN,
+                    "spacing1": 8}),
+            "h4": ({"font": (ui, 12, "bold"), "foreground": theme.FG_DIM}),
+            "code": ({"font": (mono, 11), "background": theme.BG_DEEP,
                       "foreground": "#9CDCFE"}),
-            "bold": ({"font": (ui, 10, "bold")}),
+            "bold": ({"font": (ui, 12, "bold")}),
             "link": ({"foreground": theme.ACCENT, "underline": True}),
             "listitem": ({"lmargin1": 16, "lmargin2": 24}),
             "sep": ({"foreground": theme.BORDER}),
         }.items():
             self.tag_configure(tag, **cfg)
         # 碼塊左邊框 + 底色（§5.5.3）
-        self.tag_configure("codeblock", font=(mono, 9), background=theme.BG_DEEP,
+        self.tag_configure("codeblock", font=(mono, 11), background=theme.BG_DEEP,
                            foreground=theme.FG_MAIN, lmargin1=12, lmargin2=12,
                            spacing1=2, spacing3=2)
         self.tag_bind("link", "<Enter>",

@@ -28,6 +28,8 @@ class EditorState:
         self.current_line_i = 0
         self.cursor_ms = 0
         self.zoom_idx = 1
+        #: 動態縮放層（開檔時 zoom_fit 會插入「成條片啱啱好塞滿畫布」嘅層級）
+        self.zoom_levels: list[float] = list(ZOOM_LEVELS)
         self.view_start_ms = 0
         #: 選取 = (line_i, word_i, char_i) | None
         self.selected: tuple[int, int, int] | None = None
@@ -60,6 +62,7 @@ class EditorState:
         self.current_line_i = 0
         self.cursor_ms = 0
         self.zoom_idx = 1
+        self.zoom_levels = list(ZOOM_LEVELS)
         self.view_start_ms = 0
         self.selected = None
         self.selected_word = None
@@ -136,18 +139,54 @@ class EditorState:
             self.selected_word = (sel[0], sel[1])
         self.notify("select")
 
+    def line_at(self, ms: int) -> int | None:
+        """游標所在行（start ≤ ms < end）；唔喺任何行內就最近嘅一行。"""
+        lines = self.lines
+        if not lines:
+            return None
+        for i, line in enumerate(lines):
+            if int(line.get("start_ms", 0)) <= ms < int(line.get("end_ms", 0)):
+                return i
+        return min(range(len(lines)),
+                   key=lambda i: min(abs(int(lines[i].get("start_ms", 0)) - ms),
+                                     abs(int(lines[i].get("end_ms", 0)) - ms)))
+
     def set_cursor(self, ms: int) -> None:
         self.cursor_ms = max(0, ms)
+        # 跟播高亮（用戶需求 #2）：游標行變咗就通知歌詞樹跟
+        cur = self.line_at(self.cursor_ms)
+        followed = False
+        if cur is not None and cur != self.current_line_i:
+            self.current_line_i = cur
+            followed = True
         self.notify("cursor")
+        if followed:
+            self.notify("follow")
 
     @property
     def px_per_ms(self) -> float:
-        return ZOOM_LEVELS[self.zoom_idx] / 1000.0
+        return self.zoom_levels[self.zoom_idx] / 1000.0
+
+    def zoom_fit(self, canvas_w: int) -> None:
+        """開檔時：插入「成條片啱啱好塞滿畫布」嘅縮放層並套用（用戶需求 #3）。
+
+        時間軸預設顯示 0 至片尾，唔會有大截空白。
+        """
+        total = models.total_duration_ms(self.doc)
+        if total <= 0 or canvas_w <= 50:
+            return
+        # px per ms → 轉做 px/s（zoom_levels 嘅單位）：3 小時片都 fit 得入 → 下限 0.05 px/s
+        fit_pps = max(0.05, min(64.0, (canvas_w - 60) / total * 1000))
+        fit_pps = round(fit_pps, 4)
+        self.zoom_levels = sorted(set(ZOOM_LEVELS) | {fit_pps})
+        self.zoom_idx = self.zoom_levels.index(fit_pps)
+        self.view_start_ms = 0
+        self.notify("zoom")
 
     def zoom(self, direction: int, anchor_ms: int | None = None) -> None:
-        """以游標為中心縮放（§6.2）。"""
+        """以游標為中心縮放（§6.2；工具列 ＋/－ 掣都用呢個）。"""
         anchor = anchor_ms if anchor_ms is not None else self.cursor_ms
-        new_idx = max(0, min(len(ZOOM_LEVELS) - 1, self.zoom_idx + direction))
+        new_idx = max(0, min(len(self.zoom_levels) - 1, self.zoom_idx + direction))
         if new_idx == self.zoom_idx:
             return
         old_ppm = self.px_per_ms

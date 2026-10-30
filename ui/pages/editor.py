@@ -85,6 +85,8 @@ class EditorPage(ttkb.Frame):
         self._tl_box = ttkb.LabelFrame(self._right, text="時間軸 · 波形", bootstyle="dark")
         self._timeline = TimelineCanvas(self._tl_box, self._state, on_seek=self._on_seek)
         self._timeline.pack(fill="both", expand=True, padx=2, pady=2)
+        # 開檔後 fit（用戶需求 #3）：timeline 真正 layout 好（<Configure>，w>100）先量得準
+        self._timeline.bind("<Configure>", lambda _e: self._zoom_fit_once())
 
         self._preview_ratio = 0.55
         self._right.bind("<Configure>", lambda _e: self._relayout_right())
@@ -139,6 +141,15 @@ class EditorPage(ttkb.Frame):
             bar, text="字幕疊圖", variable=self._overlay_on,
             bootstyle="dark-round-toggle", command=self._toggle_overlay)
         self._overlay_chip.pack(side="left", padx=2)
+
+        # 時間軸縮放掣（用戶需求 #3）
+        ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttkb.Label(bar, text="時間軸", bootstyle="secondary",
+                   font=(theme.ui_font_family(), 9)).pack(side="left")
+        ttkb.Button(bar, text="🔍－", width=3, bootstyle="secondary", takefocus=False,
+                    command=lambda: self._state.zoom(-1)).pack(side="left", padx=2)
+        ttkb.Button(bar, text="🔍＋", width=3, bootstyle="secondary", takefocus=False,
+                    command=lambda: self._state.zoom(+1)).pack(side="left", padx=2)
 
         self._time_var = tk.StringVar(value="00:00.000 / 00:00.000")
         ttkb.Label(bar, textvariable=self._time_var, bootstyle="info",
@@ -209,6 +220,11 @@ class EditorPage(ttkb.Frame):
         except Exception as exc:   # noqa: BLE001
             messagebox.showerror("開檔失敗", f"{path}\n\n{exc}")
             return
+        # 預設縮放：成條片啱啱好塞滿時間軸（0 至片尾，用戶需求 #3）。
+        # ⚠️ 要等右欄 layout 完成先量到準確畫布闊度 → 用 _zoom_fit_pending
+        # 喺 _relayout_right 落手；300ms fallback 防視窗已 layout 唔再觸發 Configure。
+        self._zoom_fit_pending = True
+        self.after(300, self._zoom_fit_once)
         video = self._state.video_path
         if video and not video.is_file():
             if messagebox.askyesno("原片已移動",
@@ -517,7 +533,7 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
-        if reason in ("load", "edit", "save", "select"):
+        if reason in ("load", "edit", "save", "select", "follow"):
             self._refresh_finetune()
         self._refresh_buttons()
         self._refresh_status()
@@ -622,6 +638,15 @@ class EditorPage(ttkb.Frame):
         self._separator.place(x=0, y=sep_y, relwidth=1.0, height=8)
         tl_y = sep_y + 8
         self._tl_box.place(x=0, y=tl_y, relwidth=1.0, relheight=1.0, height=-tl_y)
+        self._zoom_fit_once()
+
+    def _zoom_fit_once(self) -> None:
+        """開檔後第一次 layout 就 fit（用戶需求 #3：時間軸預設 0 至片尾）。"""
+        if getattr(self, "_zoom_fit_pending", False) and self._state.lines:
+            w = self._timeline.winfo_width()
+            if w > 100:
+                self._zoom_fit_pending = False
+                self._state.zoom_fit(w)
 
     def _on_separator_press(self, event) -> None:
         self._sep_y0 = event.y_root

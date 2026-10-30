@@ -63,7 +63,8 @@ class LyricTree(ttkb.Frame):
     def _on_state_change(self, reason: str) -> None:
         if reason in ("load", "edit", "save", "filter"):
             self.refresh()
-        elif reason in ("select",):
+        elif reason in ("select", "follow"):
+            # "follow" = 播放中游標行變咗 → 高亮跟住郁（用戶需求 #2）
             self._highlight_current()
 
     def refresh(self) -> None:
@@ -171,7 +172,10 @@ def _ask_text(parent, title: str, prompt: str, initial: str = "") -> str | None:
     try:
         dlg.wait_visibility()
         dlg.grab_set()
+        # ⚠️ focus_set 喺 map 之前呼叫會落咗去主視窗 —— 用戶打字 entry 完全收唔到，
+        # 撳確定 = 原文不變（實測「確定冇生效」嘅第二根源）。要 map 之後 focus_force。
+        entry.focus_force()
     except tk.TclError:
-        pass   # 攞唔到 grab 都照用（z-order 輸啲啲，功能不受影響）
+        pass
     dlg.wait_window()
     return result[0]
