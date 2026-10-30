@@ -21,7 +21,7 @@ from typing import Any
 import ttkbootstrap as ttkb
 
 from .. import settings, theme
-from ..widgets.progress import StageProgress
+from ..widgets.progress import QueueLogHandler, StageProgress
 from ..widgets.style_preview import StylePreviewCanvas
 
 LOGGER = logging.getLogger("karaoke.ui.home")
@@ -278,7 +278,9 @@ class HomePage(ttkb.Frame):
 
         self._generate_btn = ttkb.Button(parent, text="▶  開始生成", bootstyle=theme.ACCENT,
                                          takefocus=False, command=self._start_generate)
-        self._generate_btn.pack(fill="x", ipady=8, pady=(0, theme.SPACE))
+        self._generate_btn.pack(fill="x", ipady=8, pady=(0, 2))
+        ttkb.Button(parent, text="⧉ 複製等價 CLI 指令", bootstyle="secondary-link",
+                    takefocus=False, command=self._copy_cli).pack(fill="x", pady=(0, theme.SPACE))
 
         box = ttkb.LabelFrame(parent, text="進度", bootstyle="dark")
         box.pack(fill="x", pady=(0, 0))
@@ -449,7 +451,7 @@ class HomePage(ttkb.Frame):
         self._progress.reset()
 
         # 攔截 karaoke logger → UI log 窗（計劃書 §5.2 步驟 3）
-        handler = _QueueLogHandler(self._progress)
+        handler = QueueLogHandler(self._progress)
         logging.getLogger("karaoke").addHandler(handler)
 
         def on_error(exc: BaseException) -> None:
@@ -474,6 +476,45 @@ class HomePage(ttkb.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _copy_cli(self) -> None:
+        """「複製等價 CLI 指令」（§5.5.5）：由目前 UI 值動態生成 generate 指令。"""
+        import tkinter.messagebox as messagebox
+        from ..clidoc import generate_cli_command
+        video = self._video_var.get().strip() or "C:\\Videos\\MV.mp4"
+        values: dict[str, Any] = {
+            "input": video,
+            "model": self._model_var.get().strip(),
+            "language": self._lang_var.get(),
+            "separate_vocals": self._separate_var.get(),
+            "max_chars": self._safe_int(self._adv_spins["max_chars"].get(), 18),
+            "gap_threshold_ms": self._safe_int(self._adv_spins["gap_threshold_ms"].get(), 800),
+            "hold_ms": self._safe_int(self._adv_spins["hold_ms"].get(), 300),
+            "min_clause_chars": self._safe_int(self._adv_spins["min_clause_chars"].get(), 5),
+            "min_clause_ms": self._safe_int(self._adv_spins["min_clause_ms"].get(), 2500),
+            "merge_max_chars": self._safe_int(self._adv_spins["merge_max_chars"].get(), 16),
+            "keep_punctuation": self._keep_punct_var.get(),
+            "save_raw": self._save_raw_var.get(),
+            "font_name": self._font_var.get().strip(),
+            "font_size": self._safe_int(str(self._size_var.get()), 48),
+            "primary_color": self._color_vars["primary"].get().strip(),
+            "secondary_color": self._color_vars["secondary"].get().strip(),
+            "outline_color": self._color_vars["outline"].get().strip(),
+            "margin_v": self._safe_int(str(self._margin_var.get()), 0),
+        }
+        if self._output_var.get().strip():
+            values["output_dir"] = self._output_var.get().strip()
+        cmd = generate_cli_command("generate", values)
+        self.clipboard_clear()
+        self.clipboard_append(cmd)
+        messagebox.showinfo("已複製", f"已複製到剪貼簿：\n\n{cmd}", parent=self)
+
+    @staticmethod
+    def _safe_int(text: str, default: int) -> int:
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return default
+
     def _on_generate_done(self, result) -> None:
         """完成對話框：列出 3 個產出 + 「立即開啟編輯器」預設動作（計劃書 §5.2 步驟 4）。"""
         box = messagebox.askyesno(
@@ -489,17 +530,3 @@ class HomePage(ttkb.Frame):
 
     def on_show(self) -> None:
         self._refresh_preview()
-
-
-class _QueueLogHandler(logging.Handler):
-    """把 karaoke logger 導入 StageProgress log 窗。"""
-
-    def __init__(self, progress: StageProgress) -> None:
-        super().__init__()
-        self._progress = progress
-
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            self._progress.log(self.format(record))
-        except Exception:   # noqa: BLE001 — logging handler 唔准再拋
-            pass

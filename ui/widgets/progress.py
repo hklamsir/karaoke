@@ -8,6 +8,7 @@ UI ``after()`` poll queue。
 
 from __future__ import annotations
 
+import logging
 import queue
 import tkinter as tk
 
@@ -17,6 +18,20 @@ from .. import theme
 
 #: generate 五個階段（同 main.generate_timings progress_cb stage 名一致）
 STAGES = ["抽音", "上傳", "ASR", "斷句", "渲染"]
+
+
+class QueueLogHandler(logging.Handler):
+    """把 logger 記錄導入 StageProgress log 窗（thread-safe，經 queue）。"""
+
+    def __init__(self, progress: "StageProgress") -> None:
+        super().__init__()
+        self._progress = progress
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._progress.log(self.format(record))
+        except Exception:   # noqa: BLE001 — logging handler 唔准再拋
+            pass
 
 _STATE_ICON = {"pending": "○", "active": "◐", "done": "●", "error": "✕"}
 _STATE_STYLE = {"pending": "secondary", "active": "info", "done": "success", "error": "danger"}

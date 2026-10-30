@@ -8,6 +8,9 @@ C1 雙軌：上歌詞樹（Treeview）／下 Canvas 時間軸／右逐字微調�
 
 from __future__ import annotations
 
+import logging
+import subprocess
+import threading
 import tkinter as tk
 import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
@@ -18,6 +21,7 @@ import ttkbootstrap as ttkb
 from .. import models, state, theme
 from ..commands import DeleteLine, InsertWord, MergeLines, SetCharTiming, SplitLine
 from ..widgets.lyric_tree import LyricTree, _ask_text
+from ..widgets.progress import QueueLogHandler
 from ..widgets.timeline import TimelineCanvas
 
 FETCH_MS = 100      # ←→ 游標步長
@@ -98,6 +102,9 @@ class EditorPage(ttkb.Frame):
         self._save_btn = ttkb.Button(bar, text="💾 儲存", bootstyle="secondary",
                                      takefocus=False, command=self.save)
         self._save_btn.pack(side="left", padx=(0, 2))
+        self._burn_btn = ttkb.Button(bar, text="🔥 燒錄", bootstyle=theme.ACCENT,
+                                     takefocus=False, command=self._burn)
+        self._burn_btn.pack(side="left", padx=2)
         self._undo_btn = ttkb.Button(bar, text="⟲", width=3, bootstyle="secondary",
                                      takefocus=False, command=self.undo)
         self._undo_btn.pack(side="left", padx=2)
@@ -306,6 +313,80 @@ class EditorPage(ttkb.Frame):
         if engine is None or not engine.available:
             return
         engine.play_range(self._state.cursor_ms - 1000, self._state.cursor_ms + 2000)
+
+    # ------------------------------------------------------------------
+    # 燒錄（F1：入 UI，喺編輯器工具列；背景 thread + 分階段進度）
+    # ------------------------------------------------------------------
+
+    def _burn(self) -> None:
+        st = self._state
+        if st.path is None:
+            messagebox.showinfo("燒錄", "先開一份 *_timings.json。")
+            return
+        video = st.video_path
+        if video is None or not video.is_file():
+            messagebox.showerror("燒錄", "原片唔存在（先喺開檔時「重新指定原片」）。")
+            return
+        if not messagebox.askyesno(
+                "燒錄確認",
+                f"將以原片 + 最新時間軸燒錄：\n{video.name}\n\n"
+                f"（會先自動 render 最新 .ass 再跑 ffmpeg，需時幾分鐘）",
+                parent=self):
+            return
+        from .. import settings as ui_settings
+        ffmpeg = ui_settings.detect_ffmpeg(self.master.settings_data)
+        if not ffmpeg:
+            messagebox.showerror("燒錄", "搵唔到 ffmpeg（設定頁填路徑）。")
+            return
+
+        # 1) 先儲存 + render 最新 ass（唔可以直接寫 ass 畀人手改 —— 係 burn 嘅中間產物）
+        try:
+            st.save()
+        except Exception as exc:   # noqa: BLE001
+            messagebox.showerror("燒錄", f"儲存失敗：{exc}")
+            return
+        ass_path = st.path.with_name(st.path.stem.replace("_timings", "_karaoke") + ".ass")
+        output = video.with_name(f"{video.stem}_karaoke.mp4")
+        doc = st.doc
+        strip_punct = bool((doc.get("source") or {}).get("strip_punctuation", True))
+        import main as _main
+        _, style = _main.timings_doc_to_lines(doc)
+        ass_text = _main.render_timings(doc, style, strip_punctuation=strip_punct)
+        ass_path.write_text(ass_text, encoding="utf-8")
+
+        # 2) 進度窗（Toplevel + StageProgress）
+        from ..widgets.progress import StageProgress
+        win = ttkb.Toplevel(title="燒錄中…", size=(460, 220))
+        prog = StageProgress(win, stages=["燒錄"])
+        prog.pack(fill="both", expand=True, padx=12, pady=12)
+        self._burn_btn.configure(state="disabled")
+        handler = QueueLogHandler(prog)
+        logging.getLogger("karaoke").addHandler(handler)
+
+        def on_error(msg: str) -> None:
+            prog.fail(msg)
+            messagebox.showerror("燒錄失敗", msg, parent=self)
+
+        def worker() -> None:
+            try:
+                _main.burn_video(video, ass_path, output, progress_cb=prog.report)
+            except SystemExit as exc:
+                self.after(0, lambda: on_error(f"ffmpeg 失敗（exit {exc.code}），詳見 log"))
+            except Exception as exc:   # noqa: BLE001
+                self.after(0, lambda: on_error(str(exc)))
+            else:
+                prog.succeed("完成 ✅")
+                self.after(0, lambda: self._on_burn_done(output))
+            finally:
+                logging.getLogger("karaoke").removeHandler(handler)
+                self.after(0, lambda: self._burn_btn.configure(state="normal"))
+                self.after(3000, win.destroy)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_burn_done(self, output: Path) -> None:
+        if messagebox.askyesno("燒錄完成 ✅", f"{output}\n\n開啟資料夾？", parent=self):
+            subprocess.Popen(["explorer", "/select,", str(output)])
 
     def save(self) -> None:
         if self._state.path is None:
