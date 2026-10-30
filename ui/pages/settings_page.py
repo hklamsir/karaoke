@@ -136,7 +136,8 @@ class SettingsPage(ttkb.Frame):
             messagebox.showerror("主題切換失敗", str(exc), parent=self)
 
     def _test_connection(self) -> None:
-        """call 百煉 model list 驗 key（§5.4）。"""
+        """驗 key：直接打 DashScope REST model list（唔依賴 dashscope SDK 內部 API，
+        SDK 1.x/2.x 類名路徑唔同會爆 ImportError）。"""
         key = self._key_var.get().strip()
         if not key:
             messagebox.showwarning("未填 Key", "請先填 DashScope API Key。", parent=self)
@@ -145,13 +146,14 @@ class SettingsPage(ttkb.Frame):
         def worker() -> None:
             ok, msg = False, ""
             try:
-                import dashscope
-                from dashscope.api_entities.dashscope_response import DashScopeAPIException
-                dashscope.api_key = key
-                # 輕量呼叫：model list
-                resp = dashscope.ListModels.call()
+                import requests
+                resp = requests.get(
+                    "https://dashscope.aliyuncs.com/api/v1/models",
+                    headers={"Authorization": f"Bearer {key}"},
+                    timeout=15)
                 ok = resp.status_code == 200
-                msg = f"HTTP {resp.status_code}"
+                msg = f"HTTP {resp.status_code}" + (
+                    "" if ok else f" {resp.text[:150]}")
             except Exception as exc:   # noqa: BLE001
                 msg = str(exc)[:200]
             self.after(0, lambda: messagebox.showinfo(
