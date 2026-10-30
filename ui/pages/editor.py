@@ -106,12 +106,19 @@ class EditorPage(ttkb.Frame):
 
         self._tl_box = ttkb.LabelFrame(self._right, text="時間軸 · 波形", bootstyle="dark")
         self._timeline = TimelineCanvas(self._tl_box, self._state, on_seek=self._on_seek)
+        # 縮放掣移入時間軸區域（用戶需求 #2）：同一行放 🔍－/🔍＋ + 水平捲軸
+        zoombar = ttkb.Frame(self._tl_box, bootstyle="dark")
+        zoombar.pack(side="bottom", fill="x")
+        ttkb.Button(zoombar, text="🔍－", width=3, bootstyle="secondary", takefocus=False,
+                    command=lambda: self._state.zoom(-1)).pack(side="left", padx=(2, 1))
+        ttkb.Button(zoombar, text="🔍＋", width=3, bootstyle="secondary", takefocus=False,
+                    command=lambda: self._state.zoom(+1)).pack(side="left", padx=(1, 2))
         # 水平捲軸（用戶需求 #1）：控制 view_start；follow 自動翻頁時同步
         self._hscroll_syncing = False
-        self._hscroll = ttkb.Scale(self._tl_box, from_=0, to=1000,
+        self._hscroll = ttkb.Scale(zoombar, from_=0, to=1000,
                                    orient="horizontal", command=self._on_hscroll,
                                    bootstyle="secondary")
-        self._hscroll.pack(side="bottom", fill="x", padx=2)
+        self._hscroll.pack(side="left", fill="x", expand=True, padx=2)
         # 圖例（用戶回報：唔知橙色係乜）—— 放 timeline 底
         ttkb.Label(self._tl_box,
                    text="字塊＝逐字時間（拖曳校）｜橙虛線＝估算字（要人手校）｜藍＝波形（參考）",
@@ -186,15 +193,7 @@ class EditorPage(ttkb.Frame):
         self._overlay_chip.pack(side="left", padx=2)
         ttkb.Button(bar, text="🎨", width=3, bootstyle="secondary", takefocus=False,
                     command=self._edit_style).pack(side="left", padx=2)
-
-        # 時間軸縮放掣（用戶需求 #3）
-        ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
-        ttkb.Label(bar, text="時間軸", bootstyle="secondary",
-                   font=(theme.ui_font_family(), 9)).pack(side="left")
-        ttkb.Button(bar, text="🔍－", width=3, bootstyle="secondary", takefocus=False,
-                    command=lambda: self._state.zoom(-1)).pack(side="left", padx=2)
-        ttkb.Button(bar, text="🔍＋", width=3, bootstyle="secondary", takefocus=False,
-                    command=lambda: self._state.zoom(+1)).pack(side="left", padx=2)
+        # （時間軸縮放掣已移入時間軸區域，用戶需求 #2）
 
         self._time_var = tk.StringVar(value="00:00.000 / 00:00.000")
         ttkb.Label(bar, textvariable=self._time_var, bootstyle="info",
