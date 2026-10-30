@@ -80,11 +80,13 @@ class EditorState:
 
     def push(self, cmd: commands.Command) -> None:
         self.undo_stack.push(cmd, self)
+        self._refresh_texts()
         self.dirty = True
         self.notify("edit")
 
     def undo(self) -> bool:
         if self.undo_stack.undo(self) is not None:
+            self._refresh_texts()
             self.dirty = True
             self.notify("edit")
             return True
@@ -92,10 +94,20 @@ class EditorState:
 
     def redo(self) -> bool:
         if self.undo_stack.redo(self) is not None:
+            self._refresh_texts()
             self.dirty = True
             self.notify("edit")
             return True
         return False
+
+    def _refresh_texts(self) -> None:
+        """N1 輕量版：結構操作（斷句/合併/改字）後即刻重建 ``lines[].text``。
+
+        唔做嘅話歌詞樹顯示嘅係**舊 cached text**，用戶會以為操作冇生效
+        （實測：斷句新增嗰行顯示空白）。完整 N1–N7（時間 clip 等）留返 save()。
+        """
+        for line in self.lines:
+            line["text"] = models.display_text(line)
 
     # ------------------------------------------------------------------
     # 導航 / 選取
