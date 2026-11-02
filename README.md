@@ -7,6 +7,9 @@
 > [`docs/架構決策紀錄.md`](docs/架構決策紀錄.md)。**改 code 前請先讀呢兩份。**
 >
 > **範圍**（ADR-012）：粵語 / 國語 / 英語的**書面語**歌。錯字預期由字幕編輯 UI 人手修正。
+>
+> 📦 **下載最新版（Windows 交付包）**：<https://github.com/hklamsir/karaoke/releases/latest>
+> → 下載 `karaoke-vX.Y.Z.zip`，安裝步驟見 [`DEPLOY.md`](DEPLOY.md)（四步：Python → FFmpeg → 解壓 → 雙擊 `run_ui.bat`）。
 
 ---
 
