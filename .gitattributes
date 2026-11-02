@@ -1,0 +1,14 @@
+# 行尾規範（ADR-021）
+#
+# run_ui.bat 必須以 CRLF 存到工作區：cmd.exe 對 LF-only 的 goto / label
+# 有已知的解析問題。repo 內部存 LF（git 慣例），checkout 時強制轉 CRLF，
+# 所以即使對方 clone 時 core.autocrlf=false 都唔會壞。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二進位（唔好做行尾轉換，否則圖示會爛）
+*.ico binary
+*.png binary
+*.jpg binary
+*.mp4 binary
+*.wav binary

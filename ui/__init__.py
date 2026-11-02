@@ -15,4 +15,7 @@
 UI ↔ CLI：``import main``（in-process，A2 決定），CLI main.py 行為零變動。
 """
 
-__version__ = "0.1.0"
+from .version import read_version as _read_version
+
+#: 版本號來自專案根目錄的 ``VERSION`` 檔（唯一真源，見 ``ui/version.py``）
+__version__ = _read_version()

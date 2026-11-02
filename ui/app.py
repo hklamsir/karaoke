@@ -15,7 +15,7 @@ from typing import Any
 
 import ttkbootstrap as ttkb
 
-from . import settings, theme
+from . import settings, theme, version
 
 LOGGER = logging.getLogger("karaoke.ui")
 
@@ -42,7 +42,7 @@ class App(ttkb.Window):
     """卡拉OK字幕工具主視窗（1180×760 設計基準，§4.5.2）。"""
 
     def __init__(self) -> None:
-        super().__init__(title="Karaoke AI Subtitler", size=(1180, 760), minsize=(960, 640))
+        super().__init__(title=version.window_title(), size=(1180, 760), minsize=(960, 640))
         self.state("zoomed")   # 預設最大化（用戶需求：開窗即全畫面顯示）
         self._settings = settings.load()
         self._set_window_icon()

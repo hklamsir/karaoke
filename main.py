@@ -1534,6 +1534,26 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
              "畫面雜亂時可加粗至 3–4px" + suffix)
 
 
+def _read_version() -> str:
+    """讀取版本號（``--version`` 用）。
+
+    CLI 刻意**唔** import ``ui.version`` —— 為讀一個版本號而拉入 UI 套件
+    （連帶 ttkbootstrap）唔值得。此處與 ``ui/version.py`` 讀**同一個**
+    ``VERSION`` 檔，所以版本號只有一處要改。
+
+    Returns:
+        版本字串，例如 ``"1.0.0"``；檔案缺失或為空時回傳 ``"dev"``（唔拋例外，
+        版本號讀唔到不應該令 CLI 開唔到）。
+    """
+    try:
+        text = (Path(__file__).resolve().parent / "VERSION").read_text(encoding="utf-8")
+    except OSError:
+        return "dev"
+    stripped = text.strip()
+    first = stripped.splitlines()[0].strip() if stripped else ""
+    return first or "dev"
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
@@ -1550,6 +1570,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="顯示 DEBUG 層級日誌（等同於子命令前後加 -v）")
+    # 版本號（來源：專案根目錄 VERSION，與 UI 標題同一個檔）
+    # action="version" 會喺解析到呢個參數時即刻印出並結束，
+    # 所以即使 subparsers 係 required=True，`main.py --version` 一樣有效。
+    parser.add_argument("--version", action="version",
+                        version=f"%(prog)s {_read_version()}",
+                        help="顯示版本號並結束")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ---- generate
