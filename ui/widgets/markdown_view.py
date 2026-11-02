@@ -34,9 +34,22 @@ class MarkdownView(tk.Text):
 
     def __init__(self, master, *, height: int = 20) -> None:
         super().__init__(master, wrap="word", height=height, state="disabled",
-                         bg=theme.BG_PANEL, fg=theme.FG_MAIN, relief="flat",
-                         padx=12, pady=10, insertwidth=0,
+                         bg=theme.BG_DEEP, fg=theme.FG_MAIN, relief="flat",
+                         highlightthickness=1, highlightbackground=theme.BORDER,
+                         padx=16, pady=12, insertwidth=0,
                          font=(theme.ui_font_family(), 12))
+        self._apply_tags()
+        self.tag_bind("link", "<Enter>",
+                      lambda _e: self.configure(cursor="hand2"))
+        self.tag_bind("link", "<Leave>",
+                      lambda _e: self.configure(cursor=""))
+        self._links: list[tuple[str, str]] = []     # (start_index_pattern, url)
+        self.tag_bind("link", "<Button-1>", self._on_link_click)
+
+    # ------------------------------------------------------------------
+
+    def _apply_tags(self) -> None:
+        """設定／重設所有 markdown tag 顏色與字級（換主題時要重跑）。"""
         mono = theme.mono_font_family()
         ui = theme.ui_font_family()
         # 用戶需求 #4：幫助頁文字放大 2 級（原 base 10 → 12）
@@ -48,8 +61,8 @@ class MarkdownView(tk.Text):
             "h3": ({"font": (ui, 13, "bold"), "foreground": theme.FG_MAIN,
                     "spacing1": 8}),
             "h4": ({"font": (ui, 12, "bold"), "foreground": theme.FG_DIM}),
-            "code": ({"font": (mono, 11), "background": theme.BG_DEEP,
-                      "foreground": "#9CDCFE"}),
+            "code": ({"font": (mono, 11), "background": theme.BG_PANEL,
+                      "foreground": theme.CODE_FG}),
             "bold": ({"font": (ui, 12, "bold")}),
             "link": ({"foreground": theme.ACCENT, "underline": True}),
             "listitem": ({"lmargin1": 16, "lmargin2": 24}),
@@ -57,17 +70,15 @@ class MarkdownView(tk.Text):
         }.items():
             self.tag_configure(tag, **cfg)
         # 碼塊左邊框 + 底色（§5.5.3）
-        self.tag_configure("codeblock", font=(mono, 11), background=theme.BG_DEEP,
-                           foreground=theme.FG_MAIN, lmargin1=12, lmargin2=12,
+        self.tag_configure("codeblock", font=(mono, 11), background=theme.BG_PANEL,
+                           foreground=theme.CODE_FG, lmargin1=12, lmargin2=12,
                            spacing1=2, spacing3=2)
-        self.tag_bind("link", "<Enter>",
-                      lambda _e: self.configure(cursor="hand2"))
-        self.tag_bind("link", "<Leave>",
-                      lambda _e: self.configure(cursor=""))
-        self._links: list[tuple[str, str]] = []     # (start_index_pattern, url)
-        self.tag_bind("link", "<Button-1>", self._on_link_click)
 
-    # ------------------------------------------------------------------
+    def restyle(self) -> None:
+        """換主題：重設 Text 底色與全部 tag 顏色。"""
+        self.configure(bg=theme.BG_DEEP, fg=theme.FG_MAIN,
+                       highlightbackground=theme.BORDER)
+        self._apply_tags()
 
     def render(self, markdown: str) -> None:
         """整段 markdown → Text。重複呼叫會 append。"""
@@ -127,7 +138,9 @@ class MarkdownView(tk.Text):
         if not rows:
             return i
         n_cols = max(len(r) for r in rows)
-        widths = [max(display_width(r[c]) if c < len(r) else 0 for r in rows)
+        # 欄闊上限 22 個顯示欄：中文說明欄一長，若按最長 cell 對齊，前面幾欄
+        # 會被撐出大片空白（實際版面睇落似散開）。超長就唔補位。
+        widths = [min(16, max(display_width(r[c]) if c < len(r) else 0 for r in rows))
                   for c in range(n_cols)]
         for ri, row in enumerate(rows):
             text = "  ".join(pad(row[c] if c < len(row) else "", widths[c])

@@ -47,25 +47,32 @@ class HelpPage(ttkb.Frame):
     """幫助：章節錨點 + 搜尋 + markdown 內容區 + 複製等價 CLI 指令。"""
 
     def __init__(self, master) -> None:
-        super().__init__(master, bootstyle="dark")
+        super().__init__(master, bootstyle="light")
 
-        top = ttkb.Frame(self, bootstyle="dark")
+        top = ttkb.Frame(self, bootstyle="light")
         top.pack(fill="x", pady=(0, theme.SPACE))
         self._search_var = tk.StringVar()
         self._search_var.trace_add("write", self._on_search_changed)
-        ttkb.Entry(top, textvariable=self._search_var, width=32).pack(side="left")
+        ttkb.Label(top, text="搜尋", bootstyle="secondary").pack(side="left",
+                                                              padx=(0, 6))
+        # 白底主題下 Entry 會同頁面融為一體 → 專屬 style 用面板色 + 邊框
+        self._style_widgets()
+        ttkb.Entry(top, textvariable=self._search_var, width=32,
+                   style="Search.TEntry",
+                   font=(theme.ui_font_family(), 10)).pack(side="left")
         ttkb.Button(top, text="📋 複製等價 CLI 指令", bootstyle="secondary",
                     takefocus=False, command=self._copy_cli).pack(side="left", padx=theme.SPACE)
         ttkb.Button(top, text="開啟原文", bootstyle="secondary", takefocus=False,
                     command=self._open_source).pack(side="left")
 
-        anchors = ttkb.Frame(self, bootstyle="dark", width=170)
+        anchors = ttkb.Frame(self, bootstyle="light", width=210)
         anchors.pack(side="left", fill="y", padx=(0, theme.SPACE))
         anchors.pack_propagate(False)
+        # 用戶需求：章節字級要同內容一致 —— 內容 base 係 12pt，所以標題與樹項都用 12pt
         ttkb.Label(anchors, text="章節", bootstyle="secondary",
-                   font=(theme.ui_font_family(), 10)).pack(anchor="w", pady=(0, 4))
+                   font=(theme.ui_font_family(), 12, "bold")).pack(anchor="w", pady=(0, 4))
         self._anchor_tree = ttkb.Treeview(anchors, show="tree", selectmode="browse",
-                                          bootstyle="dark")
+                                          style="Anchor.Treeview")
         self._anchor_tree.pack(fill="both", expand=True)
         self._anchor_tree.bind("<<TreeviewSelect>>", self._on_anchor_select)
 
@@ -80,6 +87,31 @@ class HelpPage(ttkb.Frame):
         self._load_content()
 
     # ------------------------------------------------------------------
+
+    def _style_widgets(self) -> None:
+        """設定自訂 style（搜尋框 / 章節樹）—— 換主題時要重跑，所以抽成方法。
+
+        Treeview 字級要經 style（ttk 冇 ``-font``）；``Anchor.Treeview`` 只係
+        喺 ``Treeview`` 之上加字級 + 面板底色，選取色跟色票 accent。
+        """
+        st = ttkb.Style()
+        st.configure("Search.TEntry", fieldbackground=theme.BG_PANEL,
+                     bordercolor=theme.BORDER, lightcolor=theme.BG_PANEL,
+                     darkcolor=theme.BG_PANEL, insertcolor=theme.FG_MAIN,
+                     foreground=theme.FG_MAIN)
+        st.configure("Anchor.Treeview", font=(theme.ui_font_family(), 12),
+                     rowheight=30, background=theme.BG_PANEL,
+                     fieldbackground=theme.BG_PANEL,
+                     foreground=theme.FG_MAIN, bordercolor=theme.BORDER)
+        st.map("Anchor.Treeview",
+               background=[("selected", theme.ACCENT)],
+               foreground=[("selected", theme.ON_ACCENT)])
+
+    def restyle(self) -> None:
+        """換主題：重設自訂 style 與搜尋命中色（Text tag 係 per-widget）。"""
+        self._style_widgets()
+        self._view.tag_configure("search_hit", background=theme.SEARCH_HIT,
+                                 foreground=theme.FG_MAIN)
 
     def _load_content(self) -> None:
         if DOC_PATH.is_file():
@@ -136,7 +168,8 @@ class HelpPage(ttkb.Frame):
     def _do_search(self) -> None:
         query = self._search_var.get().strip()
         self._view.tag_remove("search_hit", "1.0", "end")
-        self._view.tag_configure("search_hit", background="#5a4a1e")
+        self._view.tag_configure("search_hit", background=theme.SEARCH_HIT,
+                                 foreground=theme.FG_MAIN)
         if not query:
             return
         start = "1.0"

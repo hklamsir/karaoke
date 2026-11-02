@@ -57,6 +57,11 @@ class StylePreviewCanvas(tk.Canvas):
                            sung_chars=sung_chars)
         self._redraw()
 
+    def restyle(self) -> None:
+        """換主題：底色／邊框跟色票再重繪。"""
+        self.configure(bg=theme.BG_DEEP, highlightbackground=theme.BORDER)
+        self._redraw()
+
     def _redraw(self) -> None:
         self.delete("all")
         s = self._style
@@ -67,7 +72,7 @@ class StylePreviewCanvas(tk.Canvas):
         frame_h = frame_w * SAMPLE_RES_Y // SAMPLE_RES_X
         fx, fy = (w - frame_w) // 2, (h - frame_h) // 2
         self.create_rectangle(fx, fy, fx + frame_w, fy + frame_h,
-                              fill="#101016", outline=theme.BORDER)
+                              fill=theme.VIDEO_BG, outline=theme.BORDER)
 
         scale = frame_h / SAMPLE_RES_Y     # PlayRes → 畫布縮放
         size = max(10, round(s["font_size"] * scale))

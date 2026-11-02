@@ -14,10 +14,15 @@ from typing import Any, Callable
 
 from .. import theme
 
-#: 時間軸各段高度（§6.1：波形 128 + 刻度 18 + 字塊 + 概覽 16）
+#: 時間軸各段高度（§6.1：波形 + 刻度 + 字塊 + 概覽）
 RULER_H = 18
-WAVE_H = 128  # 波形垂直拉大（用戶需求：再拉高 100%；最大化視窗下空間足夠）
-LANE_H = 22
+# 用戶需求 #4：波形／字幕塊再拉高 50%（128 → 192、22 → 33）。
+# ⚠️ 波形高度係「目標值」—— 實際會按畫布高度夾（見 _wave_h_for），因為時間軸
+#    同時要讓 100px 出嚟（editor.PREVIEW_EXTRA_H），192px 未必擠得落。
+WAVE_H = 192
+LANE_H = 33
+BLOCK_GAP = 6        # 字塊底距（22-4=18 → 33-6=27，剛好 +50%）
+MIN_WAVE_H = 48      # 波形最少高度（再細就冇參考價值）
 OVERVIEW_H = 16
 EDGE_PX = 5          # 字塊邊界 5px 內 = 拖邊界
 CHAR_MIN_W = 3       # §4.3：細過就唔畫（聚合顯示）
@@ -73,7 +78,7 @@ def compute_layout(lines: list[dict], px_per_ms: float, view_start_ms: int,
             if x1 < -CHAR_MIN_W or x0 > canvas_w + CHAR_MIN_W:
                 return
             rects.append((ref[0], ref[1], ref[2], x0, y0, max(x0 + 1.0, x1),
-                          y0 + LANE_H - 4, label))
+                          y0 + LANE_H - BLOCK_GAP, label))
 
         char_px = (lx1 - lx0) / max(1, len(flat))
         if char_px >= CHAR_MIN_W:
@@ -142,7 +147,7 @@ class TimelineCanvas(tk.Canvas):
                  on_seek: Callable[[int], None] | None = None,
                  on_drag_char: Callable[[], None] | None = None,
                  on_range_select: Callable[[int, int], None] | None = None) -> None:
-        super().__init__(master, bg=theme.BG_DEEP, highlightthickness=1,
+        super().__init__(master, bg=theme.CANVAS_BG, highlightthickness=1,
                          highlightbackground=theme.BORDER)
         self._state = state
         self._on_seek = on_seek
@@ -191,9 +196,7 @@ class TimelineCanvas(tk.Canvas):
         lines = self._state.lines
         if not lines:
             return
-        y_top = self.waveform_y_top() + 2
-        if self._peaks is not None and len(self._peaks) > 0:
-            y_top += WAVE_H + 4
+        y_top = self._lanes_y_top()
         content_h = y_top + max(1, len(lines)) * LANE_H
         lane_y = y_top + max(0, line_i) * LANE_H
         view_top = self.yview()[0] * content_h
@@ -210,8 +213,32 @@ class TimelineCanvas(tk.Canvas):
         self._peaks_duration_ms = duration_ms
         self._request_redraw()
 
+    def _wave_h_for(self, canvas_h: int) -> int:
+        """波形**實際**高度：目標 ``WAVE_H``（192），但最少要留一條 lane 畀字幕塊。
+
+        用戶需求 #4 要求波形 +50%，同時時間軸要 -100px（editor）—— 兩者在 1009px
+        高嘅視窗下互相爭位，所以呢度用「有幾多食幾多」：先扣刻度 + 概覽 + 一條
+        lane，剩落嘅全部畀波形（上限 192）。
+        """
+        if self._peaks is None or len(self._peaks) == 0:
+            return 0
+        room = canvas_h - OVERVIEW_H - (RULER_H + 2) - 4 - LANE_H
+        return max(MIN_WAVE_H, min(WAVE_H, room))
+
+    def _lanes_y_top(self, canvas_h: int | None = None) -> int:
+        """字幕 lane 區嘅頂部 y（有冇波形都計得啱）。"""
+        h = self.winfo_height() if canvas_h is None else canvas_h
+        y = RULER_H + 2
+        wave = self._wave_h_for(h)
+        return y + wave + 4 if wave else y
+
     def waveform_y_top(self) -> int:
         return RULER_H + 2
+
+    def restyle(self) -> None:
+        """換主題：畫布底色跟色票，再重畫（所有 item 顏色都係 draw 時讀 theme）。"""
+        self.configure(bg=theme.CANVAS_BG, highlightbackground=theme.BORDER)
+        self._request_redraw()
 
     def _request_redraw(self) -> None:
         """R7：拖曳連續重繪用 after debounce（~16ms 一幀）。"""
@@ -255,9 +282,11 @@ class TimelineCanvas(tk.Canvas):
             t += interval
 
         # --- 波形（§6.6：filled polygon；載入音訊後先有）---
+        canvas_h = self.winfo_height()
         y_top = RULER_H + 2
-        if self._peaks is not None and len(self._peaks) > 0:
-            wy0, wy1 = y_top, y_top + WAVE_H
+        wave_h = self._wave_h_for(canvas_h)
+        if wave_h:
+            wy0, wy1 = y_top, y_top + wave_h
             ms_per_bin = self._peaks_duration_ms / len(self._peaks)
             # 每 px 想畫 1 點：bins per px = 1 / (ms_per_bin * ppm)
             step = max(1, int(round(1.0 / (ms_per_bin * ppm))))
@@ -269,22 +298,22 @@ class TimelineCanvas(tk.Canvas):
                     continue
                 if x > w + 2:
                     break
-                h = max(0.5, float(self._peaks[i]) * (WAVE_H / 2))
+                h = max(0.5, float(self._peaks[i]) * (wave_h / 2))
                 pts_top.append((x, (wy0 + wy1) / 2 - h))
                 pts_bot.append((x, (wy0 + wy1) / 2 + h))
             if len(pts_top) >= 2:
                 poly = pts_top + pts_bot[::-1]
-                self.create_polygon(poly, fill="#2a3a52", outline="", smooth=True)
-                self.create_line(pts_top, fill="#3AA0FF", width=1)
+                self.create_polygon(poly, fill=theme.WAVE_FILL, outline="", smooth=True)
+                self.create_line(pts_top, fill=theme.WAVE_LINE, width=1)
             y_top = wy1 + 4
 
         # --- 逐字方塊（每行一條 lane；篩選模式只畫有估算字嘅行 §4.4）---
         visible = st.visible_lines()
         indices = [i for i, _ in visible]
         view_lines = [l for _, l in visible]
-        # 固定 lane 數 = 畫布容到幾多行（至少 2）；全部句子永遠可見
-        lane_area = max(2 * LANE_H, self.winfo_height() - OVERVIEW_H - y_top)
-        n_lanes = max(2, int(lane_area // LANE_H))
+        # 固定 lane 數 = 畫布容到幾多行（至少 1）；全部句子永遠可見
+        lane_area = max(LANE_H, canvas_h - OVERVIEW_H - y_top)
+        n_lanes = max(1, int(lane_area // LANE_H))
         self._rects = compute_layout(view_lines, ppm, view, w, y_top,
                                      indices=indices, n_lanes=n_lanes)
         current_line = st.current_line_i
@@ -295,10 +324,11 @@ class TimelineCanvas(tk.Canvas):
             is_sel = selected == (line_i, word_i, char_i)
             # 配色（用戶回報：普通字塊太暗以為冇用）—— 藍灰＝已確認，暗橙＝估算
             if estimated:
-                fill = "#4a3c22"
+                fill = theme.BLOCK_EST_FILL
             else:
-                fill = "#3b4a63" if line_i != current_line else "#4a5d80"
-            outline = theme.WARNING if estimated else "#5a6d8c"
+                fill = theme.BLOCK_FILL if line_i != current_line \
+                    else theme.BLOCK_FILL_CURRENT
+            outline = theme.WARNING if estimated else theme.BLOCK_OUTLINE
             width = 1
             if is_sel:
                 fill, outline, width = theme.ACCENT_DIM, theme.ACCENT, 2
@@ -309,7 +339,7 @@ class TimelineCanvas(tk.Canvas):
             if x1 - x0 >= 14:
                 self.create_text((x0 + x1) / 2, (y0 + y1) / 2,
                                  text=label,
-                                 fill=theme.FG_MAIN, font=(theme.ui_font_family(), 10))
+                                 fill=theme.BLOCK_TEXT, font=(theme.ui_font_family(), 10))
 
         # --- 無字幕區段斜紋（R5）：>3 秒冇行覆蓋嘅 gap ---
         lane_bottom = y_top + n_lanes * LANE_H
@@ -326,7 +356,7 @@ class TimelineCanvas(tk.Canvas):
         total = max(1, models_total_ms(st))
         oy = self.winfo_height() - OVERVIEW_H
         if oy > y_top:
-            self.create_rectangle(0, oy, w, oy + OVERVIEW_H, fill="#101016",
+            self.create_rectangle(0, oy, w, oy + OVERVIEW_H, fill=theme.OVERVIEW_BG,
                                   outline=theme.BORDER)
             vw = max(8, w * (w / ppm) / total)
             vx = w * view / total
@@ -337,7 +367,7 @@ class TimelineCanvas(tk.Canvas):
                 x0 = int(line.get("start_ms", 0)) / total * w
                 x1 = int(line.get("end_ms", 0)) / total * w
                 self.create_rectangle(x0, oy + OVERVIEW_H - 4, max(x1, x0 + 1),
-                                      oy + OVERVIEW_H - 2, fill="#5a5a6e", outline="")
+                                      oy + OVERVIEW_H - 2, fill=theme.OVERVIEW_MARK, outline="")
             self._overview_y = oy   # 畀 hit-test 知概覽條範圍（可㩒可拖嚟平移）
 
         # 固定 lane：scrollregion 鎖死畫布大小 —— 冇垂直捲動
@@ -364,9 +394,9 @@ class TimelineCanvas(tk.Canvas):
             x0, x1 = max(0, x0), min(w, x1)
             if x1 - x0 < 6:
                 continue
-            self.create_rectangle(x0, y_top, x1, y_bottom, fill="#1c1c24",
+            self.create_rectangle(x0, y_top, x1, y_bottom, fill=theme.GAP_FILL,
                                   outline=theme.BORDER, stipple="gray50")
-            self.create_line(x0, y_bottom, x1, y_top, fill="#2c2c38")
+            self.create_line(x0, y_bottom, x1, y_top, fill=theme.GAP_LINE)
             if x1 - x0 > 90:
                 self.create_text((x0 + x1) / 2, (y_top + y_bottom) / 2,
                                  text="無字幕區段", fill=theme.FG_DIM,

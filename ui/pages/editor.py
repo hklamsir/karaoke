@@ -23,17 +23,24 @@ from ..commands import DeleteLine, InsertWord, MergeLines, SetCharTiming, SetLin
 from ..widgets.lyric_tree import LyricTree
 from ..widgets.progress import QueueLogHandler
 from ..widgets.timeline import TimelineCanvas
+from ..widgets.tooltip import Tooltip
 
 FETCH_MS = 100      # ←→ 游標步長
 FINE_MS = 10        # Shift ←→
 FRAME_MS = 17       # Ctrl ←→ ≈ 1 帧 @60fps
+
+PREVIEW_EXTRA_H = 80    # 用戶需求：影片預覽窗格 +80px（時間軸相應 -80px）→ 波形 192 擠得落
+MIN_TIMELINE_H = 200    # 時間軸最少高度：再縮就見唔到波形 + 字幕塊
+LEFT_W = 386            # 左欄闊度：歌詞樹 5 欄 370 + scrollbar 8 + 邊框/內距 8
+
+LOGGER = logging.getLogger("karaoke.ui.editor")
 
 
 class EditorPage(ttkb.Frame):
     """字幕編輯器。"""
 
     def __init__(self, master) -> None:
-        super().__init__(master, bootstyle="dark")
+        super().__init__(master, bootstyle="light")
         self._state = state.EditorState()
         self._audio = None          # commit 6
         self._audio_note = ""
@@ -41,22 +48,24 @@ class EditorPage(ttkb.Frame):
         self._edit_target_i = None  # inline 修改歌詞目標行
 
         self._build_toolbar()
-        body = ttkb.Frame(self, bootstyle="dark")
+        body = ttkb.Frame(self, bootstyle="light")
         body.pack(fill="both", expand=True, pady=(theme.SPACE, 0))
 
         # --- 左欄：歌詞樹 + 逐字微調 ---
-        self._left = left = ttkb.Frame(body, bootstyle="dark", width=260)
+        # 用戶需求：歌詞樹 5 欄總寬 = 370px → 欄寬要 370，加埋垂直 scrollbar(8)、
+        # LabelFrame 邊框(4)、內距(4) = LEFT_W 386，先可以一欄都唔裁。
+        self._left = left = ttkb.Frame(body, bootstyle="light", width=LEFT_W)
         left.pack(side="left", fill="y", padx=(0, theme.SPACE))
         left.pack_propagate(False)
 
-        tree_box = ttkb.LabelFrame(left, text="歌詞樹", bootstyle="dark")
+        tree_box = ttkb.LabelFrame(left, text="歌詞樹", bootstyle="light")
         tree_box.pack(fill="both", expand=True)
         self._tree = LyricTree(tree_box, self._state,
                                on_play_line=self._play_line,
                                on_add_line=self._show_add_line_bar)
         self._tree.pack(fill="both", expand=True, padx=2, pady=2)
 
-        row = ttkb.Frame(left, bootstyle="dark")
+        row = ttkb.Frame(left, bootstyle="light")
         row.pack(fill="x", pady=(2, 0))
         ttkb.Button(row, text="✏ 修改", bootstyle="secondary", takefocus=False,
                     command=self._edit_selected_line).pack(side="left", padx=(0, 2))
@@ -68,17 +77,18 @@ class EditorPage(ttkb.Frame):
                     command=self._delete_line).pack(side="left", padx=2)
 
         # --- 可拖曳分隔條（用戶需求 #2）：調整左欄（歌詞樹/逐字微調）闊度 ---
-        self._left_w = 260
+        self._left_w = LEFT_W
         self._left_sep = tk.Canvas(body, width=5, bg=theme.BG_HOVER,
                                    highlightthickness=0, cursor="sb_h_double_arrow")
+        self._left_sep._theme_token = "BG_HOVER"   # 換主題時 _restyle_tree 用
         self._left_sep.pack(side="left", fill="y")
         self._left_sep.bind("<Button-1>", self._on_leftsep_press)
         self._left_sep.bind("<B1-Motion>", self._on_leftsep_drag)
 
         # --- inline 修改歌詞列（用戶回報彈窗「確定」兩次都冇生效 → 改 inline，
         #     冇 grab/focus 陷阱；Enter 套用 / Esc 取消）---
-        self._edit_frame = ttkb.LabelFrame(left, text="修改歌詞", bootstyle="dark")
-        erow = ttkb.Frame(self._edit_frame, bootstyle="dark")
+        self._edit_frame = ttkb.LabelFrame(left, text="修改歌詞", bootstyle="light")
+        erow = ttkb.Frame(self._edit_frame, bootstyle="light")
         erow.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
         self._edit_line_label = ttkb.Label(erow, text="第 -- 行", width=8,
                                            bootstyle="secondary")
@@ -88,10 +98,12 @@ class EditorPage(ttkb.Frame):
         self._edit_entry.pack(fill="x", padx=theme.SPACE)
         self._edit_entry.bind("<Return>", lambda _e: self._apply_line_edit())
         self._edit_entry.bind("<Escape>", lambda _e: self._hide_line_edit())
-        ebtns = ttkb.Frame(self._edit_frame, bootstyle="dark")
+        ebtns = ttkb.Frame(self._edit_frame, bootstyle="light")
         ebtns.pack(fill="x", padx=theme.SPACE, pady=(2, theme.SPACE))
-        ttkb.Button(ebtns, text="✓ 套用 (Enter)", bootstyle=theme.ACCENT, takefocus=False,
-                    command=self._apply_line_edit).pack(side="right", padx=2)
+        self._apply_btn = ttkb.Button(ebtns, text="✓ 套用 (Enter)",
+                                      bootstyle=theme.ACCENT, takefocus=False,
+                                      command=self._apply_line_edit)
+        self._apply_btn.pack(side="right", padx=2)
         ttkb.Button(ebtns, text="取消 (Esc)", bootstyle="secondary", takefocus=False,
                     command=self._hide_line_edit).pack(side="right")
         # 預設收埋；pack 時用 before=self._ft_box 插喺逐字微調前面
@@ -100,8 +112,8 @@ class EditorPage(ttkb.Frame):
         #     同「修改歌詞」一樣改 inline，徹底鏟走 Toplevel 焦點陷阱）---
         self._ask_mode: str | None = None      # "char" | "line" | None
         self._ask_ref: tuple[int, int, int] | None = None
-        self._ask_frame = ttkb.LabelFrame(left, text="插入", bootstyle="dark")
-        arow = ttkb.Frame(self._ask_frame, bootstyle="dark")
+        self._ask_frame = ttkb.LabelFrame(left, text="插入", bootstyle="light")
+        arow = ttkb.Frame(self._ask_frame, bootstyle="light")
         arow.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
         self._ask_label = ttkb.Label(arow, text="", bootstyle="secondary")
         self._ask_label.pack(side="left")
@@ -110,9 +122,11 @@ class EditorPage(ttkb.Frame):
         self._ask_entry.pack(fill="x", padx=theme.SPACE)
         self._ask_entry.bind("<Return>", lambda _e: self._apply_ask())
         self._ask_entry.bind("<Escape>", lambda _e: self._hide_ask())
-        ttkb.Button(self._ask_frame, text="✓ 確定 (Enter)", bootstyle=theme.ACCENT,
-                    takefocus=False, command=self._apply_ask) \
-            .pack(side="right", padx=(2, theme.SPACE), pady=(2, theme.SPACE))
+        self._ask_ok_btn = ttkb.Button(self._ask_frame, text="✓ 確定 (Enter)",
+                                       bootstyle=theme.ACCENT, takefocus=False,
+                                       command=self._apply_ask)
+        self._ask_ok_btn.pack(side="right", padx=(2, theme.SPACE),
+                              pady=(2, theme.SPACE))
         ttkb.Button(self._ask_frame, text="取消 (Esc)", bootstyle="secondary",
                     takefocus=False, command=self._hide_ask) \
             .pack(side="right", pady=(2, theme.SPACE))
@@ -121,10 +135,10 @@ class EditorPage(ttkb.Frame):
         self._build_finetune(left)
 
         # --- 右欄：大 preview 窗 + 可拖曳分隔條 + 時間軸 ---
-        self._right = ttkb.Frame(body, bootstyle="dark")
+        self._right = ttkb.Frame(body, bootstyle="light")
         self._right.pack(side="left", fill="both", expand=True)
 
-        self._preview_slot = ttkb.LabelFrame(self._right, text="影片預覽", bootstyle="dark")
+        self._preview_slot = ttkb.LabelFrame(self._right, text="影片預覽", bootstyle="light")
         from ..widgets.preview import PreviewPane
         self._preview = PreviewPane(self._preview_slot, self._state, on_seek=self._on_seek)
         self._preview.pack(fill="both", expand=True, padx=2, pady=2)
@@ -132,34 +146,38 @@ class EditorPage(ttkb.Frame):
         # 可拖曳分隔條（§6.7.2：預覽 30%–75%；V17）
         self._separator = tk.Canvas(self._right, height=8, bg=theme.BG_HOVER,
                                     highlightthickness=0, cursor="sb_v_double_arrow")
+        self._separator._theme_token = "BG_HOVER"   # 換主題時 _restyle_tree 用
         self._separator.bind("<Button-1>", self._on_separator_press)
         self._separator.bind("<B1-Motion>", self._on_separator_drag)
 
-        self._tl_box = ttkb.LabelFrame(self._right, text="時間軸 · 波形", bootstyle="dark")
+        # 用戶需求 #4：時間軸要讓 100px 出嚟 → 圖例由獨立一行搬上 LabelFrame 標題
+        # （原本獨立一行食 ~20px 垂直空間；搬上標題後零成本，訊息一樣睇得到）
+        self._tl_box = ttkb.LabelFrame(
+            self._right,
+            text="時間軸 · 波形　字塊＝逐字時間（拖曳校）｜橙虛線＝估算字｜藍＝波形",
+            bootstyle="light")
         self._timeline = TimelineCanvas(self._tl_box, self._state, on_seek=self._on_seek)
         # 縮放掣移入時間軸區域（用戶需求 #2）：同一行放 🔍－/🔍＋ + 水平捲軸
-        zoombar = ttkb.Frame(self._tl_box, bootstyle="dark")
+        zoombar = ttkb.Frame(self._tl_box, bootstyle="light")
         zoombar.pack(side="bottom", fill="x")
         ttkb.Button(zoombar, text="🔍－", width=3, bootstyle="secondary", takefocus=False,
                     command=lambda: self._state.zoom(-1)).pack(side="left", padx=(2, 1))
         ttkb.Button(zoombar, text="🔍＋", width=3, bootstyle="secondary", takefocus=False,
                     command=lambda: self._state.zoom(+1)).pack(side="left", padx=(1, 2))
-        # 水平捲軸（用戶需求 #1）：控制 view_start；follow 自動翻頁時同步
-        self._hscroll_syncing = False
-        self._hscroll = ttkb.Scale(zoombar, from_=0, to=1000,
-                                   orient="horizontal", command=self._on_hscroll,
-                                   bootstyle="secondary")
-        self._hscroll.pack(side="left", fill="x", expand=True, padx=2)
-        # 圖例（用戶回報：唔知橙色係乜）—— 放 timeline 底
-        ttkb.Label(self._tl_box,
-                   text="字塊＝逐字時間（拖曳校）｜橙虛線＝估算字（要人手校）｜藍＝波形（參考）",
+        # 用戶需求：水平平移 slider 拆走 —— 底部概覽條（可拖）＋ Shift+滾輪
+        # 已經做到同一件事，兩套控制容易混淆。呢度只留一句提示。
+        ttkb.Label(zoombar,
+                   text="拖底部藍色概覽條，或用 Shift + 滾輪左右平移；滾輪縮放",
                    bootstyle="secondary", font=(theme.ui_font_family(), 8)) \
-            .pack(side="bottom", fill="x", padx=theme.SPACE)
+            .pack(side="left", padx=(8, 0))
         self._timeline.pack(fill="both", expand=True, padx=2, pady=2)
         # 開檔後 fit（用戶需求 #3）：timeline 真正 layout 好（<Configure>，w>100）先量得準
         self._timeline.bind("<Configure>", lambda _e: self._zoom_fit_once())
 
+        # 預覽窗格高度（px）——用戶需求 #3：由「比例制」改「像素制」，
+        # 舊比例 0.55 × 右欄高 + 100px（-1 = 未量度，等 <Configure> 有高度先算）
         self._preview_ratio = 0.55
+        self._preview_h = -1
         self._right.bind("<Configure>", lambda _e: self._relayout_right())
         self._relayout_right()
 
@@ -173,7 +191,7 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_toolbar(self) -> None:
-        bar = ttkb.Frame(self, height=theme.TOOLBAR_H, bootstyle="dark")
+        bar = ttkb.Frame(self, height=theme.TOOLBAR_H, bootstyle="light")
         bar.pack(fill="x")
         self._save_btn = ttkb.Button(bar, text="💾 儲存", bootstyle="secondary",
                                      takefocus=False, command=self.save)
@@ -183,20 +201,18 @@ class EditorPage(ttkb.Frame):
         self._burn_btn.pack(side="left", padx=2)
         # ↶/↷ glyph JhengHei UI 冇 → 專屬 style 用 Segoe UI Symbol
         # （ttk Button 唔收 font 選項，要 style.configure）
-        _s = ttkb.Style()
-        _s.configure("Symbol.TButton", font=("Segoe UI Symbol", 11),
-                     background=theme.BG_HOVER, foreground=theme.FG_MAIN,
-                     bordercolor=theme.BORDER, lightcolor=theme.BG_HOVER,
-                     darkcolor=theme.BG_HOVER, relief="flat")
-        _s.map("Symbol.TButton",
-               background=[("active", theme.ACCENT_DIM), ("disabled", theme.BG_PANEL)],
-               foreground=[("disabled", theme.FG_DIM)])
+        self._symbol_styles()
         self._undo_btn = ttkb.Button(bar, text="↶", width=3, takefocus=False,
                                      command=self.undo, style="Symbol.TButton")
         self._undo_btn.pack(side="left", padx=2)
         self._redo_btn = ttkb.Button(bar, text="↷", width=3, takefocus=False,
                                      command=self.redo, style="Symbol.TButton")
         self._redo_btn.pack(side="left", padx=2)
+        # 用戶需求：↶/↷ 係純圖示，唔講明就唔知係 undo/redo（亦唔知做過乜）
+        Tooltip(self._undo_btn, self._undo_hint)
+        Tooltip(self._redo_btn, self._redo_hint)
+        Tooltip(self._save_btn, "儲存 timings.json（Ctrl+S）")
+        Tooltip(self._burn_btn, "依主頁樣式燒錄成 mp4")
 
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
         self._btn_home = ttkb.Button(bar, text="⏮", width=3, bootstyle="secondary",
@@ -214,13 +230,13 @@ class EditorPage(ttkb.Frame):
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
         self._est_on = tk.BooleanVar(value=False)
         self._est_chip = ttkb.Checkbutton(bar, text="只顯示估算字", variable=self._est_on,
-                                          bootstyle="dark-round-toggle",
+                                          bootstyle="primary-round-toggle",
                                           command=self._toggle_est_filter)
         self._est_chip.pack(side="left", padx=2)
         self._overlay_on = tk.BooleanVar(value=True)
         self._overlay_chip = ttkb.Checkbutton(
             bar, text="字幕疊圖", variable=self._overlay_on,
-            bootstyle="dark-round-toggle", command=self._toggle_overlay)
+            bootstyle="primary-round-toggle", command=self._toggle_overlay)
         self._overlay_chip.pack(side="left", padx=2)
         ttkb.Button(bar, text="🎨", width=3, bootstyle="secondary", takefocus=False,
                     command=self._edit_style).pack(side="left", padx=2)
@@ -230,8 +246,47 @@ class EditorPage(ttkb.Frame):
         ttkb.Label(bar, textvariable=self._time_var, bootstyle="info",
                    font=(theme.mono_font_family(), 11)).pack(side="right", padx=theme.SPACE)
 
+    def _symbol_styles(self) -> None:
+        """↶/↷ 專屬 style：Segoe UI Symbol 字型 + 跟 secondary 按鈕配色。
+
+        顏色照抄 ``secondary.TButton``（同旁邊嘅 💾/🔥 一致）；換主題後要重跑，
+        所以抽成獨立方法（``restyle`` 會再叫一次）。
+        """
+        _s = ttkb.Style()
+
+        def _lk(opt: str, fallback: str) -> str:
+            try:
+                return _s.lookup("secondary.TButton", opt) or fallback
+            except Exception:      # noqa: BLE001
+                return fallback
+
+        sec_bg, sec_fg = _lk("background", theme.BG_HOVER), _lk("foreground", theme.FG_MAIN)
+        sec_bd = _lk("bordercolor", theme.BORDER)
+        _s.configure("Symbol.TButton", font=("Segoe UI Symbol", 12),
+                     background=sec_bg, foreground=sec_fg,
+                     bordercolor=sec_bd, lightcolor=sec_bg,
+                     darkcolor=sec_bg, relief="flat", padding=(4, 2))
+        # disabled 狀態唔可以用近底色（掣會「消失」）；同底色一樣灰 + 淡字
+        _s.map("Symbol.TButton",
+               background=[("active", theme.BG_HOVER), ("disabled", sec_bg)],
+               foreground=[("disabled", theme.FG_DIMMER)])
+
+    def restyle(self) -> None:
+        """換主題後重設自訂 style 與 tag 色（ttk 控件本身會跟 style 自動變）。"""
+        self._symbol_styles()
+        self._ft_tree.tag_configure("estimated", foreground=theme.WARNING)
+        for btn in (self._burn_btn, getattr(self, "_apply_btn", None),
+                    getattr(self, "_ask_ok_btn", None)):
+            if btn is None:
+                continue
+            try:
+                btn.configure(bootstyle=theme.ACCENT)
+            except Exception:      # noqa: BLE001
+                pass
+
+
     def _build_statusbar(self) -> None:
-        bar = ttkb.Frame(self, bootstyle="dark")
+        bar = ttkb.Frame(self, bootstyle="light")
         bar.pack(fill="x", pady=(2, 0))
         self._status_var = tk.StringVar(value="未開檔")
         ttkb.Label(bar, textvariable=self._status_var, bootstyle="secondary",
@@ -242,24 +297,29 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_finetune(self, parent) -> None:
-        self._ft_box = box = ttkb.LabelFrame(parent, text="逐字微調", bootstyle="dark")
+        self._ft_box = box = ttkb.LabelFrame(parent, text="逐字微調", bootstyle="light")
         box.pack(fill="both", pady=(theme.SPACE, 0))
 
         mono = theme.mono_font_family()
         self._ft_tree = ttkb.Treeview(box, columns=("ch", "word", "begin", "end"),
-                                      show="headings", height=6, bootstyle="dark")
-        for key, label, width, anchor in (("ch", "字", 36, "center"),
-                                          ("word", "詞", 64, "w"),
-                                          ("begin", "begin", 64, "e"),
-                                          ("end", "end", 64, "e")):
-            self._ft_tree.heading(key, text=label)
-            self._ft_tree.column(key, width=width, anchor=anchor)
+                                      show="headings", height=6, bootstyle="light")
+        # 用戶需求：**「詞」要靠左對齊** —— 之前只設 column anchor="w"，但標題
+        # 仍然置中，結果「詞」字浮喺右邊同下面嘅詞語對唔上，讀起上嚟唔知邊欄
+        # 打邊欄。而家 heading 同 cell 用**同一個 anchor**，四欄一致。
+        # 亦固定 ch/begin 闊度、由 word/end 吸收剩餘闊度，欄位唔會因視窗闊度跳位。
+        for key, label, width, anchor, stretch in (
+                ("ch", "字", 36, "center", False),
+                ("word", "詞", 140, "w", True),
+                ("begin", "begin", 64, "e", False),
+                ("end", "end", 64, "e", True)):
+            self._ft_tree.heading(key, text=label, anchor=anchor)
+            self._ft_tree.column(key, width=width, anchor=anchor, stretch=stretch)
         self._ft_tree.tag_configure("estimated", foreground=theme.WARNING)
         self._ft_tree.pack(fill="both", expand=True, padx=2, pady=2)
         self._ft_tree.bind("<<TreeviewSelect>>", self._on_ft_select)
         self._ft_syncing = False   # 防 selection_set ↔ <<TreeviewSelect>> 無限循環
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=2, pady=2)
         ttkb.Label(row, text="begin", bootstyle="secondary",
                    font=(mono, 9)).pack(side="left")
@@ -276,7 +336,7 @@ class EditorPage(ttkb.Frame):
         # ⚠️ 套用掣原本喺呢行尾——左欄 260px 唔夠闊，被裁出畫面外（用戶實測
         # 「冇確定掣」）。搬落 row2 頭，同斷句/插入字並排。
 
-        row2 = ttkb.Frame(box, bootstyle="dark")
+        row2 = ttkb.Frame(box, bootstyle="light")
         row2.pack(fill="x", padx=2, pady=(0, 2))
         ttkb.Button(row2, text="✓ 確定", bootstyle="secondary", takefocus=False,
                     command=self._apply_ft).pack(side="left", padx=(0, 2))
@@ -313,6 +373,37 @@ class EditorPage(ttkb.Frame):
                     self._state.reassign_video(new)
         self._load_audio()
         self._load_thumbs()
+        # ADR-015：開檔即把該片樣式反映去主頁面板（所見即所燒）
+        self._sync_home_style()
+
+    def _sync_home_style(self) -> None:
+        """``doc.style`` → 主頁樣式面板（燒錄以主頁為權威，兩者必須一致）。"""
+        style = self._state.doc.get("style") or {}
+        if not style:
+            return
+        getter = getattr(self.master, "page", None)
+        home = getter("home") if callable(getter) else None
+        if home is not None and hasattr(home, "apply_style"):
+            try:
+                home.apply_style(style)
+            except Exception:   # noqa: BLE001 — 同步失敗唔應該阻住開檔
+                LOGGER.exception("同步主頁樣式失敗")
+
+    def on_home_style_changed(self, style: dict) -> None:
+        """主頁改樣式 → 更新現有 doc.style 並重繪疊圖（ADR-015 單一來源）。
+
+        Args:
+            style: 主頁 ``style_snapshot()`` 結果（唔含 play_res）。
+        """
+        if not style or self._state.path is None:
+            return
+        current = self._state.doc.setdefault("style", {})
+        changed = {k: v for k, v in style.items() if current.get(k) != v}
+        if not changed:
+            return
+        current.update(changed)
+        self._state.dirty = True
+        self._state.notify("style")
 
     def _load_thumbs(self) -> None:
         """縮圖抽取（§6.7.4）：背景 thread + 快取；冇原片就顯示提示。"""
@@ -424,44 +515,68 @@ class EditorPage(ttkb.Frame):
         if video is None or not video.is_file():
             messagebox.showerror("燒錄", "原片唔存在（先喺開檔時「重新指定原片」）。")
             return
-        if not messagebox.askyesno(
-                "燒錄確認",
-                f"將以原片 + 最新時間軸燒錄：\n{video.name}\n\n"
-                f"（會先自動 render 最新 .ass 再跑 ffmpeg，需時幾分鐘）",
-                parent=self):
-            return
         from .. import settings as ui_settings
         ffmpeg = ui_settings.detect_ffmpeg(self.master.settings_data)
         if not ffmpeg:
             messagebox.showerror("燒錄", "搵唔到 ffmpeg（設定頁填路徑）。")
             return
 
-        # 1) 先儲存 + render 最新 ass（唔可以直接寫 ass 畀人手改 —— 係 burn 嘅中間產物）
+        # ADR-015：主頁樣式 = 燒錄權威來源（用戶回報「燒錄冇跟主頁設定」）
+        home_style = self._home_style()
+        if not messagebox.askyesno(
+                "燒錄確認",
+                f"將以原片 + 最新時間軸燒錄：\n{video.name}\n\n"
+                f"字幕樣式（跟主頁設定）：\n  {_describe_style(home_style)}\n\n"
+                f"（會先自動 render 最新 .ass 再跑 ffmpeg，需時幾分鐘）",
+                parent=self):
+            return
+
+        # 1) 把主頁樣式寫入 doc（令 timings.json 同燒錄結果一致）→ 儲存
+        if home_style:
+            st.doc.setdefault("style", {}).update(home_style)
+            st.dirty = True
         try:
             st.save()
         except Exception as exc:   # noqa: BLE001
             messagebox.showerror("燒錄", f"儲存失敗：{exc}")
             return
+
+        # 2) render 最新 ass（唔可以直接寫 ass 畀人手改 —— 係 burn 嘅中間產物）
+        doc = st.doc
         ass_path = st.path.with_name(st.path.stem.replace("_timings", "_karaoke") + ".ass")
         output = video.with_name(f"{video.stem}_karaoke.mp4")
-        doc = st.doc
         strip_punct = bool((doc.get("source") or {}).get("strip_punctuation", True))
         import main as _main
-        _, style = _main.timings_doc_to_lines(doc)
-        ass_text = _main.render_timings(doc, style, strip_punctuation=strip_punct)
+        _, doc_style = _main.timings_doc_to_lines(doc)
+        if home_style:
+            # 顯式覆寫：連舊檔 style 缺欄位都保證跟主頁
+            from dataclasses import replace as _replace
+            doc_style = _replace(doc_style, **home_style)
+        ass_text = _main.render_timings(doc, doc_style, strip_punctuation=strip_punct)
         ass_path.write_text(ass_text, encoding="utf-8")
+        LOGGER.info("燒錄樣式：%s", _describe_style(home_style))
 
-        # 2) 進度窗（Toplevel + StageProgress）
+        # 3) 進度窗（置中 + log 預設展開；用戶回報 dialog 冇置中、睇唔到 log）
+        from ..widgets.dialogs import center_window
         from ..widgets.progress import StageProgress
-        win = ttkb.Toplevel(title="燒錄中…", size=(460, 220))
-        prog = StageProgress(win, stages=["燒錄"])
-        prog.pack(fill="both", expand=True, padx=12, pady=12)
+        win_size = (680, 460)
+        win = ttkb.Toplevel(title="燒錄中…", size=win_size)
+        win.transient(self.winfo_toplevel())
+        win.minsize(560, 360)
+        btn_row = ttkb.Frame(win, bootstyle="light")
+        btn_row.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+        ttkb.Button(btn_row, text="關閉", bootstyle="secondary", takefocus=False,
+                    command=win.destroy).pack(side="right")
+        prog = StageProgress(win, stages=["燒錄"], log_open=True, log_height=14)
+        prog.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        center_window(win, self, win_size)
         self._burn_btn.configure(state="disabled")
         handler = QueueLogHandler(prog)
         logging.getLogger("karaoke").addHandler(handler)
 
         def on_error(msg: str) -> None:
             prog.fail(msg)
+            self._safe_title(win, "燒錄失敗 ✕")
             messagebox.showerror("燒錄失敗", msg, parent=self)
 
         def worker() -> None:
@@ -477,13 +592,35 @@ class EditorPage(ttkb.Frame):
                 self.after(0, lambda err=err: on_error(err))
             else:
                 prog.succeed("完成 ✅")
+                # 唔自動關窗 —— log 預設打開，畀用戶自己睇完再關
+                self.after(0, lambda: self._safe_title(win, "燒錄完成 ✅"))
                 self.after(0, lambda: self._on_burn_done(output))
             finally:
                 logging.getLogger("karaoke").removeHandler(handler)
                 self.after(0, lambda: self._burn_btn.configure(state="normal"))
-                self.after(3000, win.destroy)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _safe_title(win, text: str) -> None:
+        """視窗可能已被用戶關咗 → 改標題要吞 TclError。"""
+        try:
+            if win.winfo_exists():
+                win.title(text)
+        except tk.TclError:
+            pass
+
+    def _home_style(self) -> dict:
+        """主頁樣式面板當前值；冇主頁（測試 / 單獨開 editor）就回空 dict。"""
+        getter = getattr(self.master, "page", None)
+        home = getter("home") if callable(getter) else None
+        if home is None or not hasattr(home, "style_snapshot"):
+            return {}
+        try:
+            return home.style_snapshot()
+        except Exception:   # noqa: BLE001 — 樣式同步失敗唔應該阻住燒錄
+            LOGGER.exception("讀取主頁樣式失敗，改用檔案內嵌樣式")
+            return {}
 
     def _on_burn_done(self, output: Path) -> None:
         if messagebox.askyesno("燒錄完成 ✅", f"{output}\n\n開啟資料夾？", parent=self):
@@ -509,6 +646,35 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
     # undo / redo / transport
     # ------------------------------------------------------------------
+
+    #: command 類名 → 人話（提示用）
+    _CMD_NAMES = {
+        "SetCharTiming": "調整字時間",
+        "SetWordShift": "平移字塊",
+        "SetLineText": "修改歌詞",
+        "SplitLine": "斷句",
+        "MergeLines": "合併句子",
+        "InsertWord": "插入字詞",
+        "RespreadWord": "重新分配時間",
+        "AddLine": "新增歌詞行",
+        "DeleteLine": "刪除歌詞行",
+    }
+
+    def _cmd_name(self, cmd) -> str:
+        return self._CMD_NAMES.get(type(cmd).__name__, type(cmd).__name__)
+
+    def _undo_hint(self) -> str:
+        """復原掣嘅提示：連「會回退邊一步」都講埋（純圖示要自解）。"""
+        cmd = self._state.undo_stack.peek_undo()
+        if cmd is None:
+            return "復原（Ctrl+Z）\n目前沒有可復原的操作"
+        return f"復原：{self._cmd_name(cmd)}（Ctrl+Z）\n快捷鍵：Ctrl+Z"
+
+    def _redo_hint(self) -> str:
+        cmd = self._state.undo_stack.peek_redo()
+        if cmd is None:
+            return "重做（Ctrl+Shift+Z / Ctrl+Y）\n目前沒有可重做的操作"
+        return f"重做：{self._cmd_name(cmd)}（Ctrl+Shift+Z）\n快捷鍵：Ctrl+Shift+Z 或 Ctrl+Y"
 
     def undo(self) -> None:
         if not self._state.undo():
@@ -679,8 +845,6 @@ class EditorPage(ttkb.Frame):
     def _on_state_change(self, reason: str) -> None:
         if reason in ("load", "edit", "save", "select", "follow"):
             self._refresh_finetune()
-        if reason in ("pan", "zoom", "load"):
-            self._sync_hscroll()
         self._refresh_buttons()
         self._refresh_status()
         self._update_time_display()
@@ -765,30 +929,8 @@ class EditorPage(ttkb.Frame):
         self._state.toggle_filter_estimated()
 
     # ------------------------------------------------------------------
-    # 水平捲軸（用戶需求 #1）＋ 樣式色彩（用戶需求 #3）
+    # 樣式色彩（用戶需求 #3）
     # ------------------------------------------------------------------
-
-    def _sync_hscroll(self) -> None:
-        """view_start ↔ 捲軸同步（pan/zoom/load 後；playing 翻頁都會 pan）。"""
-        st = self._state
-        total = models.total_duration_ms(st.doc)
-        view_span = max(1.0, self._timeline.winfo_width() / st.px_per_ms)
-        max_start = max(0.0, total - view_span)
-        self._hscroll_syncing = True
-        try:
-            self._hscroll.configure(to=max(1.0, max_start))
-            self._hscroll.set(min(max(0.0, st.view_start_ms), max_start))
-        finally:
-            self._hscroll_syncing = False
-
-    def _on_hscroll(self, value) -> None:
-        if self._hscroll_syncing:
-            return
-        st = self._state
-        v = int(float(value))
-        if v != st.view_start_ms:
-            st.view_start_ms = v
-            st.notify("pan")
 
     def _edit_style(self) -> None:
         """🎨 樣式：直接改**現有 doc** 嘅唱過/未唱/描邊色（疊圖即時生效，
@@ -801,10 +943,11 @@ class EditorPage(ttkb.Frame):
         labels = {"primary_color": "唱過色", "secondary_color": "未唱色",
                   "outline_color": "描邊色"}
         dlg = ttkb.Toplevel(title="樣式顏色", size=(330, 190))
+        dlg.transient(self.winfo_toplevel())
         vars_: dict[str, tk.StringVar] = {}
         swatches: dict[str, tk.Canvas] = {}
         for key, label in labels.items():
-            row = ttkb.Frame(dlg, bootstyle="dark")
+            row = ttkb.Frame(dlg, bootstyle="light")
             row.pack(fill="x", padx=12, pady=4)
             ttkb.Label(row, text=label, width=8, bootstyle="secondary").pack(side="left")
             cur = style.get(key) or defaults[key]
@@ -841,14 +984,17 @@ class EditorPage(ttkb.Frame):
             if changed:
                 self._state.dirty = True
                 self._state.notify("edit")
+                self._sync_home_style()   # 主頁係燒錄權威 → 改色要同步過去
             dlg.destroy()
 
-        btns = ttkb.Frame(dlg, bootstyle="dark")
+        btns = ttkb.Frame(dlg, bootstyle="light")
         btns.pack(fill="x", padx=12, pady=10)
         ttkb.Button(btns, text="確定", bootstyle=theme.ACCENT, command=apply) \
             .pack(side="right", padx=4)
         ttkb.Button(btns, text="取消", bootstyle="secondary",
                     command=dlg.destroy).pack(side="right")
+        from ..widgets.dialogs import center_window
+        center_window(dlg, self, (330, 190))
         try:
             dlg.wait_visibility()
             dlg.grab_set()
@@ -877,17 +1023,32 @@ class EditorPage(ttkb.Frame):
         self._state.push(RespreadWord(ref[0], ref[1]))
 
     def _relayout_right(self) -> None:
-        """分隔條版面（§6.1）：預覽 / 時間軸按 ratio 分；下限 30% 上限 75%。"""
+        """分隔條版面（§6.1）：預覽窗格用**像素高度**，其餘畀時間軸。
+
+        用戶需求 #3／#4：預覽 +100px、時間軸相應 -100px。像素制（而唔係比例制）
+        先可以保證「+100px」係實數 —— 比例制喺任何視窗高度下都會縮水。
+        """
         h = self._right.winfo_height()
         if h < 120:
             return
-        prev_h = int(h * self._preview_ratio)
-        self._preview_slot.place(x=0, y=0, relwidth=1.0, height=max(100, prev_h))
-        sep_y = max(100, prev_h)
+        if self._preview_h <= 0:
+            # 首次量度：舊比例 0.55 × 右欄高，再加 100px
+            self._preview_h = self._clamp_preview_h(int(h * self._preview_ratio)
+                                                   + PREVIEW_EXTRA_H, h)
+        prev_h = self._clamp_preview_h(self._preview_h, h)
+        self._preview_slot.place(x=0, y=0, relwidth=1.0, height=prev_h)
+        sep_y = prev_h
         self._separator.place(x=0, y=sep_y, relwidth=1.0, height=8)
         tl_y = sep_y + 8
         self._tl_box.place(x=0, y=tl_y, relwidth=1.0, relheight=1.0, height=-tl_y)
         self._zoom_fit_once()
+
+    @staticmethod
+    def _clamp_preview_h(value: int, right_h: int) -> int:
+        """夾住預覽高度：最少 120px、最多留 160px 畀時間軸（原本 30%–75% 嘅等價保護）。"""
+        lo = 120
+        hi = max(lo, right_h - MIN_TIMELINE_H)
+        return int(max(lo, min(hi, value)))
 
     def _zoom_fit_once(self) -> None:
         """開檔後第一次 layout 就 fit（用戶需求 #3：時間軸預設 0 至片尾）。"""
@@ -899,13 +1060,17 @@ class EditorPage(ttkb.Frame):
 
     def _on_separator_press(self, event) -> None:
         self._sep_y0 = event.y_root
-        self._sep_ratio0 = self._preview_ratio
+        self._sep_h0 = self._clamp_preview_h(self._preview_h,
+                                            self._right.winfo_height())
 
     def _on_separator_drag(self, event) -> None:
         h = max(self._right.winfo_height(), 1)
         dy = event.y_root - getattr(self, "_sep_y0", event.y_root)
-        self._preview_ratio = max(0.30, min(0.75, self._sep_ratio0 + dy / h))
-        self._relayout_right()
+        base = getattr(self, "_sep_h0", self._preview_h)
+        new_h = self._clamp_preview_h(base + dy, h)
+        if new_h != self._preview_h:
+            self._preview_h = new_h
+            self._relayout_right()
 
     # ------------------------------------------------------------------
     # 左欄闊度拖曳（用戶需求 #2：歌詞樹 / 逐字微調欄可調寬）
@@ -971,3 +1136,20 @@ def _fmt_ms(ms: int) -> str:
     minutes, rest = divmod(ms, 60_000)
     seconds, msec = divmod(rest, 1000)
     return f"{minutes:02d}:{seconds:02d}.{msec:03d}"
+
+
+def _describe_style(style: dict) -> str:
+    """把樣式 dict 變成人讀嘅一句（燒錄確認 / log 用）。"""
+    if not style:
+        return "檔案內嵌樣式（主頁未提供）"
+    align_names = {2: "底部置中", 3: "中下", 5: "中部置中", 8: "頂部置中"}
+    margin = int(style.get("margin_v") or 0)
+    outline = float(style.get("outline_width") or 0.0)
+    return (
+        f"{style.get('font_name', '?')} {style.get('font_size', '?')}px · "
+        f"唱過 {style.get('primary_color', '?')} / 未唱 {style.get('secondary_color', '?')} / "
+        f"描邊 {style.get('outline_color', '?')}"
+        f"（{'自動' if not outline else f'{outline:g}px'}）· "
+        f"{align_names.get(int(style.get('alignment') or 2), '底部置中')} · "
+        f"留白 {'自動' if not margin else f'{margin}px'}"
+    )

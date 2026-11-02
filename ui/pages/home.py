@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import tkinter as tk
 import tkinter.colorchooser as colorchooser
@@ -31,19 +32,50 @@ VIDEO_PATTERNS = [("影片檔", "*.mp4 *.mkv *.mov *.webm *.avi"), ("全部檔�
 _ALIGNMENTS = [("底部置中", 2), ("中下", 3), ("頂部置中", 8), ("中部置中", 5)]
 _OUTLINE_WIDTHS = [("自動", 0.0), ("幼 2", 2.0), ("中 3", 3.0), ("粗 4", 4.0)]
 
+#: 反查表：ASS alignment 數值 → 中文名（開啟舊檔同步樣式時用）
+_ALIGN_NAME = {code: name for name, code in _ALIGNMENTS}
+#: 反查表：描邊 px → 中文名
+_OUTLINE_NAME = {width: name for name, width in _OUTLINE_WIDTHS}
+
+_DEFAULT_FONT = "Microsoft JhengHei"
+
+#: `#RRGGBB` / `RRGGBB` —— 色塊只認呢個格式（Tk 對 `#0000F` 之類會直接拋 TclError）
+_HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
+
+
+def _normalise_hex(value: str) -> str | None:
+    """把用戶輸入正規化成 `#RRGGBB`（大寫）；唔合法就返 ``None``。
+
+    Args:
+        value: 用戶輸入（可帶／唔帶 `#`，大小寫不限）。
+
+    Returns:
+        正規化顏色字串；格式唔啱就 ``None``（呼叫者負責保留舊色）。
+    """
+    text = (value or "").strip()
+    if not _HEX_RE.match(text):
+        return None
+    if not text.startswith("#"):
+        text = "#" + text
+    return text.upper()
+
 
 class HomePage(ttkb.Frame):
     """主頁：新任務 / 開啟現有 / 三層屬性面板 / 樣式預覽 / 分階段進度。"""
 
     def __init__(self, master) -> None:
-        super().__init__(master, bootstyle="dark")
+        super().__init__(master, bootstyle="light")
         self._video_path: Path | None = None
         self._video_info: dict[str, Any] = {}
         self._running = False
+        # 上次主頁樣式（ADR-015：主頁 = 燒錄權威來源，要跨 session 記住）
+        self._saved_style: dict[str, Any] = dict(
+            master.settings_data.get("home_style") or {})
+        self._style_save_job: str | None = None
 
-        left = ttkb.Frame(self, bootstyle="dark")
+        left = ttkb.Frame(self, bootstyle="light")
         left.pack(side="left", fill="both", expand=True, padx=(0, theme.SPACE))
-        right = ttkb.Frame(self, bootstyle="dark")
+        right = ttkb.Frame(self, bootstyle="light")
         right.pack(side="left", fill="y", padx=(0, theme.SPACE))
 
         self._build_basic(left)
@@ -56,10 +88,10 @@ class HomePage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_basic(self, parent) -> None:
-        box = ttkb.LabelFrame(parent, text="基本", bootstyle="dark")
+        box = ttkb.LabelFrame(parent, text="基本", bootstyle="light")
         box.pack(fill="x", pady=(0, theme.SPACE))
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
         ttkb.Label(row, text="MV 影片", width=10, bootstyle="secondary").pack(side="left")
         self._video_var = tk.StringVar()
@@ -75,7 +107,7 @@ class HomePage(ttkb.Frame):
                    font=(theme.mono_font_family(), 9)) \
             .pack(anchor="w", padx=theme.SPACE + 76, pady=2)
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=2)
         ttkb.Label(row, text="語言提示", width=10, bootstyle="secondary").pack(side="left")
         self._lang_var = tk.StringVar(value="zh")
@@ -85,7 +117,7 @@ class HomePage(ttkb.Frame):
         ttkb.Radiobutton(row, text="英文", variable=self._lang_var, value="en") \
             .pack(side="left")
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(2, theme.SPACE))
         ttkb.Label(row, text="輸出資料夾", width=10, bootstyle="secondary").pack(side="left")
         self._output_var = tk.StringVar()
@@ -97,7 +129,7 @@ class HomePage(ttkb.Frame):
                     command=lambda: self._output_var.set("")).pack(side="left")
 
         # 「開啟現有」路徑（B1 決定：直接揀 *_timings.json 跳編輯器，唔使重跑 ASR）
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(0, theme.SPACE))
         ttkb.Button(row, text="📂 開啟現有 *_timings.json…", bootstyle="secondary",
                     takefocus=False, command=self._open_existing).pack(side="left")
@@ -107,21 +139,22 @@ class HomePage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_style(self, parent) -> None:
-        box = ttkb.LabelFrame(parent, text="樣式", bootstyle="dark")
+        box = ttkb.LabelFrame(parent, text="樣式", bootstyle="light")
         box.pack(fill="x", pady=(0, theme.SPACE))
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
         ttkb.Label(row, text="字體", width=10, bootstyle="secondary").pack(side="left")
         families = self._font_families()
-        self._font_var = tk.StringVar(value="Microsoft JhengHei")
+        self._font_var = tk.StringVar(
+            value=str(self._saved_style.get("font_name") or _DEFAULT_FONT))
         self._font_combo = ttkb.Combobox(row, textvariable=self._font_var,
                                          values=families, width=26)
         self._font_combo.pack(side="left", padx=(0, theme.SPACE))
         self._font_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
         self._font_combo.bind("<KeyRelease>", lambda _e: self._refresh_preview())
         ttkb.Label(row, text="字級", bootstyle="secondary").pack(side="left")
-        self._size_var = tk.IntVar(value=48)
+        self._size_var = tk.IntVar(value=self._int_saved("font_size", 48))
         spin = ttkb.Spinbox(row, textvariable=self._size_var, from_=8, to=300,
                             increment=1, width=6, command=self._refresh_preview)
         spin.pack(side="left", padx=4)
@@ -133,46 +166,56 @@ class HomePage(ttkb.Frame):
         colors = [("primary", "唱過色", theme.SUB_PRIMARY),
                   ("secondary", "未唱色", theme.SUB_SECONDARY),
                   ("outline", "描邊色", "#000000")]
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=2)
         for key, label, default in colors:
-            cell = ttkb.Frame(row, bootstyle="dark")
-            cell.pack(side="left", padx=(0, theme.SPACE))
-            ttkb.Label(cell, text=label, bootstyle="secondary").pack(anchor="w")
-            line = ttkb.Frame(cell, bootstyle="dark")
-            line.pack()
-            swatch = tk.Canvas(line, width=30, height=22, highlightthickness=1,
-                               highlightbackground=theme.BORDER, bg=default, cursor="hand2")
-            swatch.pack(side="left")
+            cell = ttkb.Frame(row, bootstyle="light")
+            cell.pack(side="left", padx=(0, 12))
+            # grid（唔用 pack）：視窗窄嘅時候 pack 會先擠細第一個子元件，
+            # 令色塊縮到睇唔到／被輸入框蓋住 —— 用戶回報「色塊同選取色唔一致」嘅根源。
+            ttkb.Label(cell, text=label, bootstyle="secondary") \
+                .grid(row=0, column=0, columnspan=2, sticky="w")
+            cur = str(self._saved_style.get(f"{key}_color") or default)
+            swatch = tk.Canvas(cell, width=30, height=22, highlightthickness=1,
+                               highlightbackground=theme.BORDER, cursor="hand2")
+            swatch.grid(row=1, column=0, sticky="w")
             swatch.bind("<Button-1>", lambda _e, k=key: self._pick_color(k))
             self._swatches[key] = swatch
-            var = tk.StringVar(value=default)
+            var = tk.StringVar(value=cur)
             var.trace_add("write", lambda *_a, k=key: self._on_hex_changed(k))
-            entry = ttkb.Entry(line, textvariable=var, width=9)
-            entry.pack(side="left", padx=(4, 0))
+            entry = ttkb.Entry(cell, textvariable=var, width=9)
+            entry.grid(row=1, column=1, padx=(4, 0), sticky="w")
+            # 離焦／Enter 就把輸入框正規化成 #RRGGBB（唔會出現 "ff8800" 同色塊唔一致）
+            entry.bind("<FocusOut>", lambda _e, k=key: self._normalise_entry(k))
+            entry.bind("<Return>", lambda _e, k=key: self._normalise_entry(k))
             self._color_vars[key] = var
+            # 初始就畫一次（唔靠 trace：初始值唔會觸發）
+            self._set_swatch(key, _normalise_hex(cur) or default)
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=2)
         ttkb.Label(row, text="描邊粗幼", width=10, bootstyle="secondary").pack(side="left")
-        self._outline_var = tk.StringVar(value=_OUTLINE_WIDTHS[0][0])
+        self._outline_var = tk.StringVar(
+            value=_OUTLINE_NAME.get(
+                self._float_saved("outline_width", 0.0), _OUTLINE_WIDTHS[0][0]))
         combo = ttkb.Combobox(row, textvariable=self._outline_var,
                               values=[n for n, _ in _OUTLINE_WIDTHS], width=8,
                               state="readonly")
         combo.pack(side="left", padx=(0, theme.SPACE))
         combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
         ttkb.Label(row, text="對齊", bootstyle="secondary").pack(side="left")
-        self._align_var = tk.StringVar(value=_ALIGNMENTS[0][0])
+        self._align_var = tk.StringVar(
+            value=_ALIGN_NAME.get(self._int_saved("alignment", 2), _ALIGNMENTS[0][0]))
         combo = ttkb.Combobox(row, textvariable=self._align_var,
                               values=[n for n, _ in _ALIGNMENTS], width=10,
                               state="readonly")
         combo.pack(side="left")
         combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
 
-        row = ttkb.Frame(box, bootstyle="dark")
+        row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(2, theme.SPACE))
         ttkb.Label(row, text="底部留白", width=10, bootstyle="secondary").pack(side="left")
-        self._margin_var = tk.IntVar(value=0)
+        self._margin_var = tk.IntVar(value=self._int_saved("margin_v", 0))
         scale = ttkb.Scale(row, from_=0, to=400, variable=self._margin_var,
                            command=lambda _v: self._refresh_preview(), length=200)
         scale.pack(side="left", padx=4)
@@ -191,15 +234,15 @@ class HomePage(ttkb.Frame):
                                     takefocus=False, command=self._toggle_advanced)
         self._adv_btn.pack(anchor="w", pady=(0, 2))
 
-        self._adv_box = ttkb.LabelFrame(parent, text="進階", bootstyle="dark")
+        self._adv_box = ttkb.LabelFrame(parent, text="進階", bootstyle="light")
         # 唔 pack，摺疊狀態
 
-        grid = ttkb.Frame(self._adv_box, bootstyle="dark")
+        grid = ttkb.Frame(self._adv_box, bootstyle="light")
         grid.pack(fill="x", padx=theme.SPACE, pady=theme.SPACE)
 
         self._keep_punct_var = tk.BooleanVar(value=False)
         ttkb.Checkbutton(grid, text="保留標點（--keep-punctuation）",
-                         variable=self._keep_punct_var, bootstyle="dark-round-toggle") \
+                         variable=self._keep_punct_var, bootstyle="primary-round-toggle") \
             .grid(row=0, column=0, columnspan=2, sticky="w")
 
         self._adv_spins: dict[str, tk.StringVar] = {}
@@ -221,13 +264,13 @@ class HomePage(ttkb.Frame):
 
         self._separate_var = tk.BooleanVar(value=False)
         ttkb.Checkbutton(grid, text="人聲分離（首次需下載模型）",
-                         variable=self._separate_var, bootstyle="dark-round-toggle") \
+                         variable=self._separate_var, bootstyle="primary-round-toggle") \
             .grid(row=4, column=0, columnspan=2, sticky="w")
         self._save_raw_var = tk.BooleanVar(value=False)
         ttkb.Checkbutton(grid, text="儲存 ASR 原始 JSON", variable=self._save_raw_var,
-                         bootstyle="dark-round-toggle").grid(row=4, column=3, columnspan=2, sticky="w")
+                         bootstyle="primary-round-toggle").grid(row=4, column=3, columnspan=2, sticky="w")
 
-        row = ttkb.Frame(self._adv_box, bootstyle="dark")
+        row = ttkb.Frame(self._adv_box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(0, theme.SPACE))
         ttkb.Label(row, text="ASR 模型", bootstyle="secondary").pack(side="left")
         self._model_var = tk.StringVar(value="qwen-audio-3.1-asr-flash-filetrans")
@@ -248,23 +291,25 @@ class HomePage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_right(self, parent) -> None:
-        box = ttkb.LabelFrame(parent, text="即時預覽", bootstyle="dark")
+        box = ttkb.LabelFrame(parent, text="即時預覽", bootstyle="light")
         box.pack(fill="x", pady=(0, theme.SPACE))
         self._preview = StylePreviewCanvas(box)
         self._preview.pack(padx=theme.SPACE, pady=theme.SPACE)
-        legend = ttkb.Frame(box, bootstyle="dark")
+        legend = ttkb.Frame(box, bootstyle="light")
         legend.pack(padx=theme.SPACE, pady=(0, theme.SPACE))
+        self._legend_swatches: list[tk.Canvas] = []
         for color, label in ((theme.SUB_PRIMARY, "唱過"), (theme.SUB_SECONDARY, "未唱"),
                              ("#000000", "描邊")):
-            tk.Canvas(legend, width=12, height=12, bg=color,
-                      highlightthickness=1, highlightbackground=theme.BORDER) \
-                .pack(side="left")
+            chip = tk.Canvas(legend, width=12, height=12, bg=color,
+                             highlightthickness=1, highlightbackground=theme.BORDER)
+            chip.pack(side="left")
+            self._legend_swatches.append(chip)
             ttkb.Label(legend, text=label, bootstyle="secondary").pack(side="left", padx=(2, theme.SPACE))
         ttkb.Label(box, text="預覽畫布 344×180 · 系統字體渲染，唔係 libass 逐像素預覽",
                    bootstyle="secondary",
                    font=(theme.ui_font_family(), 8)).pack(padx=theme.SPACE, pady=(0, theme.SPACE))
 
-        box = ttkb.LabelFrame(parent, text="產出", bootstyle="dark")
+        box = ttkb.LabelFrame(parent, text="產出", bootstyle="light")
         box.pack(fill="x", pady=(0, theme.SPACE))
         ttkb.Label(box, text="<片名>_timings.json　canonical（UI 編輯呢個）", bootstyle="secondary",
                    font=(theme.mono_font_family(), 8)).pack(anchor="w", padx=theme.SPACE)
@@ -282,10 +327,24 @@ class HomePage(ttkb.Frame):
         ttkb.Button(parent, text="⧉ 複製等價 CLI 指令", bootstyle="secondary-link",
                     takefocus=False, command=self._copy_cli).pack(fill="x", pady=(0, theme.SPACE))
 
-        box = ttkb.LabelFrame(parent, text="進度", bootstyle="dark")
+        box = ttkb.LabelFrame(parent, text="進度", bootstyle="light")
         box.pack(fill="x", pady=(0, 0))
         self._progress = StageProgress(box)
         self._progress.pack(fill="x", padx=theme.SPACE, pady=theme.SPACE)
+
+    def restyle(self) -> None:
+        """換主題：accent 按鈕、顏色色塊、圖例小方塊重新上色。"""
+        try:
+            self._generate_btn.configure(bootstyle=theme.ACCENT)
+        except Exception:      # noqa: BLE001
+            pass
+        for key in list(self._swatches):
+            self._set_swatch(key, _normalise_hex(self._color_vars[key].get()))
+        for chip in getattr(self, "_legend_swatches", []):
+            try:
+                chip.configure(highlightbackground=theme.BORDER)
+            except tk.TclError:
+                pass
 
     # ------------------------------------------------------------------
     # 事件
@@ -294,7 +353,113 @@ class HomePage(ttkb.Frame):
     def _font_families(self) -> list[str]:
         from ..widgets.style_preview import tk_font_families_safe
         families = tk_font_families_safe()
-        return families or ["Microsoft JhengHei"]
+        return families or [_DEFAULT_FONT]
+
+    # ------------------------------------------------------------------
+    # 樣式狀態：snapshot / apply（ADR-015：主頁 = 燒錄權威來源）
+    # ------------------------------------------------------------------
+
+    def _int_saved(self, key: str, default: int) -> int:
+        try:
+            return int(self._saved_style.get(key))
+        except (TypeError, ValueError):
+            return default
+
+    def _float_saved(self, key: str, default: float) -> float:
+        try:
+            return float(self._saved_style.get(key))
+        except (TypeError, ValueError):
+            return default
+
+    def style_snapshot(self) -> dict[str, Any]:
+        """主頁樣式面板當前值（dict；燒錄 / 生成 / 持久化共用）。
+
+        Returns:
+            ``font_name`` / ``font_size`` / ``primary_color`` / ``secondary_color`` /
+            ``outline_color`` / ``alignment`` / ``margin_v`` / ``outline_width``。
+            **唔含** ``play_res_x/y`` —— 座標系要由原片（ADR-006）決定。
+        """
+        try:
+            font_size = max(8, int(self._size_var.get()))
+        except (tk.TclError, ValueError):
+            font_size = 48
+        try:
+            margin_v = max(0, int(self._margin_var.get()))
+        except (tk.TclError, ValueError):
+            margin_v = 0
+        return {
+            "font_name": self._font_var.get().strip() or _DEFAULT_FONT,
+            "font_size": font_size,
+            "primary_color": self._color_vars["primary"].get().strip(),
+            "secondary_color": self._color_vars["secondary"].get().strip(),
+            "outline_color": self._color_vars["outline"].get().strip(),
+            "alignment": dict(_ALIGNMENTS).get(self._align_var.get(), 2),
+            "margin_v": margin_v,
+            "outline_width": self._outline_width_value(),
+        }
+
+    def apply_style(self, style: dict[str, Any]) -> None:
+        """把 ``style``（timings.json 的 ``style`` 段）載入面板。
+
+        用途：開啟舊檔 / 編輯器 🎨 改色後，令主頁面板同實際燒錄樣式一致，
+        避免「主頁顯示 48px 黃字、燒錄出 72px 藍字」嘅落差。
+
+        Args:
+            style: 至少含 ``font_name`` 等欄位；缺欄位就保留現值。
+        """
+        if not style:
+            return
+        font = str(style.get("font_name") or "").strip()
+        if font:
+            self._font_var.set(font)
+        for key, var in self._color_vars.items():
+            value = str(style.get(f"{key}_color") or "").strip()
+            if len(value) == 6:
+                value = "#" + value
+            if len(value) == 7:
+                try:
+                    int(value[1:], 16)
+                except ValueError:
+                    continue
+                var.set(value.upper())
+        if style.get("font_size"):
+            self._size_var.set(int(style["font_size"]))
+        if style.get("margin_v") is not None:
+            self._margin_var.set(int(style.get("margin_v") or 0))
+        alignment = int(style.get("alignment") or 2)
+        self._align_var.set(_ALIGN_NAME.get(alignment, _ALIGNMENTS[0][0]))
+        outline = float(style.get("outline_width") or 0.0)
+        # 對唔上預設級距（例如人手改過 JSON）就直接顯示 px 值，唔好靜靜當「自動」
+        self._outline_var.set(_OUTLINE_NAME.get(outline, f"{outline:g}"))
+        self._refresh_preview()
+
+    def _schedule_style_save(self) -> None:
+        """樣式變更 → 600ms debounce 後寫 settings.json（拖滑桿唔會瘋狂寫檔）。"""
+        if self._style_save_job is not None:
+            try:
+                self.after_cancel(self._style_save_job)
+            except (tk.TclError, ValueError):
+                pass
+        self._style_save_job = self.after(600, self._save_style)
+
+    def _save_style(self) -> None:
+        self._style_save_job = None
+        snapshot = self.style_snapshot()
+        if snapshot == self._saved_style:
+            return
+        self._saved_style = snapshot
+        data = dict(self.master.settings_data)
+        data["home_style"] = snapshot
+        self.master.save_settings(data)
+        # 主頁 = 燒錄權威 → 有開檔就即刻反映去編輯器預覽，避免「預覽舊樣式、
+        # 燒錄新樣式」嘅落差
+        getter = getattr(self.master, "page", None)
+        editor = getter("editor") if callable(getter) else None
+        if editor is not None and hasattr(editor, "on_home_style_changed"):
+            try:
+                editor.on_home_style_changed(snapshot)
+            except Exception:   # noqa: BLE001 — 同步失敗唔應該阻住存設定
+                LOGGER.exception("同步樣式去編輯器失敗")
 
     def _pick_video(self) -> None:
         start = self.master.settings_data.get("default_input_dir") or ""
@@ -323,18 +488,45 @@ class HomePage(ttkb.Frame):
         if rgb and rgb[1]:
             hex_value = "#{:02X}{:02X}{:02X}".format(*[round(v) for v in rgb[0]])
             self._color_vars[key].set(hex_value)
+            self._set_swatch(key, hex_value)   # 唔等 trace，即刻上色
+
+    def _set_swatch(self, key: str, color: str | None) -> None:
+        """把色塊畫成 `color`；``color=None``（輸入未合法）就保留舊色 + 紅框提示。
+
+        色塊用 **Canvas 背景 + 一個填滿嘅 rectangle item** 雙重上色：
+        單純寫 `["bg"]` 喺某些 ttk 狀態／被擠壓時睇唔出變化，令用戶以為
+        「色塊同揀嘅色唔一致」（實際回報）。rectangle 係圖形 item，一定畫得出。
+
+        Args:
+            key: ``primary`` / ``secondary`` / ``outline``。
+            color: 正規化後嘅 ``#RRGGBB``；``None`` = 保留現色但標紅。
+        """
+        swatch = self._swatches.get(key)
+        if swatch is None:
+            return
+        if color is None:
+            swatch.configure(highlightbackground=theme.DANGER,
+                             highlightcolor=theme.DANGER)
+            return
+        w = int(swatch["width"]) + 2 * int(swatch["highlightthickness"])
+        h = int(swatch["height"]) + 2 * int(swatch["highlightthickness"])
+        swatch.configure(bg=color, highlightbackground=theme.BORDER,
+                         highlightcolor=theme.BORDER)
+        swatch.delete("all")
+        swatch.create_rectangle(0, 0, w, h, fill=color, outline=color, tags="fill")
+
+    def _normalise_entry(self, key: str) -> None:
+        """輸入框失焦／Enter：把 ``ff8800`` 之類寫返做 ``#FF8800``（同色塊一致）。"""
+        var = self._color_vars.get(key)
+        if var is None:
+            return
+        color = _normalise_hex(var.get())
+        if color and color != var.get():
+            var.set(color)
 
     def _on_hex_changed(self, key: str) -> None:
-        value = self._color_vars[key].get().strip()
-        if len(value) == 6:
-            value = "#" + value
-        try:
-            if len(value) == 7:
-                int(value[1:], 16)
-                self._swatches[key].itemconfigure("all", fill=value) if False else None
-                self._swatches[key]["bg"] = value
-        except ValueError:
-            pass
+        """輸入框內容變 → 同步色塊（合法色即時上色，未打完就標紅但保留舊色）。"""
+        self._set_swatch(key, _normalise_hex(self._color_vars[key].get()))
         self._refresh_preview()
 
     def _probe_video(self, video: Path) -> None:
@@ -395,10 +587,18 @@ class HomePage(ttkb.Frame):
             outline_color=self._color_vars["outline"].get(),
             outline_width=self._outline_width_value(),
             margin_v=margin)
+        self._schedule_style_save()
 
     def _outline_width_value(self) -> float:
-        name = self._outline_var.get()
-        return dict(_OUTLINE_WIDTHS).get(name, 0.0)
+        """「自動 / 幼 2 / 中 3 / 粗 4」→ px；非預設級距（例如 JSON 寫 3.5）照 parse。"""
+        name = self._outline_var.get().strip()
+        mapping = dict(_OUTLINE_WIDTHS)
+        if name in mapping:
+            return mapping[name]
+        try:
+            return max(0.0, float(name))
+        except ValueError:
+            return 0.0
 
     # ------------------------------------------------------------------
     # 生成
@@ -411,13 +611,17 @@ class HomePage(ttkb.Frame):
             messagebox.showwarning("未選擇影片", "請先揀一條 MV 影片。", parent=self)
             return None
         try:
+            snap = self.style_snapshot()
             style = main.StyleConfig(
-                font_name=self._font_var.get().strip() or "Microsoft JhengHei",
-                font_size=max(8, int(self._size_var.get())),
-                primary_color=self._color_vars["primary"].get().strip(),
-                secondary_color=self._color_vars["secondary"].get().strip(),
-                outline_color=self._color_vars["outline"].get().strip(),
-                margin_v=int(self._margin_var.get()),
+                font_name=snap["font_name"],
+                font_size=snap["font_size"],
+                primary_color=snap["primary_color"],
+                secondary_color=snap["secondary_color"],
+                outline_color=snap["outline_color"],
+                # 之前漏咗呢兩個 → 主頁「對齊」「描邊粗幼」揀咩都冇效
+                alignment=snap["alignment"],
+                outline_width=snap["outline_width"],
+                margin_v=snap["margin_v"],
             )
         except (ValueError, tk.TclError):
             messagebox.showerror("樣式參數錯誤", "字級 / 留白要係整數。", parent=self)
@@ -511,6 +715,9 @@ class HomePage(ttkb.Frame):
             "outline_color": self._color_vars["outline"].get().strip(),
             "margin_v": self._safe_int(str(self._margin_var.get()), 0),
         }
+        snap = self.style_snapshot()
+        values["alignment"] = snap["alignment"]
+        values["outline_width"] = snap["outline_width"]
         if self._output_var.get().strip():
             values["output_dir"] = self._output_var.get().strip()
         cmd = generate_cli_command("generate", values)

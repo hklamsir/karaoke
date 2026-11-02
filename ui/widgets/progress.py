@@ -40,14 +40,21 @@ _STATE_STYLE = {"pending": "secondary", "active": "info", "done": "success", "er
 class StageProgress(ttkb.Frame):
     """分階段進度條 + log 窗（背景 thread 友好）。"""
 
-    def __init__(self, master, stages: list[str] | None = None) -> None:
-        super().__init__(master, bootstyle="dark")
+    def __init__(self, master, stages: list[str] | None = None, *,
+                 log_open: bool = False, log_height: int = 8) -> None:
+        """Args:
+            master: 父容器。
+            stages: 階段名清單（預設 generate 五階段）。
+            log_open: log 窗預設是否展開（燒錄對話框用；用戶回報要預設見到 log）。
+            log_height: log 文字區高度（行數）。
+        """
+        super().__init__(master, bootstyle="light")
         self._stages = stages or STAGES
         self._queue: queue.Queue = queue.Queue()
         self._states: dict[str, str] = {s: "pending" for s in self._stages}
         self._chips: dict[str, ttkb.Label] = {}
 
-        chips_row = ttkb.Frame(self, bootstyle="dark")
+        chips_row = ttkb.Frame(self, bootstyle="light")
         chips_row.pack(fill="x")
         for stage in self._stages:
             chip = ttkb.Label(chips_row, text=f"○ {stage}", padding=(8, 3),
@@ -61,15 +68,17 @@ class StageProgress(ttkb.Frame):
         ttkb.Label(self, textvariable=self._msg_var, bootstyle="secondary",
                    font=(theme.ui_font_family(), 9)).pack(anchor="w")
 
-        # 可展開 log 窗
+        # 可展開 log 窗（log_open=True 時建立即展開）
         self._log_open = False
         self._toggle_btn = ttkb.Button(self, text="▾ log", width=6, bootstyle="secondary",
                                        command=self._toggle_log, takefocus=False)
         self._toggle_btn.pack(anchor="e", pady=(2, 0))
-        self._log = tk.Text(self, height=8, state="disabled", wrap="none",
+        self._log = tk.Text(self, height=log_height, state="disabled", wrap="word",
                             bg=theme.BG_DEEP, fg=theme.FG_DIM,
                             font=(theme.mono_font_family(), 9), relief="flat",
                             highlightthickness=1, highlightbackground=theme.BORDER)
+        if log_open:
+            self._toggle_log()
 
         self.after(80, self._poll)
 
@@ -179,4 +188,5 @@ class StageProgress(ttkb.Frame):
         if int(self._log.index("end-1c").split(".")[0]) > 2000:
             self._log.delete("1.0", "200.0")
         self._log.see("end")
+        self._log.xview_moveto(0)   # 長行（ffmpeg 指令）唔好令短行都被推到左邊切走
         self._log.configure(state="disabled")

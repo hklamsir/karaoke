@@ -28,7 +28,7 @@ class PreviewPane(ttkb.Frame):
 
     def __init__(self, master, state, *,
                  on_seek=None, on_reshow=None) -> None:
-        super().__init__(master, bootstyle="dark")
+        super().__init__(master, bootstyle="light")
         self._state = state
         self._on_seek = on_seek
         self._thumbs = None
@@ -41,18 +41,18 @@ class PreviewPane(ttkb.Frame):
         self._thumb_progress_var = tk.StringVar(value="")
         self._progress: ttkb.Progressbar | None = None
 
-        body = ttkb.Frame(self, bootstyle="dark")
+        body = ttkb.Frame(self, bootstyle="light")
         body.pack(fill="both", expand=True)
 
         # --- 左：影片畫面（16:9）---
-        self._video_canvas = tk.Canvas(body, bg="#101016", highlightthickness=1,
+        self._video_canvas = tk.Canvas(body, bg=theme.VIDEO_BG, highlightthickness=1,
                                        highlightbackground=theme.BORDER)
         self._video_canvas.pack(side="left", fill="both", expand=True,
                                 padx=(2, theme.SPACE), pady=2)
         self._video_canvas.bind("<Configure>", lambda _e: self._redraw_video())
 
         # --- 右：當前字幕卡 ---
-        card = ttkb.Frame(body, bootstyle="dark", width=240)
+        card = ttkb.Frame(body, bootstyle="light", width=240)
         card.pack(side="left", fill="y", padx=(0, 2), pady=2)
         card.pack_propagate(False)
         self._card_title = tk.StringVar(value="當前字幕")
@@ -77,7 +77,7 @@ class PreviewPane(ttkb.Frame):
         self._strip.bind("<B1-Motion>", self._on_strip_click)
 
         # --- 進度 / 狀態行 ---
-        row = ttkb.Frame(self, bootstyle="dark")
+        row = ttkb.Frame(self, bootstyle="light")
         row.pack(fill="x", padx=4, pady=(0, 2))
         ttkb.Label(row, textvariable=self._thumb_progress_var, bootstyle="secondary",
                    font=(theme.mono_font_family(), 8)).pack(side="left")
@@ -91,6 +91,15 @@ class PreviewPane(ttkb.Frame):
     # ------------------------------------------------------------------
     # 對外
     # ------------------------------------------------------------------
+
+    def restyle(self) -> None:
+        """換主題：重設三個 Canvas 底色並重繪（字幕色係燒錄色，唔跟 UI 主題）。"""
+        self._video_canvas.configure(bg=theme.VIDEO_BG,
+                                     highlightbackground=theme.BORDER)
+        self._strip.configure(bg=theme.BG_DEEP,
+                              highlightbackground=theme.BORDER)
+        self._card_chars.configure(bg=theme.BG_PANEL)
+        self._redraw_video()
 
     def set_overlay_visible(self, on: bool) -> None:
         self._overlay_on = on

@@ -248,6 +248,14 @@ class UndoStack:
             self._undo.pop(0)
         self._redo.clear()
 
+    def peek_undo(self) -> Command | None:
+        """棧頂（下一步會 undo 嘅）command；冇就 ``None``。工具列提示用。"""
+        return self._undo[-1] if self._undo else None
+
+    def peek_redo(self) -> Command | None:
+        """重做棧頂 command；冇就 ``None``。工具列提示用。"""
+        return self._redo[-1] if self._redo else None
+
     def undo(self, state: Any) -> Command | None:
         if not self._undo:
             return None

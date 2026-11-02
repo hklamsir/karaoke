@@ -27,7 +27,11 @@ _DEFAULTS: dict[str, Any] = {
     "ffprobe_path": "",
     "default_input_dir": "",
     "default_output_dir": "",
-    "theme": "darkly",
+    "theme": "litera",   # 介面主題：litera（淺色）/ darkly / superhero，見 theme.PALETTES
+    #: 主頁樣式面板（ADR-015：主頁設定 = 燒錄權威來源，故要跨 session 記住）
+    #: 內容：font_name / font_size / primary_color / secondary_color /
+    #:       outline_color / alignment / margin_v / outline_width
+    "home_style": {},
 }
 
 

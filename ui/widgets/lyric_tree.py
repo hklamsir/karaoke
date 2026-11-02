@@ -24,7 +24,7 @@ class LyricTree(ttkb.Frame):
                  on_select_line: Callable[[int], None] | None = None,
                  on_play_line: Callable[[int], None] | None = None,
                  on_add_line: Callable[[], None] | None = None) -> None:
-        super().__init__(master, bootstyle="dark")
+        super().__init__(master, bootstyle="light")
         self._state = state
         self._on_select_line = on_select_line
         self._on_play_line = on_play_line
@@ -34,15 +34,18 @@ class LyricTree(ttkb.Frame):
         mono = theme.mono_font_family()
         self._tree = ttkb.Treeview(
             self, columns=self.COLUMNS, show="headings", selectmode="extended",
-            bootstyle="dark")
-        heads = {"num": ("#", 36, "e"), "text": ("歌詞", 150, "w"),
-                 "start": ("start", 72, "e"), "end": ("end", 72, "e"),
-                 "est": ("估算", 40, "center")}
+            bootstyle="light")
+        # 用戶需求：5 欄總寬 = 370px（32+174+66+66+32）。start/end 收到 66 —
+        # 5 位數時間碼用等寬 10pt 只需 ~46px；估算 32。慳返嘅位全部畀「歌詞」。
+        heads = {"num": ("#", 32, "e"), "text": ("歌詞", 174, "w"),
+                 "start": ("start", 66, "e"), "end": ("end", 66, "e"),
+                 "est": ("估算", 32, "center")}
         for key, (label, width, anchor) in heads.items():
-            self._tree.heading(key, text=label)
+            # 標題跟欄位 anchor（同逐字微調面板一致）：右對齊數字欄如果標題置中，
+            # 標題會浮喺數字左邊，睇落唔知屬邊欄
+            self._tree.heading(key, text=label, anchor=anchor)
             self._tree.column(key, width=width, anchor=anchor, stretch=(key == "text"))
-        self._tree.tag_configure("estimated", foreground=theme.WARNING)
-        self._tree.tag_configure("current", background=theme.BG_HOVER)
+        self._apply_tag_colors()
         vsb = ttkb.Scrollbar(self, orient="vertical", command=self._tree.yview,
                              bootstyle="secondary-round")
         self._tree.configure(yscrollcommand=vsb.set)
@@ -61,6 +64,15 @@ class LyricTree(ttkb.Frame):
         self.refresh()
 
     # ------------------------------------------------------------------
+
+    def _apply_tag_colors(self) -> None:
+        """套用 tag 顏色（估算字橙、當前行底色）—— 換主題時要重跑。"""
+        self._tree.tag_configure("estimated", foreground=theme.WARNING)
+        self._tree.tag_configure("current", background=theme.BG_HOVER)
+
+    def restyle(self) -> None:
+        """換主題後重新上色（ttk 元件靠 style；tag 色係 per-widget 要自己補）。"""
+        self._apply_tag_colors()
 
     def _on_state_change(self, reason: str) -> None:
         if reason in ("load", "edit", "save", "filter"):
@@ -171,7 +183,7 @@ def _ask_text(parent, title: str, prompt: str, initial: str = "") -> str | None:
     def cancel(_e=None) -> None:
         dlg.destroy()
 
-    btns = ttkb.Frame(dlg, bootstyle="dark")
+    btns = ttkb.Frame(dlg, bootstyle="light")
     btns.pack(fill="x", padx=12, pady=10)
     ttkb.Button(btns, text="確定", bootstyle=theme.ACCENT, command=ok).pack(side="right", padx=4)
     ttkb.Button(btns, text="取消", bootstyle="secondary", command=cancel).pack(side="right")

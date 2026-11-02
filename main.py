@@ -1300,6 +1300,18 @@ def cmd_generate(args: argparse.Namespace) -> int:
         keep_punctuation=args.keep_punctuation,
         save_raw=args.save_raw,
         poll_interval_s=args.poll_interval,
+        # ⚠️ 之前漏咗呢行 —— CLI 嘅 --font-size / --primary-color 等全部被靜默忽略，
+        #    生成出嚟永遠係 StyleConfig() 預設值（48px 黃字）。
+        style=StyleConfig(
+            font_name=args.font_name,
+            font_size=args.font_size,
+            primary_color=args.primary_color,
+            secondary_color=args.secondary_color,
+            outline_color=args.outline_color,
+            alignment=args.alignment,
+            margin_v=args.margin_v,
+            outline_width=args.outline_width,
+        ),
     ))
     return 0
 
@@ -1338,6 +1350,7 @@ def cmd_render(args: argparse.Namespace) -> int:
         ("font_name", args.font_name), ("font_size", args.font_size),
         ("primary_color", args.primary_color), ("secondary_color", args.secondary_color),
         ("outline_color", args.outline_color), ("margin_v", args.margin_v),
+        ("alignment", args.alignment), ("outline_width", args.outline_width),
     ) if v is not None}
     if overrides:
         style = replace(style, **overrides)
@@ -1437,93 +1450,138 @@ def cmd_burn(args: argparse.Namespace) -> int:
 def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) -> None:
     """加入字幕樣式參數。
 
-    ``overrides=True`` （render 用）：參數係「覆寫」，**未提供時係 None**，
-        令 render 可以分辨「用戶冇講」同「用戶要改成預設值」。
-    ``overrides=False``（generate 用）：參數有實質預設值，寫入 timings.json。
+    ``overrides=True`` （render 用）：參數是「覆寫」，**未提供時為 None**，
+        令 render 可以分辨「使用者未指定」與「使用者要求改成預設值」。
+    ``overrides=False``（generate 用）：參數有實質預設值，會寫入 timings.json。
     """
+    suffix = "（覆寫 timings.json 內的設定）" if overrides else ""
     group = parser.add_argument_group("字幕樣式")
     if not overrides:
-        group.add_argument("--font-name", default="Microsoft JhengHei", help="字體名稱")
-        group.add_argument("--font-size", type=int, default=48, help="字體大小")
+        group.add_argument(
+            "--font-name", default="Microsoft JhengHei",
+            help="字幕字型名稱，需為系統已安裝字型（預設 Microsoft JhengHei，"
+                 "Windows 內建且中文字形完整）")
+        group.add_argument(
+            "--font-size", type=int, default=48,
+            help="字幕字級，單位 px，以 ASS PlayResY 為基準（預設 48；1080p 建議 60–80，"
+                 "歌詞較長時可降至 40–48）")
     else:
-        group.add_argument("--font-name", help="字體名稱（覆寫 timings.json 內嘅值）")
-        group.add_argument("--font-size", type=int, help="字體大小（覆寫）")
-    group.add_argument("--primary-color",
-                       default=None if overrides else "#FFFF00",
-                       help="唱過（高亮）顏色，Hex" + ("（覆寫）" if overrides else ""))
-    group.add_argument("--secondary-color",
-                       default=None if overrides else "#FFFFFF",
-                       help="未唱底色，Hex" + ("（覆寫）" if overrides else ""))
-    group.add_argument("--outline-color",
-                       default=None if overrides else "#000000",
-                       help="外框顏色，Hex" + ("（覆寫）" if overrides else ""))
-    group.add_argument("--margin-v", type=int,
-                       default=None if overrides else 0,
-                       help="底部垂直留白（px）" +
-                            ("（覆寫 timings.json 內嘅值）" if overrides else
-                            "；0 = 按 PlayResY 自動推算（1080p ≈ 59px）。"
-                            "MV 自帶內嵌字幕時調大（例如 160）避開佢"))
+        group.add_argument("--font-name", help="字幕字型名稱" + suffix)
+        group.add_argument("--font-size", type=int, help="字幕字級（px）" + suffix)
+    group.add_argument(
+        "--primary-color", default=None if overrides else "#FFFF00",
+        help="「已唱」高亮色，十六進位 #RRGGBB（預設 #FFFF00 黃）。"
+             "此色同時用於 UI 色塊與燒錄結果" + suffix)
+    group.add_argument(
+        "--secondary-color", default=None if overrides else "#FFFFFF",
+        help="「未唱」底色，十六進位 #RRGGBB（預設 #FFFFFF 白）。"
+             "卡拉OK 效果即由此色漸變到「已唱」色" + suffix)
+    group.add_argument(
+        "--outline-color", default=None if overrides else "#000000",
+        help="字幕描邊色，十六進位 #RRGGBB（預設 #000000 黑）。"
+             "淺色畫面建議改用深色描邊或加陰影以提升可讀性" + suffix)
+    group.add_argument(
+        "--margin-v", type=int, default=None if overrides else 0,
+        help="字幕底部垂直留白，單位 px（預設 0 = 依 PlayResY 自動推算，1080p 約 59px）。"
+             "MV 自帶內嵌字幕時建議調大至 120–200 以避免重疊" + suffix)
+    # UI 主頁「對齊」「描邊粗幼」對應項（ADR-015：主頁設定 = 燒錄權威）
+    group.add_argument(
+        "--alignment", type=int, choices=[2, 3, 5, 8],
+        default=None if overrides else 2,
+        help="字幕對齊位置（ASS Alignment 編號）：2 = 底部置中、3 = 中下、"
+             "5 = 中部置中、8 = 頂部置中（預設 2）" + suffix)
+    group.add_argument(
+        "--outline-width", type=float, default=None if overrides else 0.0,
+        help="描邊粗細，單位 px（預設 0 = 依 PlayResY 自動推算，一般等於字級的 4%）。"
+             "畫面雜亂時可加粗至 3–4px" + suffix)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="main.py",
-        description="把本地 MV 轉成卡拉OK字幕：generate（出 json+ass）→ 人手/UI 改 → render → burn",
+        description="將本地 MV 轉為卡拉OK字幕：generate（產生 json 與 ass）→ 人工或 UI 校對 → "
+                    "render → burn",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "典型流程：\n"
-            "  1) python main.py generate -i \"MV.mp4\"           # 出 *_timings.json + *_karaoke.ass\n"
-            "  2) 用日後嘅字幕編輯 UI 開 *_timings.json 執時間軸\n"
-            "  3) python main.py render MV_timings.json         # 重新出 ass（唔使再跑 ASR）\n"
+            "  1) python main.py generate -i \"MV.mp4\"        # 產生 *_timings.json 與 *_karaoke.ass\n"
+            "  2) 以字幕編輯器開啟 *_timings.json，校對時間軸與錯字\n"
+            "  3) python main.py render MV_timings.json        # 重新產生 ass（無須重跑 ASR）\n"
             "  4) python main.py burn -i \"MV.mp4\" -s MV_karaoke.ass\n"
         ),
     )
-    parser.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級 log")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="顯示 DEBUG 層級日誌（等同於子命令前後加 -v）")
     sub = parser.add_subparsers(dest="command", required=True)
 
     # ---- generate
-    g = sub.add_parser("generate", help="影片 → ASR → timings.json + ass（**唔出影片**）")
-    g.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級 log")
-    g.add_argument("-i", "--input", required=True, help="輸入 MV 影片路徑")
-    g.add_argument("-o", "--output-dir", help="輸出資料夾（預設：輸入影片所在目錄）")
-    g.add_argument("--api-key", help="DashScope API Key（預設讀環境變數或 .env）")
-    g.add_argument("--model", default=DEFAULT_ASR_MODEL, help=f"ASR 模型（預設 {DEFAULT_ASR_MODEL}）")
-    g.add_argument("-l", "--language", help="語言提示 zh/yue/en（yue 內部重映射為 zh，見 ADR-001）")
-    g.add_argument("--separate-vocals", action="store_true", help="先做人聲分離再送 ASR（懶安裝）")
+    g = sub.add_parser("generate", help="影片 → ASR → timings.json 與 ass（**不輸出影片**）",
+                       description="抽音、上傳、語音辨識、斷句、渲染一次完成；"
+                                   "產出 *_timings.json（唯一真源）與 *_karaoke.ass。")
+    g.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級日誌")
+    g.add_argument("-i", "--input", required=True, help="輸入 MV 影片路徑（mp4/mkv/mov/webm）")
+    g.add_argument("-o", "--output-dir",
+                   help="輸出資料夾（預設為輸入影片所在目錄）")
+    g.add_argument("--api-key",
+                   help="DashScope API Key；預設依序讀取環境變數 DASHSCOPE_API_KEY、.env、"
+                        "settings.json（優先序見 ADR-001）")
+    g.add_argument("--model", default=DEFAULT_ASR_MODEL,
+                   help=f"語音辨識模型（預設 {DEFAULT_ASR_MODEL}；"
+                        "不支援 paraformer-v2，因其逐字時間為線性插值，見 ADR-004）")
+    g.add_argument("-l", "--language",
+                   help="語言提示 zh／yue／en（預設 zh）。yue 會被內部重映射為 zh，"
+                        "避免觸發「粵語轉普通話」開關（ADR-001）")
+    g.add_argument("--separate-vocals", action="store_true",
+                   help="先做人聲分離再送辨識（提升辨識率，但需額外安裝 demucs；"
+                        "未安裝時會提示而不會中斷）")
     add_style_args(g)
-    g.add_argument("--max-chars", type=int, default=18, help="每行最多字數（安全網，標點優先之下好少觸發）")
-    g.add_argument("--gap-threshold", type=int, default=800, help="兜底斷句停頓閾值（ms）")
-    g.add_argument("--hold-ms", type=int, default=300, help="句尾停留時間（ms）")
+    g.add_argument("--max-chars", type=int, default=18,
+                   help="每行字數上限（預設 18），僅作安全網；正常情況下以標點與句界斷行（ADR-013）")
+    g.add_argument("--gap-threshold", type=int, default=800,
+                   help="斷句停頓門檻，單位 ms（預設 800）：停頓超過此值即視為句界")
+    g.add_argument("--hold-ms", type=int, default=300,
+                   help="句尾停留時間，單位 ms（預設 300）：最後一字停留多久才消失，避免句子一閃即逝")
     g.add_argument("--min-clause-chars", type=int, default=MIN_CLAUSE_CHARS,
-                   help="短句門檻字數：字數 ≤N 且時長不足先會同鄰句合併（ADR-013）")
+                   help=f"短句字數門檻（預設 {MIN_CLAUSE_CHARS}）：字數不超過此值且時長不足時，"
+                        "才會與相鄰句合併（ADR-013）")
     g.add_argument("--min-clause-ms", type=int, default=MIN_CLAUSE_MS,
-                   help="短句門檻時長（ms）：拖長音嘅短句照出一行，保留強調效果（ADR-013）")
+                   help=f"短句時長門檻，單位 ms（預設 {MIN_CLAUSE_MS}）：拖長音的短句仍會獨立成行，"
+                        "以保留強調效果（ADR-013）")
     g.add_argument("--merge-max-chars", type=int, default=MERGE_MAX_CHARS,
-                   help="合併後嘅行不可超過嘅字數（ADR-013 修訂；兜底切行仍然用 --max-chars）")
+                   help=f"合併後每行字數上限（預設 {MERGE_MAX_CHARS}）；"
+                        "超出時改用 --max-chars 的切行規則（ADR-013 修訂）")
     g.add_argument("--keep-punctuation", action="store_true",
-                   help="字幕保留標點（預設剝走：行尾刪、行中變空格，見 ADR-013）")
-    g.add_argument("--poll-interval", type=int, default=3)
-    g.add_argument("--save-raw", action="store_true", help="額外儲存 ASR 原始 JSON")
+                   help="字幕保留標點（預設移除：行尾刪除、行中轉為空格，見 ADR-013）。"
+                        "若希望歌詞與原曲完全一致可開啟")
+    g.add_argument("--poll-interval", type=int, default=3,
+                   help="辨識任務輪詢間隔，單位秒（預設 3）；網絡較慢時可調大")
+    g.add_argument("--save-raw", action="store_true",
+                   help="額外儲存一份 ASR 原始 JSON（除錯與比對用）")
     g.set_defaults(func=cmd_generate)
 
     # ---- render
-    r = sub.add_parser("render", help="timings.json → ass（毋須重跑 ASR）")
-    r.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級 log")
-    r.add_argument("timings", help="*_timings.json 路徑")
-    r.add_argument("-o", "--output", help="輸出 ass 路徑（預設同名 .ass）")
+    r = sub.add_parser("render", help="timings.json → ass（無須重跑 ASR）",
+                       description="由 timings.json 重新產生 .ass；"
+                                   "修改時間或文字後只需執行此命令。")
+    r.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級日誌")
+    r.add_argument("timings", help="*_timings.json 路徑（唯一真源）")
+    r.add_argument("-o", "--output",
+                   help="輸出 .ass 路徑（預設與 timings 同名，副檔名改為 .ass）")
     r.add_argument("--sync-style", action="store_true",
-                   help="將 --*color 等覆寫一併寫返入 timings.json（持久）")
+                   help="將本次樣式覆寫一併寫回 timings.json（永久生效，而非只本次輸出）")
     r.add_argument("--keep-punctuation", action="store_true",
-                   help="字幕保留標點（預設剝走：行尾刪、行中變空格，見 ADR-013）")
+                   help="字幕保留標點（預設移除：行尾刪除、行中轉為空格，見 ADR-013）")
     add_style_args(r, overrides=True)
     r.set_defaults(func=cmd_render)
 
     # ---- burn
-    b = sub.add_parser("burn", help="影片 + ass → mp4（淨係食 ass，唔會隱含 render）")
-    b.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級 log")
+    b = sub.add_parser("burn", help="影片 + ass → mp4（只接受 .ass，不會自動 render）",
+                       description="以 ffmpeg 將字幕燒錄進畫面並重新編碼輸出 mp4。")
+    b.add_argument("-v", "--verbose", action="store_true", help="顯示 DEBUG 層級日誌")
     b.add_argument("-i", "--input", required=True, help="原始 MV 影片")
-    b.add_argument("-s", "--subtitle", required=True, help="要燒錄嘅 .ass 檔")
-    b.add_argument("-o", "--output", help="輸出 mp4 路徑（預設 <原檔名>_karaoke.mp4）")
+    b.add_argument("-s", "--subtitle", required=True, help="要燒錄的 .ass 字幕檔")
+    b.add_argument("-o", "--output",
+                   help="輸出 mp4 路徑（預設為 <原檔名>_karaoke.mp4）")
     b.set_defaults(func=cmd_burn)
 
     return parser
