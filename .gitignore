@@ -17,6 +17,13 @@ _probe/out/
 _probe/burn test dir/
 _probe/*.png
 
+# 一次性／臨時 probe 腳本：只在本機跑，不入版控（唔想公開瑣碎實驗）
+_probe/probe_altnav.py
+_probe/probe_altnav_e2e.py
+_probe/probe_burn_shot.py
+_probe/probe_fix_check.py
+_probe/probe_layout.py
+
 # 規劃文件（慣例：先討論確認，排除於 production commit）
 docs/標點斷行計劃書.md
 docs/字幕編輯器計劃書.md
