@@ -283,6 +283,12 @@ py -3 -m venv .venv-ui
 .venv-ui/Scripts/python.exe -m ui
 ```
 
+> 或者直接**雙擊 `run_ui.bat`**：它會自動建 `.venv-ui`、依 `requirements.lock.txt` 裝固定版本依賴、
+> 檢查 Python 有無 tkinter 與 ffmpeg 是否就緒，然後開窗。日後再開會跳過安裝（幾秒內起）。
+>
+> 要部署去另一台電腦（交畀同事）見 [`DEPLOY.md`](DEPLOY.md)；出包用 `tools/build_release.py`。
+> 版本號唯一真源係根目錄 `VERSION`，三處顯示：啟動器 banner、視窗標題、`main.py --version`。
+
 - **主頁**：揀 MV → 揀屬性（三層：基本/樣式/進階）→ 開始生成（五階段進度）；或直接「開啟現有 `*_timings.json`」
 - **編輯器**：歌詞樹 + 波形時間軸 + 逐字微調 + 大 preview 窗（字幕疊圖）+ 2fps 縮圖 scrub strip；估算字橙色標示、可篩選、可重新劃分；Ctrl+S 儲存（atomic + .bak）
 - **燒錄**：編輯器工具列「🔥 燒錄」→ 燒錄設定（可換成自備純音樂 MV）→ 自動 render 最新 .ass + ffmpeg
