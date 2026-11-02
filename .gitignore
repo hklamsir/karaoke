@@ -7,8 +7,15 @@ __pycache__/
 # 交付包（tools/build_release.py 產出，隨版本重生，唔入 repo）
 dist/
 
-# 實測素材／輸出大檔（60MB+，唔入 repo；原始 ASR 證據 JSON 喺 _probe/out/ 會入）
+# 實測素材／輸出大檔（60MB+，唔入 repo）
 _smoke/
+
+# _probe 只保留探測腳本（ADR 驗證章節逐條引用，屬證據）；
+# 媒體與 ASR 原始輸出含第三方歌曲內容（音檔／MV 畫面／歌詞），唔公開（ADR-023）
+_probe/media/
+_probe/out/
+_probe/burn test dir/
+_probe/*.png
 
 # 規劃文件（慣例：先討論確認，排除於 production commit）
 docs/標點斷行計劃書.md
