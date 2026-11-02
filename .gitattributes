@@ -6,6 +6,10 @@
 *.bat text eol=crlf
 *.cmd text eol=crlf
 
+# git hook 必須維持 LF：CRLF 的 shell script 會爆 "$'\r': command not found"。
+# 本機 core.autocrlf=true，冇這條就會在下次 checkout 時被轉成 CRLF。
+tools/hooks/* text eol=lf
+
 # 二進位（唔好做行尾轉換，否則圖示會爛）
 *.ico binary
 *.png binary

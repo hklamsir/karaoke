@@ -14,11 +14,15 @@
 2. **冇夾帶禁區** —— ``_probe`` / ``.venv`` / ``__pycache__`` / 計劃書 / ``.env``
 3. **冇 API key 洩漏** —— 掃描所有文字檔有無 ``sk-`` 加 20 位以上字元
 
+打包前另會先跑 ``tools/version_guard.py``：若 ``VERSION`` 之後仍有改過程式碼
+的 commit，會出警告（``--strict`` 則直接中止）。理由見該模組 docstring。
+
 用法::
 
     python tools/build_release.py              # 依 VERSION 出 dist/karaoke-v1.0.0.zip
     python tools/build_release.py --dry-run    # 只印清單，唔寫檔
     python tools/build_release.py --out D:/tmp # 自訂輸出資料夾
+    python tools/build_release.py --strict     # VERSION 未升就唔准出包
 
 版本號唯一真源係專案根目錄的 ``VERSION``（同 ``ui/app.py`` 標題、``main.py
 --version`` 一致）。要出新版就改該檔再跑本腳本，刻意唔提供 ``--version``
@@ -36,6 +40,13 @@ from typing import Iterator, Sequence
 
 #: 專案根目錄（``tools/`` 的上一層）
 ROOT = Path(__file__).resolve().parent.parent
+
+# 版本護欄與本腳本同住 tools/：直接執行時 sys.path[0] 係 tools/，
+# 但被當成 `tools.build_release` import 時就要用完整路徑 —— 兩種都支援。
+try:
+    from tools.version_guard import check_version_bump
+except ImportError:   # 直接執行 tools/build_release.py 的情況
+    from version_guard import check_version_bump
 
 #: 版本檔（唯一真源）
 VERSION_FILE = ROOT / "VERSION"
@@ -214,20 +225,26 @@ def scan_secrets(files: Sequence[Path]) -> list[tuple[Path, str]]:
     return hits
 
 
-def build(version: str, out_dir: Path, *, dry_run: bool = False) -> Path | None:
+def build(version: str, out_dir: Path, *, dry_run: bool = False,
+          strict: bool = False) -> Path | None:
     """生成交付 zip。
 
     Args:
         version: 版本字串（決定 zip 檔名與內部根目錄名）。
         out_dir: 輸出資料夾（不存在會建立）。
         dry_run: ``True`` 時只印清單，唔寫檔。
+        strict: ``True`` 時「VERSION 未跟住程式碼升」會中止打包；預設只警告。
 
     Returns:
         產出的 zip 路徑；``dry_run`` 時回傳 ``None``。
 
     Raises:
-        SystemExit: 自檢失敗（缺檔、夾帶禁區、發現金鑰）。
+        SystemExit: 自檢失敗（缺檔、夾帶禁區、發現金鑰、strict 下未升版）。
     """
+    # 先驗版本號有無跟住 code 升 —— 否則會出「zip 與程式自報版本對唔上」的包
+    if check_version_bump(strict=strict) != 0:
+        sys.exit("[build] ✕ VERSION 未跟住程式碼升（詳見上），已中止打包")
+
     files = collect()
     prefix = f"karaoke-v{version}"
     rels = [p.relative_to(ROOT).as_posix() for p in files]
@@ -292,10 +309,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         help="輸出資料夾（預設 dist/）")
     parser.add_argument("--dry-run", action="store_true",
                         help="只印清單與自檢結果，唔寫檔")
+    parser.add_argument("--strict", action="store_true",
+                        help="VERSION 未跟住程式碼升就中止（預設只警告）")
     args = parser.parse_args(argv)
 
     version = read_version()
-    build(version, Path(args.out), dry_run=args.dry_run)
+    build(version, Path(args.out), dry_run=args.dry_run, strict=args.strict)
     return 0
 
 

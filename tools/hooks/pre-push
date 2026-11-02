@@ -1,0 +1,42 @@
+#!/bin/sh
+# =====================================================================
+#  pre-push - 推送前檢查 VERSION 有無跟住程式碼升（ADR-022）
+#
+#  安裝（本 repo 只需做一次）：
+#      git config core.hooksPath tools/hooks
+#  取消：
+#      git config --unset core.hooksPath
+#
+#  預設「只警告，唔阻止推送」。要硬性把關，將最後一行 `exit 0` 改為
+#  `exit $RC`；緊急繞過用 `git push --no-verify`。
+#
+#  為什麼訊息用英文：同 run_ui.bat 一樣，cmd.exe / 部分 console 用 OEM
+#  codepage 讀輸出，中文會變亂碼。
+#
+#  為什麼要有 fallback 的 python 搜尋：hook 由 git 直接執行，唔一定繼承
+#  用戶 shell 的 PATH；先試專案 venv，再試系統 python。
+# =====================================================================
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+cd "$ROOT" || exit 0
+
+run_guard() {
+    for py in ".venv-ui/Scripts/python.exe" ".venv/Scripts/python.exe" python3 python; do
+        if "$py" -c "import sys" >/dev/null 2>&1; then
+            "$py" tools/version_guard.py
+            return $?
+        fi
+    done
+    if py -3 -c "import sys" >/dev/null 2>&1; then
+        py -3 tools/version_guard.py
+        return $?
+    fi
+    echo "[pre-push] Python not found - skip VERSION check"
+    return 0
+}
+
+run_guard
+RC=$?
+
+# Warn only: 未升版都照樣推送。要硬擋就把下面改成 exit $RC
+exit 0

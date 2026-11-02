@@ -239,6 +239,7 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 | 啟動器 | `run_ui.bat` | 四段自檢：Python+tkinter → ffmpeg（只警告）→ venv → lock 安裝；用 `.venv-ui\.installed-lock` 比對，未變就完全跳過 |
 | 可攜樣式 | `presets/home_style.json` | 你的字幕樣式數值，同事可照填或貼進 `settings.json` |
 | 打包腳本 | `tools/build_release.py` | allowlist 打包 + 三項自檢（缺檔／禁區／金鑰） |
+| 版本護欄 | `tools/version_guard.py`、`tools/hooks/pre-push` | 打包／推送前檢查 `VERSION` 有無跟住程式碼升 |
 | 交付文件 | `DEPLOY.md` | 就是本文件 |
 
 ### 8.2 每次出包（三步）
@@ -260,10 +261,21 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 
 想先睇清單唔寫檔：加 `--dry-run`。
 
+**打包前會先跑版本護欄**：若 `VERSION` 之後仍有改過程式碼的 commit，會列出那幾個
+commit 並提醒你先升版 —— 這正是「另一個對話改好功能但忘了升版」那個坑。
+預設**只警告唔阻止**（文件類改動、試跑都不該被鎖死）；要硬性把關就加 `--strict`。
+
+只改 `docs/`、任何 `*.md`、`VERSION`、`.gitignore`、`.gitattributes` 都**不算**需要升版。
+相反，改 `requirements.lock.txt` **算** —— 因為它會改變同事那邊的安裝結果。
+
+推送前也會檢查（前提是有 remote）：hook 已裝在 `tools/hooks/pre-push`，
+repo 設定 `core.hooksPath=tools/hooks` 已生效。取消就 `git config --unset core.hooksPath`。
+
 **3. 驗一驗**
 
 ```bash
-.venv-ui/Scripts/python.exe tests/test_editor_core.py    # 應 ALL PASS (26 checks)
+.venv-ui/Scripts/python.exe tests/test_editor_core.py      # 應 ALL PASS (26 checks)
+.venv-ui/Scripts/python.exe tests/test_version_guard.py    # 應 ALL PASS (8 checks)
 ```
 
 ### 8.3 依賴有變時
