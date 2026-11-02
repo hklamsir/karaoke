@@ -10,19 +10,9 @@ dist/
 # 實測素材／輸出大檔（60MB+，唔入 repo）
 _smoke/
 
-# _probe 只保留探測腳本（ADR 驗證章節逐條引用，屬證據）；
-# 媒體與 ASR 原始輸出含第三方歌曲內容（音檔／MV 畫面／歌詞），唔公開（ADR-023）
-_probe/media/
-_probe/out/
-_probe/burn test dir/
-_probe/*.png
-
-# 一次性／臨時 probe 腳本：只在本機跑，不入版控（唔想公開瑣碎實驗）
-_probe/probe_altnav.py
-_probe/probe_altnav_e2e.py
-_probe/probe_burn_shot.py
-_probe/probe_fix_check.py
-_probe/probe_layout.py
+# _probe 整個只留本機：內含第三方歌曲素材（音檔／MV 畫面／歌詞），
+# 探測腳本亦屬開發過程物，一律唔公開、唔入歷史（ADR-023）
+_probe/
 
 # 規劃文件（慣例：先討論確認，排除於 production commit）
 docs/標點斷行計劃書.md
