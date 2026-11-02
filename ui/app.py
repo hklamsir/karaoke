@@ -29,13 +29,19 @@ FETCH_MS = 100
 FINE_MS = 10
 FRAME_MS = 17
 
-#: 頁面註冊表：（key, 標題, 快捷鍵數字 1-4, 模組路徑, 類名）
+#: 頁面註冊表：（key, 標題, 快捷鍵數字（配 Alt）, 模組路徑, 類名）
 _PAGES: list[tuple[str, str, int, str, str]] = [
     ("home", "主頁", 1, "ui.pages.home", "HomePage"),
     ("editor", "編輯器", 2, "ui.pages.editor", "EditorPage"),
     ("settings", "設定", 3, "ui.pages.settings_page", "SettingsPage"),
     ("help", "幫助", 4, "ui.pages.help", "HelpPage"),
 ]
+
+#: 切頁快捷鍵改成 Alt+數字。原本裸 1-4 綁喺 toplevel，會經 bindtags 傳到
+#: ttk::entry —— 用戶喺編輯器打「1」就即刻跳去主頁（實際回報嘅 bug）。
+#: 用 Tk 自己嘅 ``<Alt-Key-n>`` 匹配，唔自己解析 event.state 位元：
+#: 各平台對 Alt 嘅 state 表示唔同（Windows 0x20000 / X11 Mod1 0x8），
+#: 交給 Tk 內部修飾鍵表比對最準，而且裸數字鍵永遠唔會誤中。
 
 
 class App(ttkb.Window):
@@ -238,7 +244,7 @@ class App(ttkb.Window):
         for key, label, num, _, _ in _PAGES:
             # ttk::button **冇 -font option** → 字級要經獨立 style 設（見 _nav_styles）
             btn = ttkb.Button(
-                bar, text=f"{num}  {label}", style="Nav.TButton",
+                bar, text=f"Alt+{num}  {label}", style="Nav.TButton",
                 command=lambda k=key: self.show_page(k), takefocus=False)
             btn.pack(fill="x", padx=theme.SPACE, pady=2, ipady=6)
             self._nav_buttons[key] = btn
@@ -376,9 +382,14 @@ class App(ttkb.Window):
         self.show_page("editor")
 
     def _bind_shortcuts(self) -> None:
-        """全域快捷鍵（§5.5.4 §3）：數字鍵 1-4 切頁；Ctrl+S/Z/Shift+Z/O；←→；空白鍵。"""
+        """全域快捷鍵（§5.5.4 §3）：Alt+1-4 切頁；Ctrl+S/Z/Shift+Z/O；←→；空白鍵。
+
+        切頁刻意唔用裸數字鍵 —— 綁喺 toplevel 嘅 ``<Key-1>`` 會經 bindtags
+        落到 ttk::entry，變成「編輯器打 1 就跳主頁」；加 Alt 之後同文字輸入
+        完全唔撞。
+        """
         for key, _, num, _, _ in _PAGES:
-            self.bind(f"<Key-{num}>", lambda _e, k=key: self.show_page(k))
+            self.bind(f"<Alt-Key-{num}>", self._nav_handler(key))
         self.bind("<Control-s>", self._dispatch("save"))
         self.bind("<Control-z>", self._dispatch("undo"))
         self.bind("<Control-Z>", self._dispatch("redo"))     # Shift 已入 modifier 大寫
@@ -386,6 +397,20 @@ class App(ttkb.Window):
         self.bind("<Left>", self._dispatch_cursor(-FETCH_MS, -FINE_MS, -FRAME_MS))
         self.bind("<Right>", self._dispatch_cursor(+FETCH_MS, +FINE_MS, +FRAME_MS))
         self.bind("<space>", self._dispatch("toggle_play"))
+
+    def _nav_handler(self, key: str):
+        """Alt+數字 切頁處理器。
+
+        Args:
+            key: 目標頁面 key（``home`` / ``editor`` / ``settings`` / ``help``）。
+
+        Returns:
+            回傳 ``"break"`` 嘅 Tk callback，阻止按鍵再傳落輸入控件。
+        """
+        def handler(_event=None) -> str:
+            self.show_page(key)
+            return "break"
+        return handler
 
     def _dispatch(self, method: str):
         """轉發畀編輯器（save/undo/redo；淨係喺編輯器頁生效）。"""
