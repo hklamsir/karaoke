@@ -212,7 +212,7 @@ class EditorPage(ttkb.Frame):
         Tooltip(self._undo_btn, self._undo_hint)
         Tooltip(self._redo_btn, self._redo_hint)
         Tooltip(self._save_btn, "儲存 timings.json（Ctrl+S）")
-        Tooltip(self._burn_btn, "依主頁樣式燒錄成 mp4")
+        Tooltip(self._burn_btn, "依主頁樣式燒錄成 mp4（可換成自備的純音樂 MV）")
 
         ttkb.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=6)
         self._btn_home = ttkb.Button(bar, text="⏮", width=3, bootstyle="secondary",
@@ -520,16 +520,31 @@ class EditorPage(ttkb.Frame):
         if not ffmpeg:
             messagebox.showerror("燒錄", "搵唔到 ffmpeg（設定頁填路徑）。")
             return
+        ffprobe = ui_settings.detect_ffprobe(self.master.settings_data)
 
         # ADR-015：主頁樣式 = 燒錄權威來源（用戶回報「燒錄冇跟主頁設定」）
         home_style = self._home_style()
-        if not messagebox.askyesno(
-                "燒錄確認",
-                f"將以原片 + 最新時間軸燒錄：\n{video.name}\n\n"
-                f"字幕樣式（跟主頁設定）：\n  {_describe_style(home_style)}\n\n"
-                f"（會先自動 render 最新 .ass 再跑 ffmpeg，需時幾分鐘）",
-                parent=self):
+
+        # ADR-020：燒錄音源可換成用戶自備的純音樂 MV（AI 去人聲已否決）
+        from ..widgets.burn_dialog import ask_burn_source
+
+        last_dir = Path(self.master.settings_data.get("last_burn_dir") or video.parent)
+        source = ask_burn_source(
+            self,
+            default_video=video,
+            style_text=_describe_style(home_style),
+            ffprobe=ffprobe,
+            last_dir=last_dir,
+        )
+        if source is None:
             return
+        # 記住揀檔資料夾（同「已儲存的值」比較，唔係同預設值比較 ——
+        # 否則第一次揀同一個資料夾就永遠唔會寫入）
+        stored_dir = str(self.master.settings_data.get("last_burn_dir") or "")
+        if str(source.parent) != stored_dir:
+            data = dict(self.master.settings_data)
+            data["last_burn_dir"] = str(source.parent)
+            self.master.save_settings(data)
 
         # 1) 把主頁樣式寫入 doc（令 timings.json 同燒錄結果一致）→ 儲存
         if home_style:
@@ -544,7 +559,8 @@ class EditorPage(ttkb.Frame):
         # 2) render 最新 ass（唔可以直接寫 ass 畀人手改 —— 係 burn 嘅中間產物）
         doc = st.doc
         ass_path = st.path.with_name(st.path.stem.replace("_timings", "_karaoke") + ".ass")
-        output = video.with_name(f"{video.stem}_karaoke.mp4")
+        # 輸出跟「實際燒錄的那條片」命名；換了純音樂 MV 就唔會覆蓋原片的成品
+        output = source.with_name(f"{source.stem}_karaoke.mp4")
         strip_punct = bool((doc.get("source") or {}).get("strip_punctuation", True))
         import main as _main
         _, doc_style = _main.timings_doc_to_lines(doc)
@@ -555,6 +571,7 @@ class EditorPage(ttkb.Frame):
         ass_text = _main.render_timings(doc, doc_style, strip_punctuation=strip_punct)
         ass_path.write_text(ass_text, encoding="utf-8")
         LOGGER.info("燒錄樣式：%s", _describe_style(home_style))
+        LOGGER.info("燒錄音源：%s（字幕時間軸基準：%s）", source.name, video.name)
 
         # 3) 進度窗（置中 + log 預設展開；用戶回報 dialog 冇置中、睇唔到 log）
         from ..widgets.dialogs import center_window
@@ -581,7 +598,7 @@ class EditorPage(ttkb.Frame):
 
         def worker() -> None:
             try:
-                _main.burn_video(video, ass_path, output, progress_cb=prog.report)
+                _main.burn_video(source, ass_path, output, progress_cb=prog.report)
             except SystemExit as exc:
                 # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
                 code = exc.code

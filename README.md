@@ -70,13 +70,17 @@ export DASHSCOPE_API_KEY="sk-xxxx"   # Windows PowerShell: $env:DASHSCOPE_API_KE
 # 或用 --api-key "sk-xxxx"
 ```
 
-### 2.4 可選：人聲分離
+### 2.4 可選：`generate` 的人聲分離（只影響 ASR 音源）
 
 ```bash
 pip install audio-separator     # 刻意唔入 requirements.txt（會拖入 GB 級依賴，ADR-010）
 ```
 
-首次執行會下載模型。人聲分離**只影響送去做 ASR 的音源**，`burn` 出的影片一定保留原聲軌。
+首次執行會下載模型。**只影響送去做 ASR 的音源**，唔會改變燒錄出來的音軌。
+
+> ⚠️ **燒錄唔會幫你去人聲**（ADR-020）。曾經內建過 AI 去人聲，但實測細節流失明顯
+> （歌聲殘留、樂器變薄）、依賴 1.3 GB、CPU 上慢 18 倍，已整套移除。
+> 要出純音樂，請**自備去人聲的純音樂 MV**，燒錄時喺對話框揀它（見 3.4）。
 
 ---
 
@@ -115,10 +119,30 @@ python main.py render MV_timings.json --primary-color "#00FFFF" --sync-style
 ### 範例 3 · 燒錄成影片
 
 ```bash
+# 用原片（保留原聲）
 python main.py burn -i "MV.mp4" -s "MV_karaoke.ass"
+
+# 用自備的純音樂 MV（去人聲版本）—— 字幕時間軸仍然來自原片那份 timings.json
+python main.py burn -i "MV_純音樂.mp4" -s "MV_karaoke.ass"
 ```
 
 預設輸出 `<原檔名>_karaoke.mp4`，libx264 crf18 medium、音軌 `-c:a copy`（唔相容則降級 aac 192k）。
+
+#### 圖形介面：燒錄時揀音源
+
+按「🔥 燒錄」會彈**燒錄設定**，預設用原片；按「選擇純音樂 MV…」可換成你自備的去人聲版本
+—— 畫面與音軌都會取自該檔，字幕燒在它上面。
+
+對話框會做兩項**燒錄前預警**（唔會自動修，只會提你）：
+
+| 檢查 | 觸發條件 | 後果 |
+|---|---|---|
+| 時長差 | 與原片相差 > 1.5 秒 | 字幕會愈唱愈唔對位（唔同剪輯版本） |
+| 畫面比例 | 比例相差 > 5%（例如 16:9 vs 1:1） | 字幕位置可能要重新調整 |
+| 冇視訊軌 | 揀到 mp3 / wav | 直接禁用「開始燒錄」 |
+
+> 自備 MV 一定要係**同一個剪輯版本**（前奏/尾奏長度一致）。字幕時間軸是從原片 ASR 出來的，
+> 換了版本就必須返編輯器手動調時間軸 —— 軟件唔會（亦唔可能）自動對齊。
 
 ### 其他常用參數（`generate`）
 
@@ -261,7 +285,7 @@ py -3 -m venv .venv-ui
 
 - **主頁**：揀 MV → 揀屬性（三層：基本/樣式/進階）→ 開始生成（五階段進度）；或直接「開啟現有 `*_timings.json`」
 - **編輯器**：歌詞樹 + 波形時間軸 + 逐字微調 + 大 preview 窗（字幕疊圖）+ 2fps 縮圖 scrub strip；估算字橙色標示、可篩選、可重新劃分；Ctrl+S 儲存（atomic + .bak）
-- **燒錄**：編輯器工具列「🔥 燒錄」（自動 render 最新 .ass + ffmpeg）
+- **燒錄**：編輯器工具列「🔥 燒錄」→ 燒錄設定（可換成自備純音樂 MV）→ 自動 render 最新 .ass + ffmpeg
 - **設定**：API key（env 優先）/ ffmpeg 路徑 / 預設資料夾 / 主題
 - **幫助**：UI + CLI 完整使用方法（CLI 參數表動態生成，永不過時）；內容源 `docs/使用說明.md`
 

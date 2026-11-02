@@ -32,6 +32,8 @@ _DEFAULTS: dict[str, Any] = {
     #: 內容：font_name / font_size / primary_color / secondary_color /
     #:       outline_color / alignment / margin_v / outline_width
     "home_style": {},
+    #: 上次揀「純音樂 MV」的資料夾（ADR-020：下次開檔對話框直接開喺度）
+    "last_burn_dir": "",
 }
 
 

@@ -10,7 +10,7 @@ main.py — 卡拉OK字幕產生器（阿里百煉 ASR → timings.json → ASS 
 
 設計依據（must keep in sync）：
   - docs/名詞表.md        ：全部術語、單位換算、禁止詞
-  - docs/架構決策紀錄.md  ：ADR-001 ~ ADR-013
+  - docs/架構決策紀錄.md  ：ADR-001 ~ ADR-020
 
 處理管線（次序為鐵律，見 ADR-008）：
     ASR → 拆字（WordSlot→CharSlot，包成 WordGroup；標點獨立存 WordGroup.punctuation）
@@ -306,6 +306,44 @@ def probe_audio_codec(ffprobe: str, video: Path) -> str | None:
         capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     return (proc.stdout or "").strip() or None
+
+
+def probe_duration_ms(ffprobe: str, media: Path) -> int | None:
+    """讀取媒體總時長（ms）；讀唔到就 ``None``。
+
+    用途（ADR-020）：用戶自備嘅「純音樂 MV」若果係另一個剪輯版本，
+    字幕會整體漂移 —— 燒錄前用時長比對做第一道預警。
+
+    Args:
+        ffprobe: ffprobe 可執行檔。
+        media: 任何 ffmpeg 讀得到的影音檔。
+
+    Returns:
+        時長毫秒；解析失敗 → ``None``（唔好當 0，否則會被誤判為「差好遠」）。
+    """
+    proc = subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", str(media)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    try:
+        return int(round(float((proc.stdout or "").strip()) * 1000))
+    except ValueError:
+        return None
+
+
+def probe_has_video(ffprobe: str, media: Path) -> bool:
+    """是否有視訊軌。
+
+    純音樂 MV 必須有畫面（燒字幕要畫面）；揀到 mp3/wav 就係用戶搞錯，
+    要在對話框即時擋住，唔好等到 ffmpeg 跑一半才失敗。
+    """
+    proc = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(media)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    return bool((proc.stdout or "").strip())
 
 
 def read_playres_from_ass(ass_path: Path) -> tuple[int, int] | None:
