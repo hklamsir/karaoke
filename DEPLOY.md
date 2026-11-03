@@ -317,11 +317,12 @@ karaoke-vX.Y.Z/
 包內有 `tests/`，缺任何一件都會令它變成死檔（裝不到 pytest / 噴 unknown marker /
 要人手記長指令）。三者由 `tools/build_release.py` 的 `TOP_FILES` 收錄。
 
-實測（v1.0.3）：47 個檔案、原始 0.60 MB、zip 0.26 MB。
+實測（v1.0.4，2026-11-03，含 P0/P1 修復）：**66 個檔案、原始 0.76 MB、zip 0.32 MB**；
+解壓到空目錄（無 `_smoke/`）直接跑 `pytest` → **139 passed**，與 repo 內一致。
 
-> ⚠️ **v1.0.4 起內容有變**：新增整套 pytest 測試（`tests/` 現有 15 個檔，含
-> `fixtures/`）＋上述三件配套。v1.0.3 的 47 檔／0.60 MB 已是歷史數字，
-> **下次出包必須重新實測並更新這一行**（`tools.build_release.collect()` 可直接數檔數）。
+> ⚠️ 每次改動 `tests/` 或新增根目錄模組後，這個數字都會變。出包前必須重新實測
+> （`tools.build_release.collect()` 可直接數檔數），**唔好照抄上一版**。
+> v1.0.3 的 47 檔／0.60 MB 已是歷史數字。
 
 ### 8.6 三個交付時的提醒
 
