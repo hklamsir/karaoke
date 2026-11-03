@@ -1,0 +1,10 @@
+# 開發／測試依賴 —— 刻意唔放入 requirements.txt，
+# 因為 run_ui.bat 會讀 requirements.txt 做交付安裝，唔應該迫用戶裝測試框架。
+#
+# 安裝（用 UI venv，佢係 .venv 的超集：有 numpy / pygame / ttkbootstrap）：
+#   .venv-ui\Scripts\python.exe -m pip install -r requirements-dev.txt
+# 執行：
+#   run_tests.bat
+#   或 .venv-ui\Scripts\python.exe -m pytest tests -v
+
+pytest>=8.0

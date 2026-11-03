@@ -190,5 +190,15 @@ def main() -> int:
     return 0
 
 
+def test_version_guard_suite() -> None:
+    """pytest 入口。
+
+    ``main()`` 這個名字 pytest **唔會** 收集（只收 ``test_*``），所以本檔在
+    pytest 下原本是「零測試」—— 一個沉默的假綠。這個包裝令它真正被執行，
+    並且把 ``main()`` 的 rc 轉成斷言。
+    """
+    assert main() == 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

@@ -1,0 +1,44 @@
+name: tests
+
+# 目的（docs/代碼審查報告.html §2.2 / §9.4）：把「錯了也不報錯」的陷阱鎖在 CI 上。
+# - ADR-005 時間格式寫錯 → libass 靜默輸出無字幕影片，只有測試能抓
+# - ADR-006 燒錄路徑含冒號 → ffmpeg 靜默失敗
+# - ADR-013 停頓雙倍 → 逐字高亮整體偏移
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: 安裝依賴
+        # 刻意唔裝 ffmpeg / UI 的 ttkbootstrap：
+        # 測試全部把外部程序 monkeypatch 掉，正好驗證「無 ffmpeg 環境亦可測」。
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: 跑測試
+        # -rf 讓失敗摘要列出原因；xfail 數量 = 待實作功能清單長度
+        run: python -m pytest tests -v --tb=short -rf
+
+      - name: 上傳測試報告（失敗時）
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-output
+          path: .pytest_cache/
+          retention-days: 7

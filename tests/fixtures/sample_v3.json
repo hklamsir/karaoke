@@ -1,0 +1,479 @@
+{
+  "schema_version": 3,
+  "source": {
+    "video": "tests/fixtures/__synthetic__.mp4",
+    "video_width": 1920,
+    "video_height": 1080,
+    "model": "qwen-audio-3.1-asr-flash-filetrans",
+    "language_hints": ["zh"],
+    "asr_content_duration_ms": 38000,
+    "opencc": "s2hk",
+    "max_chars": 18,
+    "gap_threshold_ms": 800,
+    "hold_ms": 300,
+    "min_clause_chars": 5,
+    "min_clause_ms": 2500,
+    "merge_max_chars": 16,
+    "strip_punctuation": true,
+    "generated_at": "2026-11-03T00:00:00+00:00",
+    "_note": "合成 fixture（非真實歌曲素材，見 ADR-023）。刻意覆蓋：split 需 ≥2 word、merge 需相鄰行、estimated 旗標、句讀/句末標點、C-5 大 gap（1000ms / 1500ms）、超長 24 字行、emoji、純拉丁詞、全形字。"
+  },
+  "style": {
+    "play_res_x": 1920,
+    "play_res_y": 1080,
+    "font_name": "Microsoft JhengHei",
+    "font_size": 48,
+    "primary_color": "#FFFF00",
+    "secondary_color": "#FFFFFF",
+    "outline_color": "#000000",
+    "alignment": 2,
+    "margin_v": 60,
+    "outline_width": 3.0
+  },
+  "lines": [
+    {
+      "start_ms": 0,
+      "end_ms": 3000,
+      "text": "月光照在",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "月光",
+          "begin_ms": 0,
+          "end_ms": 1600,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "月", "begin_ms": 0, "end_ms": 800},
+            {"text": "光", "begin_ms": 800, "end_ms": 1600}
+          ]
+        },
+        {
+          "text": "照在",
+          "begin_ms": 1600,
+          "end_ms": 3000,
+          "estimated": true,
+          "punctuation": "，",
+          "chars": [
+            {"text": "照", "begin_ms": 1600, "end_ms": 2300},
+            {"text": "在", "begin_ms": 2300, "end_ms": 3000}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 3000,
+      "end_ms": 6000,
+      "text": "夜深了",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "夜深",
+          "begin_ms": 3000,
+          "end_ms": 4600,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "夜", "begin_ms": 3000, "end_ms": 3800},
+            {"text": "深", "begin_ms": 3800, "end_ms": 4600}
+          ]
+        },
+        {
+          "text": "了",
+          "begin_ms": 4600,
+          "end_ms": 6000,
+          "estimated": false,
+          "punctuation": "。",
+          "chars": [
+            {"text": "了", "begin_ms": 4600, "end_ms": 6000}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 6000,
+      "end_ms": 9200,
+      "text": "心內有話",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "心內",
+          "begin_ms": 6000,
+          "end_ms": 7000,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "心", "begin_ms": 6000, "end_ms": 6500},
+            {"text": "內", "begin_ms": 6500, "end_ms": 7000}
+          ]
+        },
+        {
+          "text": "有話",
+          "begin_ms": 8000,
+          "end_ms": 9200,
+          "estimated": true,
+          "punctuation": "？",
+          "chars": [
+            {"text": "有", "begin_ms": 8000, "end_ms": 8600},
+            {"text": "話", "begin_ms": 8600, "end_ms": 9200}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 9200,
+      "end_ms": 12000,
+      "text": "誰在窗外",
+      "break_reason": "max_chars",
+      "words": [
+        {
+          "text": "誰在",
+          "begin_ms": 9200,
+          "end_ms": 10600,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "誰", "begin_ms": 9200, "end_ms": 9900},
+            {"text": "在", "begin_ms": 9900, "end_ms": 10600}
+          ]
+        },
+        {
+          "text": "窗外",
+          "begin_ms": 10600,
+          "end_ms": 12000,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "窗", "begin_ms": 10600, "end_ms": 11300},
+            {"text": "外", "begin_ms": 11300, "end_ms": 12000}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 12000,
+      "end_ms": 14900,
+      "text": "hello世界🤘",
+      "break_reason": "sentence",
+      "words": [
+        {
+          "text": "hello",
+          "begin_ms": 12000,
+          "end_ms": 13100,
+          "estimated": false,
+          "punctuation": "",
+          "chars": [
+            {"text": "hello", "begin_ms": 12000, "end_ms": 13100}
+          ]
+        },
+        {
+          "text": "世界",
+          "begin_ms": 13100,
+          "end_ms": 14000,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "世", "begin_ms": 13100, "end_ms": 13550},
+            {"text": "界", "begin_ms": 13550, "end_ms": 14000}
+          ]
+        },
+        {
+          "text": "🤘",
+          "begin_ms": 14000,
+          "end_ms": 14900,
+          "estimated": false,
+          "punctuation": "",
+          "chars": [
+            {"text": "🤘", "begin_ms": 14000, "end_ms": 14900}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 14900,
+      "end_ms": 18000,
+      "text": "搖滾全形🤘 吧",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "搖滾",
+          "begin_ms": 14900,
+          "end_ms": 16100,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "搖", "begin_ms": 14900, "end_ms": 15500},
+            {"text": "滾", "begin_ms": 15500, "end_ms": 16100}
+          ]
+        },
+        {
+          "text": "全形🤘",
+          "begin_ms": 16100,
+          "end_ms": 17600,
+          "estimated": true,
+          "punctuation": "，",
+          "chars": [
+            {"text": "全", "begin_ms": 16100, "end_ms": 16600},
+            {"text": "形", "begin_ms": 16600, "end_ms": 17100},
+            {"text": "🤘", "begin_ms": 17100, "end_ms": 17600}
+          ]
+        },
+        {
+          "text": "吧",
+          "begin_ms": 17600,
+          "end_ms": 18000,
+          "estimated": false,
+          "punctuation": "！",
+          "chars": [
+            {"text": "吧", "begin_ms": 17600, "end_ms": 18000}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 18000,
+      "end_ms": 21000,
+      "text": "時間慢慢流",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "時間",
+          "begin_ms": 18000,
+          "end_ms": 19200,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "時", "begin_ms": 18000, "end_ms": 18600},
+            {"text": "間", "begin_ms": 18600, "end_ms": 19200}
+          ]
+        },
+        {
+          "text": "慢慢",
+          "begin_ms": 19200,
+          "end_ms": 20400,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "慢", "begin_ms": 19200, "end_ms": 19800},
+            {"text": "慢", "begin_ms": 19800, "end_ms": 20400}
+          ]
+        },
+        {
+          "text": "流",
+          "begin_ms": 20400,
+          "end_ms": 21000,
+          "estimated": false,
+          "punctuation": "，",
+          "chars": [
+            {"text": "流", "begin_ms": 20400, "end_ms": 21000}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 21000,
+      "end_ms": 24700,
+      "text": "記憶之中",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "記憶",
+          "begin_ms": 21000,
+          "end_ms": 22500,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "記", "begin_ms": 21000, "end_ms": 21750},
+            {"text": "憶", "begin_ms": 21750, "end_ms": 22500}
+          ]
+        },
+        {
+          "text": "之中",
+          "begin_ms": 24000,
+          "end_ms": 24700,
+          "estimated": true,
+          "punctuation": "。",
+          "chars": [
+            {"text": "之", "begin_ms": 24000, "end_ms": 24350},
+            {"text": "中", "begin_ms": 24350, "end_ms": 24700}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 24700,
+      "end_ms": 29500,
+      "text": "一二三四五六七八九十十一十二十三十四十五十六七八",
+      "break_reason": "gap",
+      "words": [
+        {
+          "text": "一二三四",
+          "begin_ms": 24700,
+          "end_ms": 25500,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "一", "begin_ms": 24700, "end_ms": 24900},
+            {"text": "二", "begin_ms": 24900, "end_ms": 25100},
+            {"text": "三", "begin_ms": 25100, "end_ms": 25300},
+            {"text": "四", "begin_ms": 25300, "end_ms": 25500}
+          ]
+        },
+        {
+          "text": "五六七八",
+          "begin_ms": 25500,
+          "end_ms": 26300,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "五", "begin_ms": 25500, "end_ms": 25700},
+            {"text": "六", "begin_ms": 25700, "end_ms": 25900},
+            {"text": "七", "begin_ms": 25900, "end_ms": 26100},
+            {"text": "八", "begin_ms": 26100, "end_ms": 26300}
+          ]
+        },
+        {
+          "text": "九十十一",
+          "begin_ms": 26300,
+          "end_ms": 27100,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "九", "begin_ms": 26300, "end_ms": 26500},
+            {"text": "十", "begin_ms": 26500, "end_ms": 26700},
+            {"text": "十", "begin_ms": 26700, "end_ms": 26900},
+            {"text": "一", "begin_ms": 26900, "end_ms": 27100}
+          ]
+        },
+        {
+          "text": "十二十三",
+          "begin_ms": 27100,
+          "end_ms": 27900,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "十", "begin_ms": 27100, "end_ms": 27300},
+            {"text": "二", "begin_ms": 27300, "end_ms": 27500},
+            {"text": "十", "begin_ms": 27500, "end_ms": 27700},
+            {"text": "三", "begin_ms": 27700, "end_ms": 27900}
+          ]
+        },
+        {
+          "text": "十四十五",
+          "begin_ms": 27900,
+          "end_ms": 28700,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "十", "begin_ms": 27900, "end_ms": 28100},
+            {"text": "四", "begin_ms": 28100, "end_ms": 28300},
+            {"text": "十", "begin_ms": 28300, "end_ms": 28500},
+            {"text": "五", "begin_ms": 28500, "end_ms": 28700}
+          ]
+        },
+        {
+          "text": "十六七八",
+          "begin_ms": 28700,
+          "end_ms": 29500,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "十", "begin_ms": 28700, "end_ms": 28900},
+            {"text": "六", "begin_ms": 28900, "end_ms": 29100},
+            {"text": "七", "begin_ms": 29100, "end_ms": 29300},
+            {"text": "八", "begin_ms": 29300, "end_ms": 29500}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 29500,
+      "end_ms": 32500,
+      "text": "燈光熄滅",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "燈光",
+          "begin_ms": 29500,
+          "end_ms": 31000,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "燈", "begin_ms": 29500, "end_ms": 30250},
+            {"text": "光", "begin_ms": 30250, "end_ms": 31000}
+          ]
+        },
+        {
+          "text": "熄滅",
+          "begin_ms": 31000,
+          "end_ms": 32500,
+          "estimated": true,
+          "punctuation": "。",
+          "chars": [
+            {"text": "熄", "begin_ms": 31000, "end_ms": 31750},
+            {"text": "滅", "begin_ms": 31750, "end_ms": 32500}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 32500,
+      "end_ms": 35500,
+      "text": "再次唱起",
+      "break_reason": "punctuation",
+      "words": [
+        {
+          "text": "再次",
+          "begin_ms": 32500,
+          "end_ms": 34000,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "再", "begin_ms": 32500, "end_ms": 33250},
+            {"text": "次", "begin_ms": 33250, "end_ms": 34000}
+          ]
+        },
+        {
+          "text": "唱起",
+          "begin_ms": 34000,
+          "end_ms": 35500,
+          "estimated": true,
+          "punctuation": "，",
+          "chars": [
+            {"text": "唱", "begin_ms": 34000, "end_ms": 34750},
+            {"text": "起", "begin_ms": 34750, "end_ms": 35500}
+          ]
+        }
+      ]
+    },
+    {
+      "start_ms": 35500,
+      "end_ms": 38000,
+      "text": "這首歌",
+      "break_reason": "",
+      "words": [
+        {
+          "text": "這首",
+          "begin_ms": 35500,
+          "end_ms": 36750,
+          "estimated": true,
+          "punctuation": "",
+          "chars": [
+            {"text": "這", "begin_ms": 35500, "end_ms": 36125},
+            {"text": "首", "begin_ms": 36125, "end_ms": 36750}
+          ]
+        },
+        {
+          "text": "歌",
+          "begin_ms": 36750,
+          "end_ms": 38000,
+          "estimated": false,
+          "punctuation": "",
+          "chars": [
+            {"text": "歌", "begin_ms": 36750, "end_ms": 38000}
+          ]
+        }
+      ]
+    }
+  ]
+}

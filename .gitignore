@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 .venv-ui/
+.pytest_cache/
 
 # 交付包（tools/build_release.py 產出，隨版本重生，唔入 repo）
 dist/

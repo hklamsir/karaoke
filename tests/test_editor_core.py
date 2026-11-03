@@ -1,7 +1,14 @@
 # -*- coding: utf-8 -*-
-"""test_editor_core — 編輯器純邏輯驗證（V3 / V4 / V6 / V7；無 Tk，直接跑）。
+"""test_editor_core — 編輯器純邏輯驗證（V3 / V4 / V6 / V7 / C4；無 Tk）。
 
-用法：.venv-ui/Scripts/python.exe tests/test_editor_core.py
+兩種跑法：
+- pytest：``.venv-ui/Scripts/python.exe -m pytest tests/``
+- 直跑：``.venv-ui/Scripts/python.exe tests/test_editor_core.py``
+
+⚠️ v1.0.3 修正（報告 §2.2）：原本用 ``Path("_smoke").glob("*_timings.json")`` 做 fixture，
+而 ``_smoke/`` 已在 .gitignore —— 乾淨 clone / CI 上 ``SMOKE`` 為 None，
+``SMOKE.read_text()`` 直接拋 AttributeError，整個測試檔崩潰。
+現改用 ``tests/fixtures/sample_v3.json``（合成資料，見 ADR-023），與 cwd 無關。
 """
 
 from __future__ import annotations
@@ -12,21 +19,29 @@ import random
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+TESTS_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = TESTS_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from ui import commands, models  # noqa: E402
 from ui.state import EditorState  # noqa: E402
-from ui.widgets.timeline import EDGE_PX, compute_layout, hit_test, ms_at_x  # noqa: E402
+from ui.widgets.timeline import EDGE_PX, compute_layout, hit_test, ms_at_x  # noqa: E402,F401
 
-SMOKE = next(iter(Path("_smoke").glob("*_timings.json")), None)
+FIXTURE = TESTS_DIR / "fixtures" / "sample_v3.json"
 PASS: list[str] = []
 
 
+def _load_doc() -> dict:
+    """讀入測試用 timings doc（每次回新副本，互不污染）。"""
+    return json.loads(FIXTURE.read_text(encoding="utf-8"))
+
+
 def check(name: str, cond: bool) -> None:
+    """記錄一條斷言結果；失敗即拋（pytest 會收成 FAILED，直跑會由 main 匯總）。"""
     PASS.append(name)
-    print(("✅" if cond else "❌"), name)
-    if not cond:
-        raise SystemExit(f"FAIL: {name}")
+    print(("✅ " if cond else "❌ ") + name)
+    assert cond, name
 
 
 # ---------------------------------------------------------------------------
@@ -114,7 +129,7 @@ def _make_random_op(st: EditorState, rng: random.Random) -> commands.Command | N
 def test_v4_undo_random_100() -> None:
     rng = random.Random(20261030)
     st = EditorState()
-    st.doc = json.loads(SMOKE.read_text(encoding="utf-8"))
+    st.doc = _load_doc()
     original = copy.deepcopy(st.doc)
 
     # 邊套用邊生成（indices 對當前狀態先有效）
@@ -182,7 +197,7 @@ def test_v6_normalize() -> None:
 
 def test_v7_split_merge_roundtrip() -> None:
     st = EditorState()
-    st.doc = json.loads(SMOKE.read_text(encoding="utf-8"))
+    st.doc = _load_doc()
     before = copy.deepcopy(st.doc["lines"])
 
     # 揾一條 >= 2 個 word 嘅行
@@ -193,10 +208,10 @@ def test_v7_split_merge_roundtrip() -> None:
 
     st.push(commands.MergeLines(target, 2))
     check("V7: 合併後行數還原", len(st.doc["lines"]) == len(before))
-    got = [ [ (c["begin_ms"], c["end_ms"]) for w in l["words"] for c in w["chars"] ]
-            for l in st.doc["lines"] ]
-    want = [ [ (c["begin_ms"], c["end_ms"]) for w in l["words"] for c in w["chars"] ]
-             for l in before ]
+    got = [[(c["begin_ms"], c["end_ms"]) for w in l["words"] for c in w["chars"]]
+           for l in st.doc["lines"]]
+    want = [[(c["begin_ms"], c["end_ms"]) for w in l["words"] for c in w["chars"]]
+            for l in before]
     check("V7: char 時間軸完全還原", got == want)
     check("V7: 行文字還原", [l.get("text") for l in st.doc["lines"]]
           == [l.get("text") for l in before])
@@ -206,7 +221,7 @@ def test_v7_split_merge_roundtrip() -> None:
 # C4 · 重新劃分（respread + 清 estimated）
 # ---------------------------------------------------------------------------
 
-def test_c4_respawn() -> None:
+def test_c4_respread() -> None:
     line = {"words": [{
         "text": "你好嗎", "begin_ms": 1000, "end_ms": 4000, "estimated": True,
         "punctuation": "",
@@ -234,10 +249,33 @@ def test_c4_respawn() -> None:
           [i for i, _ in st.visible_lines()] == [1])
 
 
+# ---------------------------------------------------------------------------
+# 直跑入口
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    cases = [
+        test_v3_hit_test,
+        test_v4_undo_random_100,
+        test_v6_normalize,
+        test_v7_split_merge_roundtrip,
+        test_c4_respread,
+    ]
+    failed: list[tuple[str, str]] = []
+    for case in cases:
+        try:
+            case()
+        except AssertionError as exc:
+            failed.append((case.__name__, str(exc)))
+    print()
+    if failed:
+        print(f"FAILED {len(failed)}/{len(cases)}")
+        for name, msg in failed:
+            print(f"  - {name}: {msg}")
+        return 1
+    print(f"ALL PASS ({len(PASS)} checks)")
+    return 0
+
+
 if __name__ == "__main__":
-    test_v3_hit_test()
-    test_v4_undo_random_100()
-    test_v6_normalize()
-    test_v7_split_merge_roundtrip()
-    test_c4_respawn()
-    print(f"\nALL PASS ({len(PASS)} checks)")
+    sys.exit(main())
