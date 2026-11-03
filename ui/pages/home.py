@@ -67,7 +67,12 @@ class HomePage(ttkb.Frame):
         super().__init__(master, bootstyle="light")
         self._video_path: Path | None = None
         self._video_info: dict[str, Any] = {}
-        self._running = False
+        # 任務互斥（ADR-025）：取代原本的 `_running` 布林旗標。
+        # 布林旗標係 check-then-act —— 兩條 thread 同時讀到 False 就會一齊過關；
+        # SingleFlight 用 Lock.acquire(blocking=False)，係原子操作。
+        # 延遲建立：main 係選配相依（純 UI 預覽唔一定 import 到）。
+        self._flight: Any | None = None
+        self._cancel_event: Any | None = None
         # 上次主頁樣式（ADR-015：主頁 = 燒錄權威來源，要跨 session 記住）
         self._saved_style: dict[str, Any] = dict(
             master.settings_data.get("home_style") or {})
@@ -324,6 +329,10 @@ class HomePage(ttkb.Frame):
         self._generate_btn = ttkb.Button(parent, text="▶  開始生成", bootstyle=theme.ACCENT,
                                          takefocus=False, command=self._start_generate)
         self._generate_btn.pack(fill="x", ipady=8, pady=(0, 2))
+        # 取消按鈕：預設隱藏，生成期間才出現（ADR-025）。按鈕唔用 disabled 的
+        # 「開始生成」兼職取消 —— 誤按代價太大（辛苦跑的 ASR 任務會被中止）。
+        self._cancel_btn = ttkb.Button(parent, text="✖  取消", bootstyle="danger-outline",
+                                       takefocus=False, command=self._cancel_generate)
         ttkb.Button(parent, text="⧉ 複製等價 CLI 指令", bootstyle="secondary-link",
                     takefocus=False, command=self._copy_cli).pack(fill="x", pady=(0, theme.SPACE))
 
@@ -637,26 +646,42 @@ class HomePage(ttkb.Frame):
             language=self._lang_var.get(),
             api_key=api_key or None,
             separate_vocals=self._separate_var.get(),
-            max_chars=int(self._adv_spins["max_chars"].get()),
-            gap_threshold_ms=int(self._adv_spins["gap_threshold_ms"].get()),
-            hold_ms=int(self._adv_spins["hold_ms"].get()),
-            min_clause_chars=int(self._adv_spins["min_clause_chars"].get()),
-            min_clause_ms=int(self._adv_spins["min_clause_ms"].get()),
-            merge_max_chars=int(self._adv_spins["merge_max_chars"].get()),
+            max_chars=self._adv_int("max_chars", 18),
+            gap_threshold_ms=self._adv_int("gap_threshold_ms", 800),
+            hold_ms=self._adv_int("hold_ms", 300),
+            min_clause_chars=self._adv_int("min_clause_chars", 5),
+            min_clause_ms=self._adv_int("min_clause_ms", 2500),
+            merge_max_chars=self._adv_int("merge_max_chars", 16),
             keep_punctuation=self._keep_punct_var.get(),
             save_raw=self._save_raw_var.get(),
             style=style,
         )
 
     def _start_generate(self) -> None:
-        if self._running:
-            messagebox.showinfo("進行中", "已經有任務跑緊。", parent=self)
+        import main
+
+        if self._flight is None:
+            self._flight = main.SingleFlight()
+        if not self._flight.acquire():
+            messagebox.showinfo("進行中", "已經有任務跑緊（可按「✖ 取消」中止）。", parent=self)
             return
-        opts = self._build_options()
+
+        # `_build_options` 內部已處理預期錯誤（缺片、樣式參數），但這裡再包一層
+        # 兜底：Tk callback 內任何未捕捉例外都只會去 stderr，用戶見到「按鈕冇反應」。
+        try:
+            opts = self._build_options()
+        except Exception as exc:      # noqa: BLE001
+            self._flight.release()
+            messagebox.showerror("參數錯誤", f"無法開始生成：{exc}", parent=self)
+            return
         if opts is None:
+            self._flight.release()
             return
-        self._running = True
+
+        self._cancel_event = opts.cancel_event
         self._generate_btn.configure(state="disabled")
+        self._cancel_btn.configure(state="normal", text="✖  取消")
+        self._cancel_btn.pack(fill="x", ipady=4, pady=(0, 2))
         self._progress.reset()
 
         # 攔截 karaoke logger → UI log 窗（計劃書 §5.2 步驟 3）
@@ -671,6 +696,9 @@ class HomePage(ttkb.Frame):
             import main
             try:
                 result = main.generate_timings(opts, progress_cb=self._progress.report)
+            except main.TaskCancelled:
+                # 取消唔係錯誤 → 唔彈 error dialog，只標記狀態（ADR-025）
+                self._progress.fail("已取消（未產生新檔）")
             except SystemExit as exc:
                 # 保險層：ADR-024 起 main 改拋 KaraokeError（會落到下面的 Exception
                 # 分支並顯示可讀訊息），這條只接第三方套件殘留的 sys.exit。
@@ -687,10 +715,33 @@ class HomePage(ttkb.Frame):
                 self.after(0, lambda: self._on_generate_done(result))
             finally:
                 logging.getLogger("karaoke").removeHandler(handler)
-                self.after(0, lambda: self._generate_btn.configure(state="normal"))
-                self.after(0, lambda: setattr(self, "_running", False))
+                self.after(0, self._reset_after_generate)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _cancel_generate(self) -> None:
+        """送出取消訊號（ADR-025）。
+
+        取消係「請求」而唔係「即刻停」：ASR 正在輪詢、ffmpeg 正在燒錄都要等下一個
+        檢查點。所以按鈕即刻變 disabled 並顯示「取消中…」，避免用戶連按。
+        """
+        event = self._cancel_event
+        if event is None:
+            return
+        event.set()
+        self._cancel_btn.configure(state="disabled", text="取消中…")
+        # 用 log 而唔用 report：report 的 stage 必須在 STAGES 內，
+        # 「取消」不是一個階段（進度燈應該停在當前階段，唔應該跳格）。
+        self._progress.log("已送出取消訊號，等待目前步驟結束 …")
+
+    def _reset_after_generate(self) -> None:
+        """worker 結束後復原 UI（**必須**在任何路徑執行，否則按鈕永久鎖死）。"""
+        self._generate_btn.configure(state="normal")
+        self._cancel_btn.pack_forget()
+        self._cancel_btn.configure(state="normal", text="✖  取消")
+        self._cancel_event = None
+        if self._flight is not None:
+            self._flight.release()
 
     def _copy_cli(self) -> None:
         """「複製等價 CLI 指令」（§5.5.5）：由目前 UI 值動態生成 generate 指令。"""
@@ -732,6 +783,31 @@ class HomePage(ttkb.Frame):
         try:
             return int(text)
         except (TypeError, ValueError):
+            return default
+
+    def _adv_int(self, key: str, default: int) -> int:
+        """讀「進階」面板某個 Spinbox 的整數值，唔合法就用預設（§2.5 P0）。
+
+        為何要防呆：Spinbox 可以被清空（Ctrl+A + Delete）或貼上非數字，``int("")``
+        會拋 ``ValueError``。以前這個例外發生在 Tk command callback 內，tkinter
+        只把它印到 stderr —— 用戶按了「開始生成」，畫面完全冇反應、也冇錯誤訊息。
+
+        旁邊的 :meth:`_copy_cli` 一早用了 ``_safe_int``，同一批欄位兩套標準；
+        現在統一走這裡。
+
+        Args:
+            key: ``self._adv_spins`` 的欄位名。
+            default: 解析失敗時的預設值（與 CLI 預設一致）。
+
+        Returns:
+            整數值。
+        """
+        spin = self._adv_spins.get(key)
+        if spin is None:
+            return default
+        try:
+            return self._safe_int(spin.get(), default)
+        except tk.TclError:      # 視窗已銷毀
             return default
 
     def _on_generate_done(self, result) -> None:

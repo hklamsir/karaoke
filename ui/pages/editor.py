@@ -45,6 +45,10 @@ class EditorPage(ttkb.Frame):
         self._audio = None          # commit 6
         self._audio_note = ""
         self._thumbs = None         # commit 7
+        # §2.4：游標輪詢鏈只准有一條。以前每次 _on_audio_ready 都叫一次
+        # _poll_position()，而該方法尾又自我重排 → 開 3 個檔就有 3 條
+        # 永不停止的 30ms 鏈，每條都觸發全量重繪（CPU 白燒、越用越卡）。
+        self._polling = False
         self._edit_target_i = None  # inline 修改歌詞目標行
 
         self._build_toolbar()
@@ -452,8 +456,11 @@ class EditorPage(ttkb.Frame):
         if engine is None or engine.peaks is None:
             return
         self._timeline.set_waveform(engine.peaks, engine.duration_ms)
-        self._audio_status(f"● 音訊 {engine.duration_ms / 1000:.0f}s 已載入")
-        self._poll_position()
+        status = f"● 音訊 {engine.duration_ms / 1000:.0f}s 已載入"
+        if getattr(engine, "playback_degraded", False):
+            status += "（長片：只顯示波形，播放已停用）"
+        self._audio_status(status)
+        self._ensure_polling()
 
     def _audio_status(self, text: str) -> None:
         self._audio_note = text
@@ -471,10 +478,28 @@ class EditorPage(ttkb.Frame):
                 f"{s['num_lines']}行·{s['num_chars']}字 │ ●估算 {s['estimated_words']}詞 {est_pct} │ "
                 f"{dirty} │ {st.path.name}")
 
+    def _ensure_polling(self) -> None:
+        """啟動游標輪詢鏈 —— 但只准一條（§2.4 P0）。
+
+        以前 ``_on_audio_ready`` 直接叫 ``_poll_position()``，而該方法尾部
+        無條件 ``self.after(30, self._poll_position)``：每換一次音源就多一條
+        永不停止的定時鏈。三條鏈同時跑 = 每 30ms 三次全量重繪（timeline +
+        preview + 字幕卡），而且每條都獨立計算，關掉檔案亦唔會停。
+
+        用旗標保證冪等；鏈條自己結束（engine 不在）時會清旗標，令下次載入
+        音源仍然可以重新啟動。
+        """
+        if self._polling:
+            return
+        self._polling = True
+        self._poll_position()
+
     def _poll_position(self) -> None:
         """播放中每 30ms 更新游標（§6.6）。"""
         engine = self._audio
         if engine is None or not engine.available:
+            # 鏈條到此結束：唔重排，但**必須**清旗標，否則之後永遠唔會再啟動
+            self._polling = False
             return
         if engine.playing:
             self._state.set_cursor(engine.position_ms())
@@ -489,6 +514,14 @@ class EditorPage(ttkb.Frame):
         engine = self._audio
         if engine is None or not engine.available:
             messagebox.showinfo("靜音模式", "音訊未載入（未裝 pygame 或冇原片）。")
+            return
+        if getattr(engine, "playback_degraded", False):
+            # §2.6：長片只載 peaks（省記憶體），播放功能主動停用並講明原因，
+            # 唔可以「按了冇反應」—— 用戶會以為程式壞。
+            messagebox.showinfo(
+                "長片模式",
+                "音訊超過 30 分鐘，為節省記憶體只載入波形，播放已停用。\n"
+                "可用工具列的「外部播放器」跟住唱。", parent=self)
             return
         if engine.playing:
             # 暫停：記住而家位置做下次起點
@@ -569,7 +602,8 @@ class EditorPage(ttkb.Frame):
             from dataclasses import replace as _replace
             doc_style = _replace(doc_style, **home_style)
         ass_text = _main.render_timings(doc, doc_style, strip_punctuation=strip_punct)
-        ass_path.write_text(ass_text, encoding="utf-8")
+        # 原子寫入（§2.8）：燒錄中途斷電唔應該留下一份半截 .ass 覆蓋舊的
+        _main.atomic_write_text(ass_path, ass_text)
         LOGGER.info("燒錄樣式：%s", _describe_style(home_style))
         LOGGER.info("燒錄音源：%s（字幕時間軸基準：%s）", source.name, video.name)
 
@@ -582,6 +616,11 @@ class EditorPage(ttkb.Frame):
         win.minsize(560, 360)
         btn_row = ttkb.Frame(win, bootstyle="light")
         btn_row.pack(side="bottom", fill="x", padx=12, pady=(0, 12))
+        # 取消燒錄（ADR-025）：燒錄長片可達數十分鐘，以前唯一選擇係等或殺程式
+        cancel_event = threading.Event()
+        cancel_btn = ttkb.Button(btn_row, text="✖ 取消燒錄", bootstyle="danger-outline",
+                                 takefocus=False, command=lambda: request_cancel())
+        cancel_btn.pack(side="right", padx=(0, 6))
         ttkb.Button(btn_row, text="關閉", bootstyle="secondary", takefocus=False,
                     command=win.destroy).pack(side="right")
         prog = StageProgress(win, stages=["燒錄"], log_open=True, log_height=14)
@@ -591,6 +630,12 @@ class EditorPage(ttkb.Frame):
         handler = QueueLogHandler(prog)
         logging.getLogger("karaoke").addHandler(handler)
 
+        def request_cancel() -> None:
+            """送出取消訊號。真正終止 ffmpeg 由 main._run_ffmpeg 的 poll 迴圈做。"""
+            cancel_event.set()
+            cancel_btn.configure(state="disabled", text="取消中…")
+            prog.log("已送出取消訊號，正在終止 ffmpeg …")
+
         def on_error(msg: str) -> None:
             prog.fail(msg)
             self._safe_title(win, "燒錄失敗 ✕")
@@ -598,7 +643,12 @@ class EditorPage(ttkb.Frame):
 
         def worker() -> None:
             try:
-                _main.burn_video(source, ass_path, output, progress_cb=prog.report)
+                _main.burn_video(source, ass_path, output, progress_cb=prog.report,
+                                 cancel_event=cancel_event)
+            except _main.TaskCancelled:
+                # 取消唔算失敗：唔彈 error dialog（半截輸出檔已由 burn_subtitles 刪除）
+                prog.fail("已取消（未產生輸出檔）")
+                self.after(0, lambda: self._safe_title(win, "燒錄已取消"))
             except SystemExit as exc:
                 # 保險層：ADR-024 起 burn_video 拋 BurnError（落到下面 Exception 分支，
                 # 顯示「ffmpeg 燒錄失敗（rc=…）」而不是光禿禿一個 exit code）。

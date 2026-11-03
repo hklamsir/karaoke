@@ -2,15 +2,19 @@
 """9.2 第 11 / 12 項 —— 任務取消與重複提交防護。
 
 對應 docs/代碼審查報告.html：
-- 9.2-11 任務取消（現況：完全無取消；``ThumbCache.cancelled`` 是死代碼）
-- 9.2-12 重複提交相同任務（現況：只有 UI 的 ``_running`` 布林旗標，無獨立可測單元）
+- 9.2-11 任務取消（ADR-025 已實作：``GenerateOptions.cancel_event`` 貫穿
+  抽音／上傳／ASR 輪詢／斷句／寫檔；燒錄改用 Popen + terminate）
+- 9.2-12 重複提交相同任務（ADR-025 已實作：``main.SingleFlight``，
+  UI 的 ``_running`` 布林旗標已移除）
 
-⚠️ 全部為 ``xfail(strict=True)`` 契約：實作完成後 XPASS 會令 suite 變紅，
-逼開發者回來拆標記 —— 這正是「實作即驗收」的機制。
+這些測試原本是 ``xfail(strict=True)`` 契約（未實作時 xfail、實作完成後
+XPASS 會令 suite 變紅逼人拆標記）。功能已落地，標記已拆 —— 現在它們是
+普通回歸測試，任何一次改動破壞取消語義都會直接 FAILED。
 
 為何唔測燒錄取消：燒錄屬 ffmpeg 外部程序生命週期（Popen + terminate），
 要真影片才測得穩；本檔只鎖「ASR 輪詢可被 cancel_event 中斷」這個
-9.2 明文要求的量化契約（< 2 個 poll 週期內拋出）。
+9.2 明文要求的量化契約（< 2 個 poll 週期內拋出）。燒錄取消的
+「半截輸出檔要刪除」由 ``test_burn_cancel.py`` 以假 ffmpeg 驗。
 """
 
 from __future__ import annotations
@@ -28,7 +32,6 @@ import main
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-11 待實作 GenerateOptions.cancel_event（threading.Event）")
 def test_generate_options_has_cancel_event(tmp_path: Path) -> None:
     """``GenerateOptions`` 應自帶未觸發的 ``cancel_event``（UI 可無條件 ``.set()``）。"""
     opts = main.GenerateOptions(input=tmp_path / "x.mp4")
@@ -36,7 +39,6 @@ def test_generate_options_has_cancel_event(tmp_path: Path) -> None:
     assert opts.cancel_event.is_set() is False
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-11 待實作 cancel_event 貫穿 ASR 輪詢 + TaskCancelled")
 def test_cancel_stops_polling_within_two_cycles(monkeypatch) -> None:
     """``cancel_event.set()`` 後必須在 2 個 poll 週期內拋 ``TaskCancelled``。
 
@@ -88,7 +90,6 @@ def test_cancel_stops_polling_within_two_cycles(monkeypatch) -> None:
     assert len(calls) <= 3, f"取消後仍 poll 了 {len(calls)} 次，取消未被檢查"
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-11 待實作 main.TaskCancelled（且不可繼承 KaraokeError）")
 def test_task_cancelled_is_not_karaoke_error() -> None:
     """取消唔算「錯誤」：``TaskCancelled`` 不應繼承 ``KaraokeError``。
 
@@ -103,7 +104,6 @@ def test_task_cancelled_is_not_karaoke_error() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-12 待實作 main.SingleFlight（現只有 UI _running 布林旗標）")
 def test_single_flight_blocks_second_acquire() -> None:
     """第二次 ``acquire()`` 必須回 False（= 「已經有任務跑緊」）。"""
     guard = main.SingleFlight()
@@ -113,7 +113,6 @@ def test_single_flight_blocks_second_acquire() -> None:
     assert guard.acquire() is True
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-12 待實作 main.SingleFlight（現只有 UI _running 布林旗標）")
 def test_single_flight_context_manager_releases_on_error() -> None:
     """例外路徑必須自動釋放，否則一次失敗就永久鎖死後續任務。"""
     guard = main.SingleFlight()
@@ -123,7 +122,6 @@ def test_single_flight_context_manager_releases_on_error() -> None:
     assert guard.acquire() is True, "例外後 guard 未釋放 → 任務永久鎖死"
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-12 待實作 main.SingleFlight（現只有 UI _running 布林旗標）")
 def test_single_flight_is_thread_safe() -> None:
     """8 條 thread 同時搶 → 只可以有 1 條成功（``_running`` 旗標做不到這點）。"""
     guard = main.SingleFlight()
@@ -145,3 +143,53 @@ def test_single_flight_is_thread_safe() -> None:
 
     assert len(results) == 8
     assert sum(1 for r in results if r) == 1
+
+
+def test_cancel_event_is_per_instance(tmp_path: Path) -> None:
+    """``default_factory`` 必須每次新建 Event —— 共用一個會令「上次取消」殘留。
+
+    如果寫成 ``cancel_event: threading.Event = threading.Event()``（class-level
+    預設值），所有 GenerateOptions 會共用同一個 Event：取消一次之後，之後每次
+    generate 一開波就即刻被取消，而且極難查。
+    """
+    a = main.GenerateOptions(input=tmp_path / "a.mp4")
+    b = main.GenerateOptions(input=tmp_path / "b.mp4")
+    assert a.cancel_event is not b.cancel_event
+
+    a.cancel_event.set()
+    assert b.cancel_event.is_set() is False
+
+
+def test_generate_aborts_immediately_when_already_cancelled(tmp_path: Path) -> None:
+    """已取消的任務唔應該開始：第一個檢查點就要拋，唔可以仲去抽音／上網。"""
+    video = tmp_path / "mv.mp4"
+    video.write_bytes(b"fake")
+    cancel = threading.Event()
+    cancel.set()
+
+    opts = main.GenerateOptions(input=video, api_key="sk-test", cancel_event=cancel)
+    with pytest.raises(main.TaskCancelled):
+        main.generate_timings(opts)
+
+
+def test_single_flight_double_release_raises() -> None:
+    """重複釋放要即刻爆（同 ``threading.Lock`` 一致），唔可以靜默成功。
+
+    靜默成功的話，「多 release 一次」會令閘門在仍有任務跑時被放開 ——
+    重複提交防護就失效，而且完全冇徵狀。
+    """
+    guard = main.SingleFlight()
+    assert guard.acquire() is True
+    guard.release()
+    with pytest.raises(RuntimeError):
+        guard.release()
+
+
+def test_single_flight_locked_property_tracks_state() -> None:
+    """``locked`` 只作顯示用，但要同實際狀態同步（UI 靠它決定按鈕文案）。"""
+    guard = main.SingleFlight()
+    assert guard.locked is False
+    guard.acquire()
+    assert guard.locked is True
+    guard.release()
+    assert guard.locked is False

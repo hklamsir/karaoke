@@ -32,6 +32,9 @@ class PreviewPane(ttkb.Frame):
         self._state = state
         self._on_seek = on_seek
         self._thumbs = None
+        # §2.3：正在抽取中的 ThumbCache（同已完成的 _thumbs 分開存）——
+        # 換片時要能夠叫停舊的抽取 thread，而 _thumbs 只會在完成後才賦值。
+        self._thumbs_task = None
         self._photo: tk.PhotoImage | None = None       # 防 GC（Tk image 唔自動回收）
         self._photo_cache: dict[int, tk.PhotoImage] = {}   # frame idx → PhotoImage（LRU 3）
         self._strip_photos: list[tk.PhotoImage] = []
@@ -107,6 +110,13 @@ class PreviewPane(ttkb.Frame):
 
     def start_thumbs(self, video: Path | None, ffmpeg: str, ffprobe: str) -> None:
         """開檔 / 原片指定後啟動縮圖抽取（背景 thread；§6.7.4）。"""
+        # 換片：叫停上一條抽取 thread（§2.3 —— ThumbCache.cancelled 以前
+        # 寫好檢查邏輯但全 codebase 冇一處設 True，是死代碼）。
+        task = self._thumbs_task
+        if task is not None:
+            task.cancelled = True
+            LOGGER.debug("已叫停上一條縮圖抽取")
+        self._thumbs_task = None
         self._thumbs = None
         self._thumb_progress_var.set("")
         if video is None or not video.is_file():
@@ -114,6 +124,7 @@ class PreviewPane(ttkb.Frame):
             return
         from ..thumbs import ThumbCache
         cache = ThumbCache(video, ffmpeg, ffprobe)
+        self._thumbs_task = cache
 
         def on_progress(done: int, total: int) -> None:
             self.after(0, lambda d=done, t=total: self._thumb_progress_var.set(

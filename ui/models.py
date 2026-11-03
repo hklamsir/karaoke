@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,14 +37,15 @@ def load_doc(path: str | Path) -> dict[str, Any]:
 
 
 def atomic_write_json(path: str | Path, doc: dict[str, Any]) -> None:
-    """原子寫入 + 覆寫前留 .bak（E2 / R6 對策）。"""
-    path = Path(path)
-    if path.is_file():
-        bak = path.with_suffix(path.suffix + ".bak")
-        bak.write_bytes(path.read_bytes())
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, path)
+    """原子寫入 + 覆寫前留 .bak（E2 / R6 對策）。
+
+    實作已統一在 :func:`main.atomic_write_json`（審查報告 §2.8）—— 以前 UI 與
+    CLI 各自一份，行為已經分叉（UI 有 .bak、CLI 直接覆寫）。PR-2 拆
+    ``karaoke/`` package 時會搬到 ``karaoke/io.py``，屆時雙方一齊改 import。
+    """
+    import main          # 延遲 import：models 係純資料層，唔想 module 載入時就拉入 CLI
+
+    main.atomic_write_json(path, doc)
 
 
 # ---------------------------------------------------------------------------

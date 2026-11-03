@@ -30,6 +30,12 @@ SAMPLE_RATE = 16_000
 SAMPLE_WIDTH = 2      # pcm_s16le
 PEAK_BINS_PER_SEC = 200
 
+#: 超過此長度就**唔保留**整段 PCM，只留 peaks（審查報告 §2.6）。
+#: 16k / 16-bit / mono ≈ 32 KB/s → 30 分鐘 ≈ 57 MB；`play()` 的
+#: `Sound(buffer=pcm[byte_off:])` 會再複製整段尾端，峰值翻倍。
+#: peaks 只有 200/s（一小時 ≈ 2.9 MB），畫波形完全夠用。
+MAX_PCM_SECONDS = 30 * 60
+
 
 def decode_wav(ffmpeg: str, video: Path, out_wav: Path) -> Path | None:
     """影片 → 16kHz 單聲道 WAV。失敗返 None（唔拋，畀 UI 顯示訊息）。"""
@@ -84,6 +90,8 @@ class AudioEngine:
         self._start_offset_ms = 0
         self._sound = None
         self._channel = None
+        #: True = 長片降級：只有 peaks，冇 PCM，播放停用（§2.6）
+        self.playback_degraded = False
         try:
             import pygame
             # R3：統一 16-bit PCM 16k 單聲道。
@@ -105,14 +113,58 @@ class AudioEngine:
     # ------------------------------------------------------------------
 
     def load(self, wav_path: Path) -> bool:
-        """讀 WAV → PCM bytes + peaks。 mixer 實際規格同 16k mono 唔一致就轉換。"""
-        import wave as _wave
-        with _wave.open(str(wav_path), "rb") as f:
-            self._pcm = f.readframes(f.getnframes())
+        """讀 WAV → PCM bytes + peaks。 mixer 實際規格同 16k mono 唔一致就轉換。
+
+        §2.6：超過 :data:`MAX_PCM_SECONDS` 的長片改走「只載 peaks」路徑，
+        唔保留整段 PCM（見 :meth:`_load_peaks_only`）。
+
+        Args:
+            wav_path: ffmpeg 抽出的 16 kHz 單聲道 s16le WAV。
+
+        Returns:
+            True 表示載入成功（降級模式亦算成功 —— 波形照畫，只係唔可以播）。
+        """
+        self.playback_degraded = False
+        with wave.open(str(wav_path), "rb") as f:
+            n_frames = f.getnframes()
+            rate = f.getframerate() or SAMPLE_RATE
+            seconds = n_frames / rate if rate else 0.0
+            if seconds > MAX_PCM_SECONDS:
+                return self._load_peaks_only(f, seconds)
+            self._pcm = f.readframes(n_frames)
         self._pcm = self._convert_to_mixer_spec(self._pcm, SAMPLE_RATE, 1, SAMPLE_WIDTH)
         self.peaks, self.duration_ms = extract_peaks(self._pcm)
         LOGGER.info("音訊載入完成：%.1f 秒 / %d peaks",
                     self.duration_ms / 1000, len(self.peaks))
+        return True
+
+    def _load_peaks_only(self, wav_file: wave.Wave_read, seconds: float) -> bool:
+        """長片：逐段掃 peaks，唔保留 PCM（§2.6）。
+
+        每次讀 5 秒（80,000 samples = 1000 bins，剛好整除 bin_size），
+        所以除最後一段外唔會有 padding，串接後的 bin 對齊等同一次過處理。
+
+        Args:
+            wav_file: 已開啟的 WAV（呼叫方負責關閉）。
+            seconds: 總時長，用於 ``duration_ms``。
+
+        Returns:
+            恆為 True。
+        """
+        chunk_frames = SAMPLE_RATE * 5
+        parts: list[np.ndarray] = []
+        while True:
+            raw = wav_file.readframes(chunk_frames)
+            if not raw:
+                break
+            chunk_peaks, _ = extract_peaks(raw)
+            parts.append(chunk_peaks)
+        self.peaks = np.concatenate(parts) if parts else np.zeros(1, dtype=np.float32)
+        self._pcm = b""                      # 關鍵：唔保留整段 PCM
+        self.duration_ms = int(seconds * 1000)
+        self.playback_degraded = True
+        LOGGER.info("長片 %.0f 分鐘：只載入 %d 個 peaks（%.1f MB），播放降級為外部播放器",
+                    seconds / 60, len(self.peaks), self.peaks.nbytes / 1_048_576)
         return True
 
     def _convert_to_mixer_spec(self, pcm: bytes, src_freq: int, src_channels: int,

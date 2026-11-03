@@ -27,13 +27,16 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import array
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import wave
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,6 +161,116 @@ class BurnError(KaraokeError):
 
     code = 5
 
+
+class TaskCancelled(Exception):
+    """用戶主動取消任務（ADR-025）—— **刻意唔繼承** :class:`KaraokeError`。
+
+    若取消都算 ``KaraokeError``，CLI 入口會把它轉成非零退出碼，「我唔想等」
+    就會變成「程式出錯」。UI 只需要 ``except TaskCancelled`` 顯示「已取消」，
+    唔需要區分係抽音、ASR 定燒錄階段取消。
+    """
+
+
+# ---------------------------------------------------------------------------
+# 任務互斥（審查報告 §2.3 / 9.2-12）
+# ---------------------------------------------------------------------------
+
+class SingleFlight:
+    """單飛閘：保證同一時間只有一個任務在跑。
+
+    為何唔用布林旗標：``if not self._running: self._running = True`` 係
+    check-then-act，兩條 thread 同時讀到 ``False`` 就會一齊過關（TOCTOU）。
+    ``Lock.acquire(blocking=False)`` 係原子操作，同一刻只有一條 thread 成功。
+
+    Examples:
+        >>> guard = SingleFlight()
+        >>> guard.acquire()
+        True
+        >>> guard.acquire()
+        False
+        >>> guard.release()
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._held = False          # 只作 UI 顯示用，唔參與互斥判斷
+
+    def acquire(self) -> bool:
+        """嘗試取得（不阻塞）。
+
+        Returns:
+            True 表示取得成功；False 表示已經有任務在跑。
+        """
+        if not self._lock.acquire(blocking=False):
+            return False
+        self._held = True
+        return True
+
+    def release(self) -> None:
+        """釋放閘門。
+
+        Raises:
+            RuntimeError: 未持有時釋放（同 :class:`threading.Lock` 一致）。
+        """
+        self._held = False
+        self._lock.release()
+
+    @property
+    def locked(self) -> bool:
+        """是否已有任務持有（僅供顯示／測試參考，唔可以用嚟做互斥判斷）。"""
+        return self._held
+
+    def __enter__(self) -> "SingleFlight":
+        """進入 context；已被佔用即拋錯，避免「靜默唔跑」。"""
+        if not self.acquire():
+            raise RuntimeError("已經有任務在跑，唔可以重複提交")
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        """**任何**離開路徑（含例外）都必須釋放，否則一次失敗就永久鎖死。"""
+        self.release()
+
+
+# ---------------------------------------------------------------------------
+# 原子寫入（審查報告 §2.8）
+# ---------------------------------------------------------------------------
+# 為何要原子：generate 的典型用法係「重跑覆蓋舊檔」，而 Ctrl+C / 斷電會令
+# write_text 留下半截檔 —— 舊 timings.json 連同人工校對成果一齊報廢。
+# tmp + os.replace 保證「要麼舊檔完整、要麼新檔完整」，冇第三種狀態。
+
+def atomic_write_bytes(path: str | Path, data: bytes) -> None:
+    """原子寫入二進位內容（同目錄 tmp → ``os.replace``）。
+
+    Args:
+        path: 目標檔；父目錄不存在會自動建立。
+        data: 完整內容（必須一次過寫入，唔可以分段呼叫）。
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def atomic_write_text(path: str | Path, text: str, *, encoding: str = "utf-8") -> None:
+    """原子寫入文字（UTF-8）。"""
+    atomic_write_bytes(path, text.encode(encoding))
+
+
+def atomic_write_json(path: str | Path, doc: dict[str, Any]) -> None:
+    """原子寫入 JSON，並在覆寫前留一份 ``.bak``。
+
+    ``.bak`` 是 UI 既有約定（``ui/models.py``），保留是因為「覆寫後才發現
+    內容有問題」時，用戶仍然有上一版可以救。
+    """
+    path = Path(path)
+    if path.is_file():
+        bak = path.with_name(path.name + ".bak")
+        bak.write_bytes(path.read_bytes())
+    atomic_write_text(path, json.dumps(doc, ensure_ascii=False, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +633,57 @@ def extract_temp_audio(ffmpeg: str, video: Path, workdir: Path) -> Path:
     return out
 
 
+#: 全靜音門檻（int16 絕對值）。32768 滿刻度，32 ≈ −60 dBFS —— 數位靜音與
+#: 「只有極底噪」都會命中，但正常錄音（即使很細聲）遠高於此。
+SILENCE_PEAK_THRESHOLD = 32
+
+
+def detect_silent_wav(path: str | Path, *,
+                      threshold: int = SILENCE_PEAK_THRESHOLD) -> bool:
+    """判斷 WAV 是否（接近）全靜音（審查報告 9.2-1）。
+
+    用 stdlib ``wave`` 逐段掃樣本，**唔依賴 ffmpeg / numpy / pygame** ——
+    所以純 CLI 環境（只有 ffmpeg）同無 ffmpeg 的 CI 都叫得，決定性 100%。
+
+    為何唔用 ``ui.audio.extract_peaks``：pipeline 根本唔會 import UI 層
+    （CLI 冇 pygame），把警告掛在 peaks 上等於 CLI 用戶永遠見唔到。
+
+    Args:
+        path: 16-bit PCM WAV（ffmpeg 抽音輸出就是 ``pcm_s16le``）。
+        threshold: int16 絕對值門檻；最大樣本絕對值 < 門檻即當靜音。
+
+    Returns:
+        True 表示全段（接近）無聲；檔案有聲或格式唔支援時 False。
+
+    Raises:
+        OSError: 檔案讀唔到（權限／不存在）。
+        wave.Error: 不是合法 WAV。
+    """
+    with wave.open(str(path), "rb") as f:
+        width = f.getsampwidth()
+        if width not in (1, 2):
+            # 24/32-bit WAV 極少見（ffmpeg 一定出 s16le），保守當「有聲」
+            LOGGER.debug("detect_silent_wav：sampwidth=%d 未支援，視為有聲", width)
+            return False
+        # 每次讀 4 秒，一小時音訊都只佔幾十 KB 峰值記憶體
+        chunk_frames = 16_000 * 4
+        while True:
+            raw = f.readframes(chunk_frames)
+            if not raw:
+                return True
+            if width == 1:
+                samples = array.array("B", raw)
+                peak = max((abs(v - 128) for v in samples), default=0)
+                limit = threshold / 256      # 8-bit 門檻按比例縮小
+            else:
+                samples = array.array("h")
+                samples.frombytes(raw[: len(raw) - (len(raw) % 2)])
+                peak = max((abs(v) for v in samples), default=0)
+                limit = threshold
+            if peak >= limit:
+                return False
+
+
 # ---------------------------------------------------------------------------
 # Stage 2 · 人聲分離（可選，ADR-010 懶安裝）
 # ---------------------------------------------------------------------------
@@ -624,17 +788,63 @@ def resolve_language_hints(language: str | None) -> tuple[list[str] | None, str 
     return [mapped], None
 
 
+def _raise_if_cancelled(cancel_event: threading.Event | None, *,
+                        stage: str = "") -> None:
+    """取消檢查點：``cancel_event`` 已設即拋 :class:`TaskCancelled`。
+
+    Args:
+        cancel_event: UI 傳入的旗標；``None`` = 唔支援取消（CLI 舊行為）。
+        stage: 當前階段名（只入 log，方便判斷取消發生在哪一步）。
+
+    Raises:
+        TaskCancelled: 用戶已按下取消。
+    """
+    if cancel_event is not None and cancel_event.is_set():
+        LOGGER.info("收到取消訊號（階段：%s），中止任務", stage or "未知")
+        raise TaskCancelled("任務已取消")
+
+
+def _output_get(output: Any, key: str) -> Any:
+    """讀 dashscope 回應欄位（屬性與 mapping 兩種寫法都收）。
+
+    dashscope 的 ``output`` 是 DictMixin，真實回應兩種存取都通；但單元測試的
+    fake 通常只給 dict。以前提交路徑用 ``resp.output.task_id``（屬性）、輪詢
+    路徑卻用 ``out.get(...)``（mapping），同一個欄位兩套寫法 —— 統一在這裡。
+    """
+    if isinstance(output, dict):
+        return output.get(key)
+    return getattr(output, key, None)
+
+
 def submit_and_wait_transcription(
     model: str,
     uploaded_url: str,
     language_hints: list[str] | None,
     poll_interval_s: int = 3,
     max_wait_s: int = 1800,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """提交 Filetrans 異步任務並輪詢至完成，回傳完整結果 JSON。
 
     ADR-002：**只傳** ``model`` / ``file_urls`` / ``language_hints``。
     ``enable_words`` / ``enable_itn`` 喺本 model 唔存在或無意義，禁止傳。
+
+    Args:
+        model: ASR 模型名。
+        uploaded_url: 已上傳音訊的 URL（``oss://`` 會加 resolve header）。
+        language_hints: 語言提示；``None`` = 自動偵測。
+        poll_interval_s: 輪詢間隔（秒）。
+        max_wait_s: 最長等待（秒）。
+        cancel_event: 取消旗標；每圈輪詢**開頭**檢查，命中即拋
+            :class:`TaskCancelled`（ADR-025）。
+
+    Returns:
+        ASR 完整結果 JSON。
+
+    Raises:
+        UsageError: model 已禁用。
+        AsrError: 提交／輪詢／下載失敗，或輪詢逾時。
+        TaskCancelled: 用戶取消。
     """
     if model in BANNED_ASR_MODELS:
         LOGGER.error(
@@ -642,6 +852,8 @@ def submit_and_wait_transcription(
             "請用 %s", model, DEFAULT_ASR_MODEL
         )
         raise UsageError(f"model {model!r} 已禁用（假時間軸，見 ADR-004）；請用 {DEFAULT_ASR_MODEL}")
+
+    _raise_if_cancelled(cancel_event, stage="ASR 提交前")
 
     import requests
     from dashscope.audio.asr import Transcription
@@ -659,12 +871,19 @@ def submit_and_wait_transcription(
                      json.dumps(getattr(resp, "output", {}), ensure_ascii=False, default=str)[:1200])
         raise AsrError(f"ASR 任務提交失敗（HTTP {resp.status_code}），詳見 log")
 
-    task_id = resp.output.task_id
+    task_id = _output_get(resp.output, "task_id")
+    if not task_id:
+        LOGGER.error("ASR 提交回應冇 task_id：%s",
+                     json.dumps(getattr(resp, "output", {}), ensure_ascii=False, default=str)[:800])
+        raise AsrError("ASR 提交回應冇 task_id，詳見 log")
     LOGGER.info("task_id = %s，開始輪詢 …", task_id)
 
     started = time.time()
     last_status = ""
     while True:
+        # 取消檢查放在**每一圈的最頂**：fetch 可能 itself 慢幾秒，
+        # 先檢查就保證「按取消後唔會再等一個 poll 間隔」。
+        _raise_if_cancelled(cancel_event, stage="ASR 輪詢")
         fetched = Transcription.fetch(task=task_id)
         out = fetched.output or {}
         status = out.get("task_status", "")
@@ -689,6 +908,7 @@ def submit_and_wait_transcription(
                      json.dumps(results, ensure_ascii=False, default=str)[:1200])
         raise AsrError(f"沒有任何 subtask 成功（共 {len(results)} 筆），詳見 log")
 
+    _raise_if_cancelled(cancel_event, stage="ASR 下載")
     data = requests.get(ok_items[0]["transcription_url"], timeout=120).json()
     LOGGER.info("識別完成，耗時 %.0fs", time.time() - started)
     return data
@@ -1232,6 +1452,78 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
 _FILTER_UNSAFE_RE = re.compile(r"[=:,'\"\[\];\\]")
 
 
+def _rel_or_abs(path: Path, base: Path) -> str:
+    """盡量相對化；跨磁碟區時退回絕對路徑（審查報告 §2.1 P0）。
+
+    ``os.path.relpath`` 在 Windows 上當兩路徑位於不同磁碟區時會拋
+    ``ValueError: path is on mount 'C:', start on mount 'D:'`` —— 而「MV 放
+    D:\\、字幕輸出放 C:\\」是很常見的用戶配置，以前會直接 traceback。
+
+    ffmpeg 的 ``-i`` 與**輸出檔參數**都接受絕對路徑；真正不可以放絕對路徑的
+    只有 ``-vf ass=<...>`` 內容（冒號會被當 filter option 分隔符），而該處
+    已用「``cwd`` + 純檔名」處理（ADR-006），所以 fallback 絕對路徑完全安全。
+
+    Args:
+        path: 要傳給 ffmpeg 的路徑。
+        base: ffmpeg 的 ``cwd``。
+
+    Returns:
+        相對路徑；跨磁碟區時為絕對路徑。
+    """
+    try:
+        return os.path.relpath(str(path), str(base))
+    except ValueError:
+        LOGGER.info("路徑與工作目錄不在同一磁碟區，改用絕對路徑：%s", path)
+        return os.path.abspath(str(path))
+
+
+def _run_ffmpeg(cmd: list[str], *, cwd: str,
+                cancel_event: threading.Event | None) -> tuple[int, str]:
+    """執行 ffmpeg，支援中途取消（ADR-025）。
+
+    為何唔用 ``subprocess.run``：它會一路阻塞到程序結束，中間冇任何檢查點，
+    用戶只能等（燒錄長片可達數十分鐘）。有 ``cancel_event`` 時改用
+    ``Popen`` + poll 迴圈，命中即 ``terminate()``，5 秒內唔死就 ``kill()``。
+
+    ⚠️ stderr 必須導向**臨時檔**而非 ``PIPE``：poll 迴圈期間冇人讀 pipe，
+    ffmpeg 寫滿 64KB 緩衝就會阻塞，變成「取消都取消唔到」的死鎖。
+
+    Args:
+        cmd: 完整命令列。
+        cwd: 工作目錄（ADR-006：ass 所在目錄）。
+        cancel_event: 取消旗標；``None`` 走原本的阻塞式 ``run``。
+
+    Returns:
+        ``(returncode, stderr)``。
+
+    Raises:
+        TaskCancelled: 用戶取消（ffmpeg 已被終止）。
+    """
+    if cancel_event is None:
+        proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        return proc.returncode, proc.stderr or ""
+
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8",
+                                errors="replace") as err_file:
+        proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=err_file)
+        while proc.poll() is None:
+            if cancel_event.is_set():
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    LOGGER.warning("ffmpeg 未能在 5 秒內結束，強制 kill")
+                    proc.kill()
+                    proc.wait(timeout=5)
+                LOGGER.info("已終止 ffmpeg（用戶取消燒錄）")
+                raise TaskCancelled("燒錄已取消")
+            time.sleep(0.2)
+        err_file.seek(0)
+        return proc.returncode, err_file.read()
+
+
 def burn_subtitles(
     ffmpeg: str,
     video: Path,
@@ -1240,6 +1532,8 @@ def burn_subtitles(
     play_res_x: int,
     play_res_y: int,
     audio_codec: str | None,
+    *,
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """把 ASS 燒錄進影片。
 
@@ -1249,8 +1543,20 @@ def burn_subtitles(
          改為 ``cwd=<ass 所在目錄>`` + filter 只用**檔名**。
       2. ffmpeg 命令**必須**帶 ``original_size=WxH``。
 
+    Args:
+        ffmpeg: ffmpeg 執行檔路徑。
+        video: 原片。
+        ass_path: 字幕檔。
+        output_path: 輸出 mp4。
+        play_res_x: ASS 座標系寬（ADR-006）。
+        play_res_y: ASS 座標系高。
+        audio_codec: 原片音軌 codec，用於決定 ``-c:a copy`` 抑或降級 aac。
+        cancel_event: 取消旗標（ADR-025）；命中時拋 ``TaskCancelled`` 並刪除
+            半截輸出檔。
+
     Raises:
         BurnError: ffmpeg 回非零或輸出檔不存在（退出碼 5，ADR-024）。
+        TaskCancelled: 用戶取消。
     """
     workdir = ass_path.parent
     ass_name = ass_path.name
@@ -1265,7 +1571,7 @@ def burn_subtitles(
     try:
         base = [
             ffmpeg, "-y", "-v", "error",
-            "-i", os.path.relpath(str(video), str(workdir)),
+            "-i", _rel_or_abs(video, workdir),
             "-vf", f"ass={ass_name}:original_size={play_res_x}x{play_res_y}",
             "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
         ]
@@ -1278,17 +1584,27 @@ def burn_subtitles(
             LOGGER.warning("音軌 codec=%s 唔適合直接 copy 入 mp4，降級為 aac 192k", audio_codec)
             audio_args = ["-c:a", "aac", "-b:a", "192k"]
 
-        out_arg = os.path.relpath(str(output_path), str(workdir))
-        LOGGER.info("開始燒錄字幕（libx264 crf18 medium）…")
-        proc = subprocess.run(base + audio_args + [out_arg], cwd=str(workdir),
-                              capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if proc.returncode != 0 or not output_path.is_file():
-            LOGGER.warning("copy 音軌失敗，降級為 aac 192k 重試…\n%s", (proc.stderr or "")[-600:])
-            proc = subprocess.run(base + ["-c:a", "aac", "-b:a", "192k", out_arg], cwd=str(workdir),
-                                  capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if proc.returncode != 0 or not output_path.is_file():
-            LOGGER.error("ffmpeg 燒錄失敗（rc=%s）：\n%s", proc.returncode, (proc.stderr or "")[-2500:])
-            raise BurnError(f"ffmpeg 燒錄失敗（rc={proc.returncode}），詳見 log")
+        out_arg = _rel_or_abs(output_path, workdir)
+        try:
+            LOGGER.info("開始燒錄字幕（libx264 crf18 medium）…")
+            rc, err = _run_ffmpeg(base + audio_args + [out_arg], cwd=str(workdir),
+                                  cancel_event=cancel_event)
+            if rc != 0 or not output_path.is_file():
+                LOGGER.warning("copy 音軌失敗，降級為 aac 192k 重試…\n%s", err[-600:])
+                rc, err = _run_ffmpeg(base + ["-c:a", "aac", "-b:a", "192k", out_arg],
+                                      cwd=str(workdir), cancel_event=cancel_event)
+        except TaskCancelled:
+            # 半截 mp4 會令用戶以為「燒錄成功但冇字幕」→ 一定要清走。
+            # 但刪不到（例如被播放器鎖住）**唔可以蓋掉取消語義** —— 只記錄，
+            # 照拋 TaskCancelled，否則 UI 會把「我按了取消」顯示成「燒錄失敗」。
+            try:
+                output_path.unlink(missing_ok=True)
+            except OSError as exc:
+                LOGGER.warning("取消後刪除半截輸出失敗（%s），請手動刪除：%s", exc, output_path)
+            raise
+        if rc != 0 or not output_path.is_file():
+            LOGGER.error("ffmpeg 燒錄失敗（rc=%s）：\n%s", rc, err[-2500:])
+            raise BurnError(f"ffmpeg 燒錄失敗（rc={rc}），詳見 log")
     finally:
         if cleanup_target and cleanup_target.is_file():
             cleanup_target.unlink(missing_ok=True)
@@ -1351,6 +1667,10 @@ class GenerateOptions:
     poll_interval_s: int = 3
     #: PlayRes 會由 generate_timings 按原片實測改寫（ADR-006），UI 唔使預先填
     style: StyleConfig = field(default_factory=StyleConfig)
+    #: 取消旗標（ADR-025）。用 ``default_factory`` 而唔係 ``None``，令 UI 可以
+    #: 無條件 ``opts.cancel_event.set()``；CLI 唔理它就等於唔支援取消。
+    #: ⚠️ 因為 Event 唔可以 pickle，GenerateOptions 亦唔應該 deepcopy 到別的用途。
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
 
 @dataclass
@@ -1386,12 +1706,15 @@ def generate_timings(opts: GenerateOptions, *,
         AudioExtractionError: 抽音或人聲分離失敗。
         AsrError: ASR 提交／輪詢／下載失敗。
         NoSubtitlesError: ASR 冇識別到內容，或斷句後零行。
+        TaskCancelled: 用戶在任一階段取消（``opts.cancel_event``，ADR-025）。
     """
     video = opts.input
     if not video.is_file():
         LOGGER.error("輸入影片唔存在：%s", video)
         raise UsageError(f"輸入影片唔存在：{video}")
 
+    cancel = opts.cancel_event
+    _raise_if_cancelled(cancel, stage="開始")
     api_key = resolve_api_key(opts.api_key)
     output_dir = opts.output_dir or video.parent
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1413,14 +1736,26 @@ def generate_timings(opts: GenerateOptions, *,
         if progress_cb:
             progress_cb("抽音", "抽取 16kHz 單聲道音訊 …")
         asr_source = extract_temp_audio(ffmpeg, video, workdir)
+        # 9.2-1：全靜音 MV 唔 raise（可能係用戶故意測樣式），只警告 —— 因為
+        # 後續 ASR 一定會回空結果，用戶至少知道「唔係程式壞，係條片冇聲」。
+        try:
+            if detect_silent_wav(asr_source):
+                LOGGER.warning(
+                    "偵測到音軌（接近）全靜音 —— ASR 很可能冇識別到內容。"
+                    "請確認 MV 有聲軌（可用 --separate-vocals 試人聲分離）。")
+        except (OSError, wave.Error) as exc:      # noqa: BLE001 — 偵測失敗唔應擋流程
+            LOGGER.debug("全靜音偵測失敗（忽略）：%s", exc)
+        _raise_if_cancelled(cancel, stage="抽音")
         if opts.separate_vocals:
             if progress_cb:
                 progress_cb("抽音", "人聲分離（首次需下載模型）…")
             asr_source = separate_vocals(asr_source, workdir)
+            _raise_if_cancelled(cancel, stage="人聲分離")
 
         if progress_cb:
             progress_cb("上傳", "上傳音訊到百煉臨時儲存 …")
         uploaded_url = upload_audio(asr_source)
+        _raise_if_cancelled(cancel, stage="上傳")
 
         hints, warn = resolve_language_hints(opts.language)
         if warn:
@@ -1429,16 +1764,16 @@ def generate_timings(opts: GenerateOptions, *,
             progress_cb("ASR", "提交異步轉寫任務並輪詢 …")
         raw = submit_and_wait_transcription(
             model=opts.model, uploaded_url=uploaded_url, language_hints=hints,
-            poll_interval_s=opts.poll_interval_s,
+            poll_interval_s=opts.poll_interval_s, cancel_event=cancel,
         )
         raw_asr_path: Path | None = None
         if opts.save_raw:
             raw_asr_path = output_dir / f"{video.stem}_raw_asr.json"
-            raw_asr_path.write_text(
-                json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_json(raw_asr_path, raw)
 
         if progress_cb:
             progress_cb("斷句", "解析 ASR 結果、拆字、OpenCC、斷句 …")
+        _raise_if_cancelled(cancel, stage="斷句")
         sentences = parse_asr_result(raw)
         groups = build_word_groups(sentences)
         groups = normalize_groups_opencc(groups)
@@ -1474,12 +1809,15 @@ def generate_timings(opts: GenerateOptions, *,
         }
         doc = lines_to_timings_doc(lines, style, meta)
 
-        json_path.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 取消檢查放在**寫檔之前**：取消後唔應該留下「一半的產出」
+        # （ass 有、json 冇，用戶下次開檔會以為失敗）。
+        _raise_if_cancelled(cancel, stage="寫檔")
+        atomic_write_json(json_path, doc)
         LOGGER.info("timings.json 已輸出：%s", json_path)
 
         ass_text = build_karaoke_ass(lines, style,
                                      strip_punctuation=not opts.keep_punctuation)
-        ass_path.write_text(ass_text, encoding="utf-8")
+        atomic_write_text(ass_path, ass_text)
         LOGGER.info("ASS 字幕已輸出：%s", ass_path)
         num_chars = sum(len(list(ln.iter_chars())) for ln in lines)
         num_estimated = sum(1 for ln in lines for w in ln.words if w.estimated)
@@ -1585,7 +1923,8 @@ def cmd_render(args: argparse.Namespace) -> int:
         raw_style = doc.setdefault("style", {})
         for key, value in overrides.items():
             raw_style[key] = value
-        src.write_text(json.dumps(doc, ensure_ascii=False, indent=2), encoding="utf-8")
+        # --sync-style 會覆寫用戶的 canonical 檔 → 必須原子寫 + 留 .bak（§2.8）
+        atomic_write_json(src, doc)
         LOGGER.info("已將樣式覆寫寫回 %s", src.name)
 
     if args.output:
@@ -1599,9 +1938,8 @@ def cmd_render(args: argparse.Namespace) -> int:
                 break
         out = src.with_name(f"{stem_name}_karaoke.ass")
 
-    out.write_text(build_karaoke_ass(lines, style,
-                                     strip_punctuation=not args.keep_punctuation),
-                   encoding="utf-8")
+    atomic_write_text(out, build_karaoke_ass(lines, style,
+                                            strip_punctuation=not args.keep_punctuation))
     LOGGER.info("render 完成：%s（%d 行）", out, len(lines))
     return 0
 
@@ -1611,7 +1949,8 @@ def cmd_render(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def burn_video(video: Path, ass_path: Path, output_path: Path, *,
-               progress_cb: ProgressCB | None = None) -> Path:
+               progress_cb: ProgressCB | None = None,
+               cancel_event: threading.Event | None = None) -> Path:
     """影片 + .ass → 燒錄 mp4（UI 入口；CLI 見 cmd_burn）。
 
     ADR-012：座標系由 .ass 自己讀出，唔使依賴 timings.json。
@@ -1621,6 +1960,8 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         ass_path: 要燒錄嘅 .ass 檔。
         output_path: 輸出 mp4 路徑。
         progress_cb: 階段回呼（stage = "燒錄"）。
+        cancel_event: 取消旗標（ADR-025）；命中時 ffmpeg 會被終止，
+            半截輸出檔會被刪除，並拋 :class:`TaskCancelled`。
 
     Returns:
         輸出 mp4 路徑。
@@ -1628,6 +1969,7 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
     Raises:
         ToolMissingError: 缺 ffmpeg / ffprobe。
         BurnError: ffmpeg 燒錄失敗（退出碼 5，ADR-024）。
+        TaskCancelled: 用戶取消。
     """
     ffmpeg = find_ffmpeg()
     ffprobe = find_ffprobe()
@@ -1645,7 +1987,8 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
     if progress_cb:
         progress_cb("燒錄", "開始燒錄字幕（libx264 crf18 medium）…")
     burn_subtitles(ffmpeg=ffmpeg, video=video, ass_path=ass_path, output_path=output_path,
-                   play_res_x=width, play_res_y=height, audio_codec=audio_codec)
+                   play_res_x=width, play_res_y=height, audio_codec=audio_codec,
+                   cancel_event=cancel_event)
     if progress_cb:
         progress_cb("燒錄", "完成")
     return output_path

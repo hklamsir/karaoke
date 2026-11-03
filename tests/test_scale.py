@@ -98,14 +98,18 @@ def test_huge_doc_renders_all_lines(tmp_path: Path) -> None:
 
 
 def test_atomic_write_keeps_original_when_replace_fails(tmp_path: Path, monkeypatch) -> None:
-    """``os.replace`` 失敗 → 舊檔內容必須完整（唔可以留半截 JSON）。"""
+    """``os.replace`` 失敗 → 舊檔內容必須完整（唔可以留半截 JSON）。
+
+    實作在 ``main.atomic_write_bytes``（§2.8 統一 helper），所以 patch 目標是
+    ``main.os.replace``；``ui.models`` 只是委派。
+    """
     target = tmp_path / "t.json"
     target.write_text('{"old": true}', encoding="utf-8")
 
     def boom(*args, **kwargs):                  # noqa: ANN002, ANN003
         raise OSError("模擬斷電 / 磁碟滿")
 
-    monkeypatch.setattr(models.os, "replace", boom)
+    monkeypatch.setattr(main.os, "replace", boom)
 
     with pytest.raises(OSError):
         models.atomic_write_json(target, {"new": True})
@@ -125,7 +129,6 @@ def test_atomic_write_creates_bak(tmp_path: Path) -> None:
     assert json.loads(bak.read_text(encoding="utf-8")) == {"v": 1}
 
 
-@pytest.mark.xfail(strict=True, reason="§2.8 待實作：main.atomic_write_json（CLI 目前直接 write_text 覆寫）")
 def test_main_exposes_atomic_write_json(tmp_path: Path) -> None:
     """CLI 側亦應有同一個原子寫入 helper（PR-1/PR-2 把它搬到共用層）。"""
     target = tmp_path / "t.json"

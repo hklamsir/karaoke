@@ -9,8 +9,9 @@
 - §2.10  hex 色碼未驗證字元集
 - §2.12  read_playres 對怪值不崩
 
-⚠️ ``xfail(strict=True)`` 契約：功能未實作時 xfail（suite 保持綠）；
-實作完成後自動 XPASS → strict 判 FAILED，強制開發者回來拆標記。
+這些測試原本是 ``xfail(strict=True)`` 契約（未實作時 xfail、實作完成後
+XPASS 會令 suite 變紅逼人拆標記）。9.2-1／9.2-2／§2.1 已於 ADR-025 實作，
+標記已拆 —— 現在是普通回歸測試。
 """
 
 from __future__ import annotations
@@ -59,18 +60,16 @@ def sine_samples(freq_hz: float, seconds: float = 1.0, rate: int = 16000,
 
 
 # ---------------------------------------------------------------------------
-# 9.2-1 · 全靜音偵測（待實作 main.detect_silent_wav）
+# 9.2-1 · 全靜音偵測（main.detect_silent_wav，ADR-025）
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-1 待實作 main.detect_silent_wav（stdlib wave 讀樣本）")
 def test_detect_silent_wav_true_for_all_zero(tmp_path: Path) -> None:
     """全零 WAV → 判定為靜音（等價於報告的「peaks 全零」）。"""
     wav = write_wav(tmp_path / "silent.wav", sine_samples(0, 1.0))
     assert main.detect_silent_wav(wav) is True
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-1 待實作 main.detect_silent_wav（stdlib wave 讀樣本）")
 def test_detect_silent_wav_false_for_tone(tmp_path: Path) -> None:
     """有聲正弦波 → 唔可以誤判為靜音（防「全靜音偵測」本身過度敏感）。"""
     wav = write_wav(tmp_path / "tone.wav", sine_samples(440, 1.0))
@@ -78,7 +77,7 @@ def test_detect_silent_wav_false_for_tone(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 9.2-2 · 損壞音訊 / 假 ffmpeg（待實作 AudioExtractionError / ToolMissingError）
+# 9.2-2 · 損壞音訊 / 假 ffmpeg（AudioExtractionError / ToolMissingError）
 # ---------------------------------------------------------------------------
 
 
@@ -157,7 +156,6 @@ def test_generate_creates_missing_output_dir(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="§2.1 P0 待修：relpath 跨磁碟區拋 ValueError 未被捕捉")
 def test_burn_cross_drive_relpath_does_not_crash(tmp_path: Path, monkeypatch) -> None:
     """模擬 Windows 跨磁碟區（relpath 拋 ValueError）→ 燒錄應該改用絕對路徑繼續。
 
@@ -287,3 +285,41 @@ def test_read_playres_tolerates_garbage(tmp_path: Path) -> None:
     ass = tmp_path / "a.ass"
     ass.write_text("[Script Info]\nPlayResX: abc\nPlayResY: def\n", encoding="utf-8")
     assert main.read_playres_from_ass(ass) is None
+
+
+def test_generate_warns_when_audio_is_silent(tmp_path: Path, monkeypatch,
+                                            caplog) -> None:
+    """9.2-1 接線：偵測到全靜音要**警告**而唔係 raise（全靜音 MV 可能係刻意）。
+
+    ⚠️ 這條防的是「函式寫好了但冇人叫」—— 審查報告 §2.3 的
+    ``ThumbCache.cancelled`` 就是同類問題（檢查邏輯存在、全庫無一處設 True）。
+    所以這裡不看 ``detect_silent_wav`` 的回傳值，而是看 generate 管線
+    真的**走過**這個檢查點並留下警告。
+    """
+    import logging
+
+    video = tmp_path / "mv.mp4"
+    video.write_bytes(b"fake")
+    wav = write_wav(tmp_path / "silent.wav", sine_samples(0, 0.5))
+
+    monkeypatch.setattr(main, "find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(main, "find_ffprobe", lambda: "ffprobe")
+    monkeypatch.setattr(main, "probe_video_size", lambda *a, **k: (1920, 1080))
+    monkeypatch.setattr(main, "extract_temp_audio", lambda *a, **k: wav)
+
+    reached: dict[str, bool] = {}
+
+    def stop_after_check(uploaded_wav):        # noqa: ANN001
+        reached["upload"] = True
+        raise main.AsrError("測試用：到上傳為止")
+
+    monkeypatch.setattr(main, "upload_audio", stop_after_check)
+
+    opts = main.GenerateOptions(input=video, api_key="sk-test")
+    with caplog.at_level(logging.WARNING, logger="karaoke"):
+        with pytest.raises(main.AsrError):
+            main.generate_timings(opts)
+
+    assert reached.get("upload") is True, "管線未走到上傳階段，測試前提不成立"
+    assert any("全靜音" in rec.getMessage() for rec in caplog.records), \
+        "偵測到全靜音但冇警告 —— 檢查點冇接線"
