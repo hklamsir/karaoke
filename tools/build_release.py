@@ -67,7 +67,7 @@ TOP_FILES: tuple[str, ...] = (
 DIR_PATTERNS: dict[str, tuple[str, ...]] = {
     "ui": ("**/*.py",),
     "assets": ("**/*",),
-    "tests": ("**/*.py",),
+    "tests": ("**/*.py", "**/*.json"),
     "tools": ("**/*.py",),
     "presets": ("**/*.json",),
     # 內部文件（計劃書、線框圖）刻意唔外發，所以只列三個檔名
