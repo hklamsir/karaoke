@@ -185,6 +185,45 @@ def code_changes_since(root: Path, rev: str) -> list[str]:
     return [f for f in files if not _is_ignored(f)]
 
 
+def commits_with_code_changes(root: Path, rev: str) -> list[tuple[str, str]]:
+    """列出 ``rev`` 之後**真正改過非文件檔**的 commit（最新在前）。
+
+    與 :func:`commits_since` 的分別：後者回傳基線之後的全部 commit，本函式會逐個
+    commit 檢查它動過哪些檔案，再套用同一套 :func:`_is_ignored` 規則。只有全部
+    改動都落在文件（docs／.md／VERSION）的 commit 才被剔除。
+
+    為何需要這個函式：早期版本直接拿 :func:`commits_since` 的結果去警告，於是
+    「只改 requirements-ui.txt 一個註解」會被報成「9 個 commit 改過程式碼」——
+    判定（``code_changes_since``）正確，但列出的 commit 全是無關的文件提交。
+    訊息一失真，使用者就會開始無視警告，護欄等於失效。
+
+    Args:
+        root: 專案根目錄。
+        rev: 基線 commit hash。
+
+    Returns:
+        ``(短 hash, 標題)`` 清單；git 不可用、無 commit 或解析失敗時回傳空清單。
+
+    Note:
+        合併 commit 在 ``--name-only`` 下不帶檔案清單，因此不會被列出；它帶入的
+        改動本身已由被合併的個別 commit 反映，實務上不影響判斷。
+    """
+    # %x01 作為 commit 分隔符：git 路徑不可能含 SOH，比用空行切更可靠。
+    out = _git(["log", "--format=%x01%h%x09%s", "--name-only", f"{rev}..HEAD"], root)
+    if not out:
+        return []
+    rows: list[tuple[str, str]] = []
+    for chunk in out.split("\x01"):
+        lines = [line for line in chunk.splitlines() if line.strip()]
+        if not lines:
+            continue
+        short, _, subject = lines[0].partition("\t")
+        paths = lines[1:]
+        if any(not _is_ignored(path) for path in paths):
+            rows.append((short.strip(), subject))
+    return rows
+
+
 def check_version_bump(root: Path = ROOT, *, strict: bool = False, echo: bool = True) -> int:
     """檢查 ``VERSION`` 是否跟得上程式碼改動。
 
@@ -229,11 +268,14 @@ def check_version_bump(root: Path = ROOT, *, strict: bool = False, echo: bool = 
         say(f"[version] OK：VERSION {version} 之後只有文件改動（{len(pending)} 個 commit），不需升版")
         return 0
 
-    say(f"[version] ⚠ VERSION 仍係 {version}，但之後有 {len(pending)} 個 commit 改過程式碼：")
-    for short, subject in pending[:MAX_LISTED]:
+    # 只列真正動過程式碼的 commit（不是全部 pending）—— 見函式 docstring 的理由。
+    affected = commits_with_code_changes(root, baseline)
+
+    say(f"[version] ⚠ VERSION 仍係 {version}，但之後有 {len(affected)} 個 commit 改過程式碼：")
+    for short, subject in affected[:MAX_LISTED]:
         say(f"           {short}  {subject}")
-    if len(pending) > MAX_LISTED:
-        say(f"           …另有 {len(pending) - MAX_LISTED} 個")
+    if len(affected) > MAX_LISTED:
+        say(f"           …另有 {len(affected) - MAX_LISTED} 個")
     preview = ", ".join(changes[:6])
     more = f" 等 {len(changes)} 個檔" if len(changes) > 6 else ""
     say(f"           改動檔案：{preview}{more}")

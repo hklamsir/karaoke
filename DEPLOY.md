@@ -205,9 +205,9 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 
 | 位置 | 睇法 |
 |---|---|
-| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.1` |
-| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.1)` |
-| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.1` |
+| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.3` |
+| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.3)` |
+| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.3` |
 
 回報問題時請一併附上版本號，唔然冇辦法對照當時的 code。
 
@@ -309,7 +309,7 @@ karaoke-vX.Y.Z/
 └── docs/使用說明.md  名詞表.md  架構決策紀錄.md
 ```
 
-實測（v1.0.2）：47 個檔案、原始 0.58 MB、zip 0.25 MB。
+實測（v1.0.3）：47 個檔案、原始 0.60 MB、zip 0.26 MB。
 
 ### 8.6 三個交付時的提醒
 
@@ -323,16 +323,16 @@ zip 出好之後，同事最方便是從 Release 下載，唔需要你傳檔。
 
 1. 確認 §8.2 已完成（`VERSION` 已升、zip 已出）
 2. 開 <https://github.com/hklamsir/karaoke/releases/new>
-3. **Choose a tag** → 直接輸入 `v1.0.2`（即 `v` + `VERSION`）→ **Create new tag on publish**，target 選 `main`
-4. Title：`v1.0.2 — 一句話講今次改動`
+3. **Choose a tag** → 直接輸入 `v<VERSION>`（即 `v` + `VERSION` 檔內容）→ **Create new tag on publish**，target 選 `main`
+4. Title：`v<VERSION> — 一句話講今次改動`
 5. 描述貼變更摘要（可參考 v1.0.2 的寫法：功能分組 → 安裝四步 → 需求 → 已知限制）
-6. 把 `dist\karaoke-v1.0.2.zip` 拖到 **Attach binaries**
+6. 把 `dist\karaoke-v<VERSION>.zip` 拖到 **Attach binaries**
 7. **Publish release**
 
 驗證（`Content-Length` 要等於 zip 大小）：
 
 ```
-curl -I -L https://github.com/hklamsir/karaoke/releases/download/v1.0.2/karaoke-v1.0.2.zip
+curl -I -L https://github.com/hklamsir/karaoke/releases/download/v<VERSION>/karaoke-v<VERSION>.zip
 ```
 
 > 下載連結格式固定為 `releases/download/v<VERSION>/karaoke-v<VERSION>.zip`。
@@ -340,4 +340,7 @@ curl -I -L https://github.com/hklamsir/karaoke/releases/download/v1.0.2/karaoke-
 > （GitHub 自動指向最新一個非 prerelease）。
 >
 > 本機未安裝 `gh` CLI，所以上面用網頁介面。若日後裝了 `gh`，等效命令：
-> `gh release create v1.0.2 dist/karaoke-v1.0.2.zip --title "..." --notes-file notes.md`
+> `gh release create v<VERSION> dist/karaoke-v<VERSION>.zip --title "..." --notes-file notes.md`
+>
+> 上面用 `<VERSION>` 而非寫死版本號：這一節每次出包都要照做一次，寫死的話
+> 每次升版都要回頭改（v1.0.1 → v1.0.2 時就漏改過一次）。
