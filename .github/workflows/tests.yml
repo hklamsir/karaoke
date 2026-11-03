@@ -25,11 +25,18 @@ jobs:
           cache: pip
 
       - name: 安裝依賴
-        # 刻意唔裝 ffmpeg / UI 的 ttkbootstrap：
-        # 測試全部把外部程序 monkeypatch 掉，正好驗證「無 ffmpeg 環境亦可測」。
+        # 只裝 Python 依賴；UI 的 ttkbootstrap 由 requirements-dev.txt 帶入
+        # （test_burn_dialog 需要它才 import 得到 compare_sources）。
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: 安裝 FFmpeg
+        # 必需的，唔係可選：10 條測試（compare_sources ×6、真實燒錄 ×3、
+        # 16kHz 抽音 ×1）沒有 ffmpeg 會 skip。初版誤以為 windows-latest 內建，
+        # 實測會 skip 10 條 → CI 變假綠（首跑紀錄：56 passed, 10 skipped）。
+        # 用 choco（runner 內建）而唔用第三方 action，減少供應鏈依賴。
+        run: choco install ffmpeg -y --no-progress
 
       - name: 跑測試
         # -rf 讓失敗摘要列出原因；xfail 數量 = 待實作功能清單長度
