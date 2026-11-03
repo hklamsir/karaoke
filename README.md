@@ -400,8 +400,16 @@ run_tests.bat         一鍵跑測試（自動驗收入口）
 
 ### 跑測試
 
+第一次先裝測試依賴（只需一次）：
+
 ```bat
-run_tests.bat                 全部（含 3 小時 / 5,000 行的大數據量測試）
+.venv-ui\Scripts\python.exe -m pip install -r requirements-dev.txt
+```
+
+然後：
+
+```bat
+run_tests.bat                 全部（含 3 小時 / 5,000 行的大數據量測試、真實 ffmpeg 燒錄）
 run_tests.bat -m "not slow"   快速回歸（約 10 秒）
 ```
 

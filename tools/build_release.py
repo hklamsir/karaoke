@@ -55,12 +55,18 @@ VERSION_FILE = ROOT / "VERSION"
 TOP_FILES: tuple[str, ...] = (
     "main.py",
     "run_ui.bat",
+    "run_tests.bat",
     "VERSION",
     "README.md",
     "DEPLOY.md",
     "requirements.txt",
     "requirements-ui.txt",
     "requirements.lock.txt",
+    # 交付包內含 tests/，所以要一併收「跑得動測試」的三件配套：
+    # 缺 pytest.ini 會噴 unknown marker 警告、缺 requirements-dev.txt 無從裝 pytest、
+    # 缺 run_tests.bat 就要人手記指令。三者缺一，包內的測試等於不可用。
+    "requirements-dev.txt",
+    "pytest.ini",
 )
 
 #: 資料夾 → 收錄樣式（相對該資料夾；``**/*`` 代表全部，但仍會過濾禁區）

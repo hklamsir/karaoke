@@ -10,5 +10,7 @@
 pytest>=8.0
 # ui.widgets.burn_dialog 在 module level import ttkbootstrap；
 # test_burn_dialog.py 需要它才 import 得到 compare_sources（純邏輯，不開視窗）。
+# 這裡重複列出（requirements-ui.txt 已有）是為了 CI 與「只裝 dev」的環境；
+# 交付包內通常已裝 requirements.lock.txt，pip 會自動判斷已滿足。
 # CI 若唔裝，該批測試會自動 skip（pytest.importorskip），唔會假綠。
 ttkbootstrap>=1.10

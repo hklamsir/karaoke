@@ -295,6 +295,8 @@ repo 設定 `core.hooksPath=tools/hooks` 已生效。取消就 `git config --uns
 - `git status` 乾淨，冇未 commit 的 code
 - 包內冇 `_probe/`、`_smoke/`、`.venv*`、`.workbuddy/`、`__pycache__`
 - 包內冇 `.env`、`settings.json`
+- 包內**有** `requirements-dev.txt`、`pytest.ini`、`run_tests.bat`（缺一件包內測試即失效）
+- `tests/fixtures/*.json` 有被收錄（`DIR_PATTERNS["tests"]` 需含 `**/*.json`，否則測試讀不到 fixture）
 - `docs/` 只留 `使用說明.md`、`名詞表.md`、`架構決策紀錄.md`（計劃書與線框圖不外發）
 
 ### 8.5 交付包內容
@@ -303,18 +305,39 @@ repo 設定 `core.hooksPath=tools/hooks` 已生效。取消就 `git config --uns
 karaoke-vX.Y.Z/
 ├── main.py  ui/  assets/  tests/  tools/
 ├── requirements.txt  requirements-ui.txt  requirements.lock.txt
+├── requirements-dev.txt  pytest.ini  run_tests.bat
 ├── run_ui.bat  VERSION
 ├── presets/home_style.json
 ├── README.md  DEPLOY.md
 └── docs/使用說明.md  名詞表.md  架構決策紀錄.md
 ```
 
+`requirements-dev.txt` / `pytest.ini` / `run_tests.bat` 三件係「令包內測試跑得動」的配套：
+包內有 `tests/`，缺任何一件都會令它變成死檔（裝不到 pytest / 噴 unknown marker /
+要人手記長指令）。三者由 `tools/build_release.py` 的 `TOP_FILES` 收錄。
+
 實測（v1.0.3）：47 個檔案、原始 0.60 MB、zip 0.26 MB。
+
+> ⚠️ **v1.0.4 起內容有變**：新增整套 pytest 測試（`tests/` 現有 14 個檔，含
+> `fixtures/`）＋上述三件配套。v1.0.3 的 47 檔／0.60 MB 已是歷史數字，
+> **下次出包必須重新實測並更新這一行**（`tools.build_release.collect()` 可直接數檔數）。
 
 ### 8.6 三個交付時的提醒
 
 - **實測時間**：全新 venv 裝 53 個套件約 1 分 45 秒（pip 有快取時；無快取約 3–5 分鐘），因為要下載約 200MB。第二次啟動約 10 秒。
-- **測試會自動跳過部分檢查**：`tests/test_editor_core.py` 依賴 `_smoke/*_timings.json`（實測素材，`_smoke/` 不入版控），交付包內跑會 skip 需要素材的項目，這是預期行為。執行方式：`.venv-ui\Scripts\python.exe tests/test_editor_core.py`（不需要 pytest）。
+- **交付包內可以直接跑測試**（v1.0.4 起）：`tests/` 全部 fixture 已隨包（`tests/fixtures/`），
+  不再依賴 `_smoke/`。裝一次 dev 依賴即可：
+
+  ```bat
+  .venv-ui\Scripts\python.exe -m pip install -r requirements-dev.txt
+  run_tests.bat                 全部（含慢速整合測試）
+  run_tests.bat -m "not slow"   快速回歸（約 10 秒）
+  ```
+
+  判準是 **exit code 0**。清單內的 `xfail` 代表「功能尚未實作」的契約測試，屬預期；
+  需要真實 ffmpeg 的整合測試在無 ffmpeg 的機器會自動 skip，不會假綠。
+  （舊版說明指「依賴 `_smoke/*_timings.json`，包內跑會 skip」—— **已於 v1.0.4 失效**，
+   因為測試改讀隨包的 `tests/fixtures/sample_v3.json`。）
 - **口頭要講清楚三件事**：解壓到 `C:\Karaoke`、要自己申請 DashScope key、首次啟動要等幾分鐘裝依賴。
 
 ### 8.7 發佈到 GitHub Release
