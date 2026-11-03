@@ -144,6 +144,7 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 | 3 | 檢查輸出資料夾 | 出現 `<檔名>_timings.json` 與 `<檔名>_karaoke.ass` 兩個檔 |
 | 4 | 按「立即開啟編輯器」，拖動一個字的時間，Ctrl+S | 有儲存提示，`.json` 有 `.bak` 備份 |
 | 5 | 工具列按「🔥 燒錄」 | 產出 `<檔名>_karaoke.mp4`，用播放器確認字幕有出現、逐字變色正常 |
+| 6 | 生成或燒錄期間按「✖ 取消」 | 進度窗顯示「已取消」；**燒錄取消後輸出 mp4 不存在**（半截檔會自動刪除） |
 
 補充：
 
@@ -318,7 +319,7 @@ karaoke-vX.Y.Z/
 
 實測（v1.0.3）：47 個檔案、原始 0.60 MB、zip 0.26 MB。
 
-> ⚠️ **v1.0.4 起內容有變**：新增整套 pytest 測試（`tests/` 現有 14 個檔，含
+> ⚠️ **v1.0.4 起內容有變**：新增整套 pytest 測試（`tests/` 現有 15 個檔，含
 > `fixtures/`）＋上述三件配套。v1.0.3 的 47 檔／0.60 MB 已是歷史數字，
 > **下次出包必須重新實測並更新這一行**（`tools.build_release.collect()` 可直接數檔數）。
 
@@ -334,8 +335,10 @@ karaoke-vX.Y.Z/
   run_tests.bat -m "not slow"   快速回歸（約 10 秒）
   ```
 
-  判準是 **exit code 0**。清單內的 `xfail` 代表「功能尚未實作」的契約測試，屬預期；
+  判準是 **exit code 0**。現時 **139 條全綠、0 xfail**（審查報告 §9.2 全部案例已實作）；
   需要真實 ffmpeg 的整合測試在無 ffmpeg 的機器會自動 skip，不會假綠。
+  新增功能若先寫 `xfail(strict=True)` 契約，未實作時 xfail 屬預期，實作完成後
+  會 XPASS 並令 suite 變紅 —— 那是提醒要拆標記，不是壞掉。
   （舊版說明指「依賴 `_smoke/*_timings.json`，包內跑會 skip」—— **已於 v1.0.4 失效**，
    因為測試改讀隨包的 `tests/fixtures/sample_v3.json`。）
 - **口頭要講清楚三件事**：解壓到 `C:\Karaoke`、要自己申請 DashScope key、首次啟動要等幾分鐘裝依賴。

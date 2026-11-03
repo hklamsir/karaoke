@@ -386,7 +386,8 @@ main.py               CLI 入口與處理管線（generate / render / burn）
 ui/                   圖形介面（app.py 主視窗、pages/ 各頁、theme.py 色票）
 tools/                build_release.py（出包）、version_guard.py（版本護欄）
 tests/                pytest 測試（見下）
-  fixtures/           sample_v3.json（合成 timings doc）、builder.py（大量資料生成器）
+  fixtures/           sample_v3.json（合成 timings doc）、builder.py（大量資料生成器）、
+                      media.py（用 ffmpeg lavfi 即場生成測試片，唔入版控）
 docs/                 使用說明、名詞表、架構決策紀錄
 VERSION               版本號唯一真源
 requirements.txt      CLI 依賴（開發用寬鬆範圍）
@@ -413,9 +414,12 @@ run_tests.bat                 全部（含 3 小時 / 5,000 行的大數據量�
 run_tests.bat -m "not slow"   快速回歸（約 10 秒）
 ```
 
-判準為 **exit code 0**。`xfail(strict=True)` 的測試代表「功能待實作」：
-實作完成後它會自動 XPASS 並令 CI 變紅，強制拆除標記 —— 即「實作即驗收」。
-`pytest -rx` 可列出全部待實作項目。
+判準為 **exit code 0**。現時 **139 條全綠、0 xfail** —— 審查報告 §9.2 的必補案例
+（取消、靜音偵測、跨磁碟燒錄、原子寫入、UI 防呆、長片記憶體）已全部實作並鎖住。
+
+`xfail(strict=True)` 的約定仍然保留：新增功能時先寫契約測試，未實作會 xfail
+（suite 保持綠），實作完成後自動 XPASS 並令 CI 變紅，強制拆除標記 ——
+即「實作即驗收」。`pytest -rx` 可列出全部待實作項目。
 
 
 版本號以根目錄 `VERSION` 為唯一真源，三處顯示：啟動器 banner、視窗標題、`python main.py --version`。
