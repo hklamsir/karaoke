@@ -18,5 +18,8 @@ _probe/
 docs/標點斷行計劃書.md
 docs/字幕編輯器計劃書.md
 
+# 一次性審查報告（mtime 會變、內容屬過程記錄，唔入版控）
+docs/代碼審查報告.html
+
 # Agent 工作資料（工作日誌／記憶，唔屬於專案代碼）
 .workbuddy/
