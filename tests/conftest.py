@@ -82,3 +82,30 @@ def _ass_time_to_ms(value: str) -> int:
 def ass_time_to_ms():
     """把 ``_ass_time_to_ms`` 暴露給測試檔使用。"""
     return _ass_time_to_ms
+
+
+@pytest.fixture(scope="session")
+def media(tmp_path_factory) -> dict[str, Path]:
+    """整套 ffmpeg 合成影音素材（session 級，整個 run 只生成一次）。
+
+    素材入庫與否的取捨見 ``tests/fixtures/media.py`` 檔頭：合成物唔入庫，
+    即場重生。無 ffmpeg 的機器整批 skip（可用 ``KARAOKE_FFMPEG`` 指定路徑）。
+    """
+    from fixtures.media import build_all, ffmpeg_path
+
+    if not ffmpeg_path():
+        pytest.skip("本機無 ffmpeg —— 跳過需要影音素材的測試"
+                    "（可用環境變數 KARAOKE_FFMPEG 指定 ffmpeg 路徑）")
+    workdir = tmp_path_factory.mktemp("media")
+    return build_all(workdir)
+
+
+@pytest.fixture(scope="session")
+def ffprobe() -> str:
+    """ffprobe 路徑（無則 skip）。"""
+    from fixtures.media import ffprobe_path
+
+    found = ffprobe_path()
+    if not found:
+        pytest.skip("本機無 ffprobe —— 跳過需要探測媒體的測試")
+    return found

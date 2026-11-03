@@ -8,3 +8,7 @@
 #   或 .venv-ui\Scripts\python.exe -m pytest tests -v
 
 pytest>=8.0
+# ui.widgets.burn_dialog 在 module level import ttkbootstrap；
+# test_burn_dialog.py 需要它才 import 得到 compare_sources（純邏輯，不開視窗）。
+# CI 若唔裝，該批測試會自動 skip（pytest.importorskip），唔會假綠。
+ttkbootstrap>=1.10
