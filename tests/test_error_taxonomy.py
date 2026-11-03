@@ -112,6 +112,52 @@ def test_cli_render_missing_timings_returns_2(tmp_path: Path) -> None:
     assert rc == 2
 
 
+def test_cli_generate_rejects_bad_color(tmp_path: Path) -> None:
+    """色碼字元非法 → 退出碼 2，唔可以出 traceback（§2.10 的 CLI 面）。"""
+    video = tmp_path / "mv.mp4"
+    video.write_bytes(b"\x00" * 32)
+    rc = main.main(["generate", "-i", str(video), "--api-key", "sk-test",
+                    "--primary-color", "yellow"])
+    assert rc == 2
+
+
+def test_cli_render_rejects_bad_color(tmp_path: Path, doc) -> None:
+    """render 的顏色覆寫亦要先驗 —— 否則 --sync-style 會把壞色碼寫回 JSON。"""
+    import json
+
+    src = tmp_path / "t.json"
+    src.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+    rc = main.main(["render", str(src), "--primary-color", "#ZZZZZZ"])
+    assert rc == 2
+
+
+def test_cli_error_paths_always_log(tmp_path: Path, doc, caplog) -> None:
+    """**不變量**：CLI 失敗必須有 ERROR 日誌，唔可以靜默只剩退出碼。
+
+    `main()` 只負責把例外轉退出碼、刻意不重複輸出（否則同一錯誤印兩次），
+    代價是「拋出點忘記 LOGGER.error」時用戶會完全唔知發生咩事 ——
+    這條測試就是防這個。
+    """
+    import json
+    import logging
+
+    src = tmp_path / "t.json"
+    src.write_text(json.dumps(doc, ensure_ascii=False), encoding="utf-8")
+
+    scenarios = [
+        (["generate", "-i", str(tmp_path / "nope.mp4"), "--api-key", "sk-test"], "缺輸入檔"),
+        (["render", str(tmp_path / "nope.json")], "缺 timings"),
+        (["render", str(src), "--primary-color", "#ZZZZZZ"], "壞色碼"),
+    ]
+    for argv, label in scenarios:
+        caplog.clear()
+        with caplog.at_level(logging.ERROR, logger="karaoke"):
+            rc = main.main(argv)
+        assert rc != 0, label
+        assert any(r.levelno >= logging.ERROR for r in caplog.records), \
+            f"{label}：失敗但完全冇 ERROR 日誌 —— 用戶只會見到退出碼 {rc}"
+
+
 def test_cli_success_returns_0(tmp_path: Path, doc) -> None:
     """正常路徑仍然是 0 —— 防止「全部變例外」之後連成功都被當成失敗。"""
     import json

@@ -34,20 +34,38 @@ def test_escape_plain_text_unchanged() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="§2.7 待修：escape_ass_text 未跳脫反斜線（ASS override tag 注入）")
-def test_escape_backslash_override_tag() -> None:
-    """用戶貼上含 ``\\kf`` 的歌詞 → 必須跳脫，否則 libass 當成 override tag。
+# ---------------------------------------------------------------------------
+# 反斜線 / 換行
+# ---------------------------------------------------------------------------
 
-    這是最危險的注入：``\\k`` 會覆寫後續 karaoke 計時，令整行逐字變色錯亂。
+
+def test_escape_backslash_is_doubled() -> None:
+    """反斜線必須雙寫（鎖住確切字串，防日後有人「順手簡化」）。
+
+    注意實際防護範圍（2026-11-03 用真 libass 量測過）：
+    - override tag 只在大括號內生效，而大括號本身已跳脫 → 呢步唔係擋 tag 的關鍵
+    - ``\\N`` 在大括號外亦生效，雙寫**唔能**阻止它換行（``AB\\\\NCD`` 仍渲染兩行）
+    所以這步是「保守處理」，唔係萬能；真正關鍵是跳脫大括號。
     """
     out = main.escape_ass_text("{搖滾}🤘\\kf")
     assert out == "\\{搖滾\\}🤘\\\\kf"
 
 
-@pytest.mark.xfail(strict=True, reason="§4.4 待修：歌詞內的 \\n 未轉成 ASS 硬換行 \\N")
 def test_escape_newline_to_ass_linebreak() -> None:
-    """含 ``\\n`` 的歌詞應轉成 ``\\N``（ASS 硬換行），而非被跳脫成字面或直出。"""
+    """含 ``\\n`` 的歌詞應轉成 ``\\N``（ASS 硬換行）。"""
     assert main.escape_ass_text("a\nb") == "a\\Nb"
+
+
+def test_escape_crlf_becomes_single_linebreak() -> None:
+    """``\\r\\n`` 必須只產生**一個** ``\\N`` —— 先處理 CRLF 才處理單獨字元。"""
+    assert main.escape_ass_text("a\r\nb") == "a\\Nb"
+    assert main.escape_ass_text("a\rb") == "a\\Nb"
+
+
+def test_escape_lone_backslash_unchanged_count() -> None:
+    """單一反斜線 → 兩個反斜線（逐字對照，避免連鎖替換）。"""
+    assert main.escape_ass_text("\\") == "\\\\"
+    assert main.escape_ass_text("C:\\MV") == "C:\\\\MV"
 
 
 # ---------------------------------------------------------------------------

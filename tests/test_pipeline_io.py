@@ -230,11 +230,29 @@ def test_hex_color_converts_to_bgr() -> None:
     assert main.hex_to_ass_color("000000") == "&H00000000"
 
 
-@pytest.mark.xfail(strict=True, reason="§2.10 待修：hex_to_ass_color 只檢查長度，未驗證字元集")
+def test_hex_color_accepts_case_and_missing_hash() -> None:
+    """大小寫不拘、``#`` 可省略 —— 驗證唔可以誤殺合法輸入。"""
+    assert main.hex_to_ass_color("#abcdef") == "&H00EFCDAB"
+    assert main.hex_to_ass_color("AbCdEf") == "&H00EFCDAB"
+
+
 def test_hex_color_rejects_non_hex_characters() -> None:
-    """``#ZZZZZZ`` 長度合法但字元非法 → 應該拋 ValueError，而非靜默輸出非法色碼。"""
+    """``#ZZZZZZ`` 長度合法但字元非法 → 應該拋 ValueError，而非靜默輸出非法色碼。
+
+    靜默的話 libass 會把 ``&H00ZZZZZZ`` 解成黑色，用戶只見到「顏色冇效」，
+    查唔到原因（審查報告 §2.10）。
+    """
     with pytest.raises(ValueError):
         main.hex_to_ass_color("#ZZZZZZ")
+    with pytest.raises(ValueError):
+        main.hex_to_ass_color("#12345G")
+
+
+def test_hex_color_error_message_is_actionable() -> None:
+    """錯誤訊息要講清楚「只可含 0-9 / A-F」，唔止講長度。"""
+    with pytest.raises(ValueError) as info:
+        main.hex_to_ass_color("#ZZZZZZ")
+    assert "0-9" in str(info.value) and "A-F" in str(info.value)
 
 
 def test_hex_color_rejects_wrong_length() -> None:

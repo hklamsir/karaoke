@@ -185,13 +185,57 @@ def ms_to_ass_time(ms: int | float) -> str:
     return f"{hours:d}:{minutes:02d}:{seconds:02d}.{cs:02d}"
 
 
+#: 顏色只接受 `#RRGGBB`（可省略 #）。字元集必須驗 —— 只驗長度的話
+#: `#ZZZZZZ` 會靜默產生 `&H00ZZZZZZ`，libass 解讀成黑色，用戶見到「顏色冇效」
+#: 但程式唔會報錯（審查報告 §2.10）。
+_HEX_COLOR_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
 def hex_to_ass_color(hex_color: str) -> str:
-    """``#RRGGBB`` → ``&HAABBGGRR``（ASS 顏色編碼，注意係 **BGR 反序**）。"""
+    """``#RRGGBB`` → ``&HAABBGGRR``（ASS 顏色編碼，注意係 **BGR 反序**）。
+
+    Args:
+        hex_color: 6 位 hex 色碼（可帶 ``#``，大小寫不拘）。
+
+    Returns:
+        ASS 的 ``&HAABBGGRR`` 字串（alpha 固定 00，即不透明）。
+
+    Raises:
+        ValueError: 長度不是 6，或含有非 hex 字元（例如 ``#ZZZZZZ``）。
+    """
     value = hex_color.strip().lstrip("#")
-    if len(value) != 6:
-        raise ValueError(f"顏色必須係 6 位 hex（#RRGGBB），收到：{hex_color!r}")
+    if not _HEX_COLOR_RE.match(value):
+        raise ValueError(
+            f"顏色必須係 6 位 hex（#RRGGBB，只可含 0-9 / A-F），收到：{hex_color!r}")
     r, g, b = value[0:2], value[2:4], value[4:6]
     return f"&H00{b}{g}{r}".upper()
+
+
+def _validate_style_colors(**colors: str | None) -> None:
+    """即時驗證 CLI 傳入的顏色參數（``ValueError`` → ``UsageError``）。
+
+    為何要這一層：``hex_to_ass_color`` 拋的是 ``ValueError``（好適合做純函式），
+    但 CLI 直接食 ``ValueError`` 會出 traceback 而唔係乾淨的退出碼 2 ——
+    用戶見到一堆堆疊，唔知係自己打錯參數。
+
+    Args:
+        **colors: 以參數名為 key 的顏色值；``None`` 會被略過
+            （``render`` 的樣式覆寫預設就是 ``None``，代表「沿用 JSON」）。
+
+    Raises:
+        UsageError: 任何不是 ``#RRGGBB`` 的值。
+    """
+    for name, value in colors.items():
+        if value is None:
+            continue
+        try:
+            hex_to_ass_color(value)
+        except ValueError as exc:
+            message = f"--{name.replace('_', '-')}：{exc}"
+            # ⚠️ 拋出點必須先 LOGGER.error（見 main() 的註解）—— 否則 CLI 只會
+            #    靜默回退出碼 2，用戶完全唔知發生咩事。
+            LOGGER.error("%s", message)
+            raise UsageError(message) from exc
 
 
 #: 中日韓統一表意文字等（用於判斷要不要跑 OpenCC，見 ADR-012）
@@ -1063,7 +1107,38 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
 # ---------------------------------------------------------------------------
 
 def escape_ass_text(text: str) -> str:
-    return text.replace("{", "\\{").replace("}", "\\}")
+    """把歌詞原文轉成 ASS Dialogue 的安全文字（ADR-024 §2.7）。
+
+    三個處理，**次序不可以調換**：
+
+    1. ``\\`` → ``\\\\``（反斜線雙寫）
+    2. ``\\n`` → ``\\N``（ASS 硬換行）
+    3. ``{`` ``}`` → ``\\{`` ``\\}``（override block 界定符）
+
+    為何次序關鍵：反斜線必須**最先**跳脫，否則第 2 步插入的 ``\\N`` 會被第 1 步
+    二次跳脫成字面文字，用戶會見到反斜線；大括號放最後，因為它插入的新反斜線
+    不應該再被跳脫。
+
+    ⚠️ **實測限制（2026-11-03，真 libass 燒錄量測）**：反斜線雙寫**唔能**阻止
+    ``\\N`` 換行 —— ``AB\\\\NCD`` 仍然渲染成兩行（libass 由第二個 ``\\`` 起照樣
+    解讀 ``\\N``）。所以這一步只保證「唔會形成 override tag」，唔保證阻止轉義序列。
+    真正徹底的做法要在輸入層改寫文字（例如插入零寬空格），但會污染
+    ``timings.json`` 的文字內容，令搜尋／編輯對不上 —— 不值得，故此保留雙寫。
+    另外，override tag 本來就只在大括號內生效，所以**大括號才是真正的注入點**，
+    第 3 步才是最關鍵的一步。
+
+    Args:
+        text: 原始歌詞（可含換行、反斜線、大括號）。
+
+    Returns:
+        可直接嵌入 ASS Dialogue Text 欄位的字串。
+    """
+    # 1) 先跳脫原始反斜線（次序關鍵，見 docstring）
+    out = text.replace("\\", "\\\\")
+    # 2) 換行 → ASS 硬換行（先處理 CRLF，否則一個換行會變兩個 \N）
+    out = out.replace("\r\n", "\\N").replace("\r", "\\N").replace("\n", "\\N")
+    # 3) 最後跳脫大括號 —— 這才是真正擋 override tag 的一步
+    return out.replace("{", "\\{").replace("}", "\\}")
 
 
 def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 50,
@@ -1425,6 +1500,12 @@ def generate_timings(opts: GenerateOptions, *,
 
 def cmd_generate(args: argparse.Namespace) -> int:
     """CLI 薄包裝：argparse.Namespace → GenerateOptions → generate_timings()。"""
+    # 顏色先驗：唔想用戶打錯色碼之後要等抽音／上傳完才見到 traceback
+    _validate_style_colors(
+        primary_color=args.primary_color,
+        secondary_color=args.secondary_color,
+        outline_color=args.outline_color,
+    )
     generate_timings(GenerateOptions(
         input=Path(args.input).expanduser(),
         output_dir=Path(args.output_dir).expanduser() if args.output_dir else None,
@@ -1494,6 +1575,9 @@ def cmd_render(args: argparse.Namespace) -> int:
         ("alignment", args.alignment), ("outline_width", args.outline_width),
     ) if v is not None}
     if overrides:
+        # 顏色先驗：--sync-style 會把覆寫寫回 JSON，壞色碼唔可以入檔
+        _validate_style_colors(
+            **{k: v for k, v in overrides.items() if k.endswith("_color")})
         style = replace(style, **overrides)
         LOGGER.info("套用本次樣式覆寫：%s", ", ".join(overrides))
 
@@ -1783,6 +1867,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 每個拋出點都已經 LOGGER.error 過詳細原因（stderr / JSON），
         # 所以這裡只負責把例外轉回退出碼 —— 輸出與 v1.0.4 之前逐字相同，
         # 唔會多印一行，亦唔會出 traceback。
+        #
+        # ⚠️ 不變量：**新增拋出點時必須自己 LOGGER.error**，否則 CLI 會靜默
+        #    失敗（只剩一個退出碼）。由 tests/test_error_taxonomy.py
+        #    的 test_cli_error_paths_always_log 守著。
         return exc.code
 
 
