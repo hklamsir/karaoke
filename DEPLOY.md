@@ -205,9 +205,9 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 
 | 位置 | 睇法 |
 |---|---|
-| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.3` |
-| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.3)` |
-| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.3` |
+| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.4` |
+| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.4)` |
+| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.4` |
 
 回報問題時請一併附上版本號，唔然冇辦法對照當時的 code。
 
