@@ -25,11 +25,12 @@ jobs:
           cache: pip
 
       - name: 安裝依賴
-        # 只裝 Python 依賴；UI 的 ttkbootstrap 由 requirements-dev.txt 帶入
-        # （test_burn_dialog 需要它才 import 得到 compare_sources）。
+        # requirements-ui.txt 一定要裝：ui.audio / ui.thumbs 在 module level
+        # import numpy，唔裝就會令 test_audio_long 等 6 條變成 skip（假綠）。
+        # pygame 由同一檔帶入（headless 下 mixer.init 會失敗並降級，唔影響測試）。
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-ui.txt -r requirements-dev.txt
 
       - name: 安裝 FFmpeg
         # 必需的，唔係可選：10 條測試（compare_sources ×6、真實燒錄 ×3、
