@@ -671,7 +671,9 @@ class HomePage(ttkb.Frame):
             import main
             try:
                 result = main.generate_timings(opts, progress_cb=self._progress.report)
-            except SystemExit as exc:      # main 用 sys.exit 報錯（保留 CLI exit code）
+            except SystemExit as exc:
+                # 保險層：ADR-024 起 main 改拋 KaraokeError（會落到下面的 Exception
+                # 分支並顯示可讀訊息），這條只接第三方套件殘留的 sys.exit。
                 # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
                 # → 必須即刻捕獲值（default arg 綁定）
                 code = exc.code

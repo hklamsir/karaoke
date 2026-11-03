@@ -40,14 +40,12 @@ def _sentence(text: str, begin: int, end: int, words: list[tuple[str, int, int, 
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-3 待實作 main.NoSubtitlesError（現為 sys.exit(4)）")
 def test_parse_asr_result_empty_transcripts_raises() -> None:
     """``transcripts: []`` → 語意化的 NoSubtitlesError，而非 sys.exit(4)。"""
     with pytest.raises(main.NoSubtitlesError):
         main.parse_asr_result({"transcripts": []})
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-3 待實作 main.NoSubtitlesError（現為 sys.exit(4)）")
 def test_parse_asr_result_missing_transcripts_key_raises() -> None:
     """完全冇 ``transcripts`` 字段 → 同上（防供應商改 schema 時靜默）。"""
     with pytest.raises(main.NoSubtitlesError):

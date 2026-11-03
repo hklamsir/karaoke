@@ -82,7 +82,6 @@ def test_detect_silent_wav_false_for_tone(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-2 待實作 main.AudioExtractionError（現為 sys.exit(3)）")
 def test_extract_temp_audio_raises_on_ffmpeg_failure(tmp_path: Path, monkeypatch) -> None:
     """ffmpeg 回非零 → 拋 AudioExtractionError（唔再用 sys.exit 中斷）。"""
     video = tmp_path / "broken.mp4"
@@ -97,7 +96,6 @@ def test_extract_temp_audio_raises_on_ffmpeg_failure(tmp_path: Path, monkeypatch
         main.extract_temp_audio("ffmpeg", video, tmp_path)
 
 
-@pytest.mark.xfail(strict=True, reason="9.2-2 待實作 main.ToolMissingError（現為 FileNotFoundError）")
 def test_extract_temp_audio_raises_tool_missing_for_absent_binary(tmp_path: Path) -> None:
     """ffmpeg 路徑指向不存在的檔 → 應是語意化的 ToolMissingError，而非裸 FileNotFoundError。"""
     video = tmp_path / "mv.mp4"

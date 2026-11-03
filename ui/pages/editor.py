@@ -600,6 +600,8 @@ class EditorPage(ttkb.Frame):
             try:
                 _main.burn_video(source, ass_path, output, progress_cb=prog.report)
             except SystemExit as exc:
+                # 保險層：ADR-024 起 burn_video 拋 BurnError（落到下面 Exception 分支，
+                # 顯示「ffmpeg 燒錄失敗（rc=…）」而不是光禿禿一個 exit code）。
                 # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
                 code = exc.code
                 self.after(0, lambda code=code: on_error(

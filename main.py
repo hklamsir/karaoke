@@ -74,6 +74,93 @@ LOGGER = logging.getLogger("karaoke")
 
 
 # ---------------------------------------------------------------------------
+# 例外階層（ADR-024）
+# ---------------------------------------------------------------------------
+# 為何要例外化：`sys.exit()` 令「管線函式」同 CLI 綁死 —— UI 背景 thread 只能靠
+# `except SystemExit` 猜發生咩事，caller 亦無法分辨「缺 ffmpeg」同「ASR 失敗」。
+# 改為拋例外之後：CLI 由 main() 統一轉退出碼，UI 可以 `except KaraokeError`
+# 直接拿到用戶可讀訊息。
+#
+# ⚠️ 不變量：每個子類的 `code` 必須**等於** v1.0.4 之前對應的 `sys.exit(N)`。
+#    這是對外契約（CI 腳本、捷徑、同事的 .bat 都可能靠 exit code 判斷），
+#    由 tests/test_pipeline_io.py 與 test_asr_parse.py 的例外契約測試鎖住。
+
+
+class KaraokeError(Exception):
+    """本工具所有「可預期錯誤」的基底類別。
+
+    詳細的 stderr / JSON 一律交由 `LOGGER.error()` 輸出；例外訊息只放**短句**，
+    因為它會直接顯示在 UI 對話框（太長會爆窗）。
+
+    Attributes:
+        code: 對應的 CLI 退出碼。子類以類別屬性覆寫，亦可在建構時用 ``code=`` 覆寫。
+    """
+
+    code: int = 1
+
+    def __init__(self, message: str, *, code: int | None = None) -> None:
+        """建立例外。
+
+        Args:
+            message: 用戶可讀的短句（不含堆疊、不含長段 stderr）。
+            code: 覆寫 CLI 退出碼；``None`` 表示沿用類別的預設值。
+        """
+        super().__init__(message)
+        if code is not None:
+            self.code = code
+
+
+class UsageError(KaraokeError):
+    """用法／環境／輸入資料有問題（退出碼 2）。
+
+    這類錯誤用戶改設定或參數就可以解決，不需要重跑整條管線。
+    """
+
+    code = 2
+
+
+class ToolMissingError(UsageError):
+    """缺少外部工具：ffmpeg / ffprobe / audio-separator（退出碼 2）。
+
+    獨立成子類是因為訊息要教用戶**怎樣安裝**，與一般用法錯誤的處理不同。
+    """
+
+    code = 2
+
+
+class AudioExtractionError(KaraokeError):
+    """抽音、人聲分離或人聲標準化失敗（退出碼 3）。
+
+    最常見成因：輸入檔損壞、容器無音軌、或 ffmpeg 不支援該 codec。
+    """
+
+    code = 3
+
+
+class AsrError(KaraokeError):
+    """ASR 提交、輪詢、下載或解析失敗（退出碼 4）。"""
+
+    code = 4
+
+
+class NoSubtitlesError(AsrError):
+    """ASR 回傳空結果／冇 ``transcripts``，或斷句後零行（退出碼 4）。
+
+    繼承 :class:`AsrError` 是因為成因同屬「ASR 冇畀到可用內容」，
+    呼叫方可以只 catch 父類就把兩種情況一併處理。
+    """
+
+    code = 4
+
+
+class BurnError(KaraokeError):
+    """ffmpeg 燒錄字幕失敗（退出碼 5）。"""
+
+    code = 5
+
+
+
+# ---------------------------------------------------------------------------
 # 單位 Helper（ADR-005：全專案只准有呢兩個 function 做時間換算）
 # ---------------------------------------------------------------------------
 
@@ -270,7 +357,7 @@ def find_ffmpeg() -> str:
         "  macOS   ：brew install ffmpeg\n"
         "  Linux   ：sudo apt install ffmpeg"
     )
-    sys.exit(2)
+    raise ToolMissingError("搵唔到 ffmpeg —— 安裝方法見 log（winget install Gyan.FFmpeg）")
 
 
 def find_ffprobe() -> str:
@@ -281,7 +368,7 @@ def find_ffprobe() -> str:
     if found:
         return found
     LOGGER.error("搵唔到 ffprobe（通常同 ffmpeg 一齊安裝）。")
-    sys.exit(2)
+    raise ToolMissingError("搵唔到 ffprobe（通常同 ffmpeg 一齊安裝）")
 
 
 def probe_video_size(ffprobe: str, video: Path) -> tuple[int, int]:
@@ -370,14 +457,21 @@ def read_playres_from_ass(ass_path: Path) -> tuple[int, int] | None:
 
 def extract_temp_audio(ffmpeg: str, video: Path, workdir: Path) -> Path:
     out = workdir / "temp_audio_16k.wav"
-    proc = subprocess.run(
-        [ffmpeg, "-y", "-v", "error", "-i", str(video), "-vn",
-         "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", str(out)],
-        capture_output=True, text=True, encoding="utf-8", errors="replace",
-    )
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-v", "error", "-i", str(video), "-vn",
+             "-ac", "1", "-ar", "16000", "-acodec", "pcm_s16le", str(out)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except FileNotFoundError as exc:
+        # ffmpeg 路徑存在但執行不到（或 PATH 解析失敗）→ 語意化成 ToolMissingError，
+        # 唔好流一隻裸 FileNotFoundError 出去，否則 CLI 會出 traceback、UI 只顯示
+        # "[WinError 2]"，兩種前端都要各自猜。
+        LOGGER.error("ffmpeg 無法執行：%s", exc)
+        raise ToolMissingError(f"ffmpeg 無法執行：{ffmpeg}") from exc
     if proc.returncode != 0 or not out.is_file():
         LOGGER.error("ffmpeg 抽音失敗：\n%s", (proc.stderr or "")[-1500:])
-        sys.exit(3)
+        raise AudioExtractionError(f"ffmpeg 抽音失敗（rc={proc.returncode}），詳見 log")
     LOGGER.info("TempAudio 完成：%.2f MB", out.stat().st_size / 1_048_576)
     return out
 
@@ -397,7 +491,8 @@ def separate_vocals(wav: Path, workdir: Path) -> Path:
             "（人聲分離會額外安裝 onnxruntime / torch，約需 500MB～2GB 磁碟空間）\n"
             "（唔用人聲分離可用預設模式，唔加 --separate-vocals）"
         )
-        sys.exit(2)
+        raise ToolMissingError(
+            "未安裝 audio-separator —— 安裝方法見 log（pip install audio-separator）")
 
     LOGGER.info("進行人聲分離（首次執行需下載模型，可能要好幾分鐘）…")
     out_dir = workdir / "separated"
@@ -413,7 +508,7 @@ def separate_vocals(wav: Path, workdir: Path) -> Path:
         vocal = next((f for f in files if "vocal" in os.path.basename(f).lower()), files[0])
     except Exception as exc:  # noqa: BLE001
         LOGGER.error("人聲分離失敗（audio-separator 版本相容性問題）：%s", exc)
-        sys.exit(3)
+        raise AudioExtractionError(f"人聲分離失敗：{exc}") from exc
 
     ffmpeg = find_ffmpeg()
     normalized = workdir / "vocals_16k.wav"
@@ -424,7 +519,7 @@ def separate_vocals(wav: Path, workdir: Path) -> Path:
     )
     if proc.returncode != 0:
         LOGGER.error("人聲標準化失敗：\n%s", (proc.stderr or "")[-1500:])
-        sys.exit(3)
+        raise AudioExtractionError(f"人聲標準化失敗（rc={proc.returncode}），詳見 log")
     LOGGER.info("人聲分離完成：%s", normalized.name)
     return normalized
 
@@ -502,7 +597,7 @@ def submit_and_wait_transcription(
             "model %r 已永久禁用（ADR-004）：佢嘅「100% 逐字」係線性插值假時間軸。"
             "請用 %s", model, DEFAULT_ASR_MODEL
         )
-        sys.exit(2)
+        raise UsageError(f"model {model!r} 已禁用（假時間軸，見 ADR-004）；請用 {DEFAULT_ASR_MODEL}")
 
     import requests
     from dashscope.audio.asr import Transcription
@@ -518,7 +613,7 @@ def submit_and_wait_transcription(
     if resp.status_code != 200:
         LOGGER.error("ASR 任務提交失敗（HTTP %s）：%s", resp.status_code,
                      json.dumps(getattr(resp, "output", {}), ensure_ascii=False, default=str)[:1200])
-        sys.exit(4)
+        raise AsrError(f"ASR 任務提交失敗（HTTP {resp.status_code}），詳見 log")
 
     task_id = resp.output.task_id
     LOGGER.info("task_id = %s，開始輪詢 …", task_id)
@@ -536,10 +631,10 @@ def submit_and_wait_transcription(
             break
         if status == "FAILED":
             LOGGER.error("ASR 任務失敗：code=%s message=%s", out.get("code"), out.get("message"))
-            sys.exit(4)
+            raise AsrError(f"ASR 任務失敗：{out.get('message') or out.get('code') or '未知原因'}")
         if time.time() - started > max_wait_s:
             LOGGER.error("ASR 輪詢逾時（>%ds），task_id=%s", max_wait_s, task_id)
-            sys.exit(4)
+            raise AsrError(f"ASR 輪詢逾時（超過 {max_wait_s}s），task_id={task_id}")
         time.sleep(poll_interval_s)
 
     # ⚠️ 必須逐筆檢查 subtask_status，淨係 check task_status 會漏錯
@@ -548,7 +643,7 @@ def submit_and_wait_transcription(
     if not ok_items:
         LOGGER.error("沒有任何 subtask 成功：%s",
                      json.dumps(results, ensure_ascii=False, default=str)[:1200])
-        sys.exit(4)
+        raise AsrError(f"沒有任何 subtask 成功（共 {len(results)} 筆），詳見 log")
 
     data = requests.get(ok_items[0]["transcription_url"], timeout=120).json()
     LOGGER.info("識別完成，耗時 %.0fs", time.time() - started)
@@ -563,7 +658,7 @@ def parse_asr_result(data: dict[str, Any]) -> list[AsrSentence]:
     transcripts = data.get("transcripts") or []
     if not transcripts:
         LOGGER.error("ASR 結果冇 transcripts 字段：%s", json.dumps(data, ensure_ascii=False)[:800])
-        sys.exit(4)
+        raise NoSubtitlesError("ASR 結果冇 transcripts 字段（等於冇識別到歌詞），詳見 log")
 
     sentences: list[AsrSentence] = []
     skipped = 0
@@ -923,7 +1018,7 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
             hex_to_ass_color(value)
         except ValueError as exc:
             LOGGER.error("timings.json 的 style.%s 有問題：%s", name, exc)
-            sys.exit(2)
+            raise UsageError(f"timings.json 的 style.{name} 有問題：{exc}") from exc
 
     lines: list[LyricLine] = []
     for raw_line in doc.get("lines") or []:
@@ -1078,6 +1173,9 @@ def burn_subtitles(
          （Windows 嘅 ``C:`` 冒號會畀 ffmpeg 當 filter option 分隔符）。
          改為 ``cwd=<ass 所在目錄>`` + filter 只用**檔名**。
       2. ffmpeg 命令**必須**帶 ``original_size=WxH``。
+
+    Raises:
+        BurnError: ffmpeg 回非零或輸出檔不存在（退出碼 5，ADR-024）。
     """
     workdir = ass_path.parent
     ass_name = ass_path.name
@@ -1115,7 +1213,7 @@ def burn_subtitles(
                                   capture_output=True, text=True, encoding="utf-8", errors="replace")
         if proc.returncode != 0 or not output_path.is_file():
             LOGGER.error("ffmpeg 燒錄失敗（rc=%s）：\n%s", proc.returncode, (proc.stderr or "")[-2500:])
-            sys.exit(5)
+            raise BurnError(f"ffmpeg 燒錄失敗（rc={proc.returncode}），詳見 log")
     finally:
         if cleanup_target and cleanup_target.is_file():
             cleanup_target.unlink(missing_ok=True)
@@ -1145,7 +1243,7 @@ def resolve_api_key(cli_key: str | None) -> str:
         "  2) setx DASHSCOPE_API_KEY \"sk-xxxx\"  （PowerShell: $env:DASHSCOPE_API_KEY=\"sk-xxxx\"）\n"
         "  3) 喺執行目錄放 .env 檔，內容：DASHSCOPE_API_KEY=sk-xxxx"
     )
-    sys.exit(2)
+    raise UsageError("搵唔到 DashScope API Key —— 三種設定方法見 log")
 
 
 # ---------------------------------------------------------------------------
@@ -1196,8 +1294,9 @@ def generate_timings(opts: GenerateOptions, *,
                      progress_cb: ProgressCB | None = None) -> GenerateResult:
     """影片 → 百煉 ASR → timings.json + ass（唔出影片）。
 
-    行為同舊 cmd_generate 完全一致（log 逐句相同）；錯誤路徑用 ``sys.exit``
-    保持 CLI exit code —— UI 背景 thread 呼叫時要 ``except BaseException``。
+    行為同舊 cmd_generate 完全一致（log 逐句相同）；錯誤路徑改為拋
+    :class:`KaraokeError` 子類（ADR-024），由 :func:`main` 轉回原本的 CLI 退出碼。
+    UI 背景 thread 呼叫時只需 ``except main.KaraokeError``，唔再需要猜 ``SystemExit``。
 
     Args:
         opts: 全部 generate 參數。
@@ -1207,12 +1306,16 @@ def generate_timings(opts: GenerateOptions, *,
         GenerateResult：產出路徑 + 統計。
 
     Raises:
-        SystemExit: 輸入唔存在 / API key 缺 / ASR 失敗等（保留 CLI exit code）。
+        UsageError: 輸入唔存在 / 缺 API key。
+        ToolMissingError: 缺 ffmpeg / ffprobe / audio-separator。
+        AudioExtractionError: 抽音或人聲分離失敗。
+        AsrError: ASR 提交／輪詢／下載失敗。
+        NoSubtitlesError: ASR 冇識別到內容，或斷句後零行。
     """
     video = opts.input
     if not video.is_file():
         LOGGER.error("輸入影片唔存在：%s", video)
-        sys.exit(2)
+        raise UsageError(f"輸入影片唔存在：{video}")
 
     api_key = resolve_api_key(opts.api_key)
     output_dir = opts.output_dir or video.parent
@@ -1271,7 +1374,7 @@ def generate_timings(opts: GenerateOptions, *,
                                  merge_max_chars=opts.merge_max_chars)
         if not lines:
             LOGGER.error("冇產生任何字幕行，可能係 ASR 冇識別到內容。")
-            sys.exit(4)
+            raise NoSubtitlesError("冇產生任何字幕行 —— ASR 可能冇識別到內容，詳見 log")
 
         style = replace(opts.style, play_res_x=width, play_res_y=height)   # ADR-006
         if progress_cb:
@@ -1378,7 +1481,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     src = Path(args.timings).expanduser()
     if not src.is_file():
         LOGGER.error("timings.json 唔存在：%s", src)
-        return 2
+        raise UsageError(f"timings.json 唔存在：{src}")
 
     doc = json.loads(src.read_text(encoding="utf-8"))
     lines, style = timings_doc_to_lines(doc)
@@ -1439,7 +1542,8 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         輸出 mp4 路徑。
 
     Raises:
-        SystemExit: 燒錄失敗（exit code 5，保留 CLI 行為）。
+        ToolMissingError: 缺 ffmpeg / ffprobe。
+        BurnError: ffmpeg 燒錄失敗（退出碼 5，ADR-024）。
     """
     ffmpeg = find_ffmpeg()
     ffprobe = find_ffprobe()
@@ -1468,10 +1572,10 @@ def cmd_burn(args: argparse.Namespace) -> int:
     ass_path = Path(args.subtitle).expanduser()
     if not video.is_file():
         LOGGER.error("輸入影片唔存在：%s", video)
-        return 2
+        raise UsageError(f"輸入影片唔存在：{video}")
     if not ass_path.is_file():
         LOGGER.error("字幕檔唔存在：%s", ass_path)
-        return 2
+        raise UsageError(f"字幕檔唔存在：{ass_path}")
 
     output = Path(args.output).expanduser() if args.output else video.with_name(
         f"{video.stem}_karaoke.mp4")
@@ -1652,6 +1756,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """CLI 入口：解析參數、設定 logging、執行子命令。
+
+    Args:
+        argv: 參數列表（``None`` = 用 ``sys.argv[1:]``，方便測試注入）。
+
+    Returns:
+        進程退出碼。0 成功；其餘由 :class:`KaraokeError.code` 決定
+        （2 = 用法／環境、3 = 抽音、4 = ASR、5 = 燒錄）。
+    """
     argv = list(sys.argv[1:] if argv is None else argv)
     # ⚠️ argparse subparser 嘅 default 會覆寫上層已設定嘅值，
     #    所以 -v 無論放喺 `main.py -v generate` 定 `main.py generate -v` 都要認得：
@@ -1664,7 +1777,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         format="[%(asctime)s] %(levelname)-7s %(message)s",
         datefmt="%H:%M:%S",
     )
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KaraokeError as exc:
+        # 每個拋出點都已經 LOGGER.error 過詳細原因（stderr / JSON），
+        # 所以這裡只負責把例外轉回退出碼 —— 輸出與 v1.0.4 之前逐字相同，
+        # 唔會多印一行，亦唔會出 traceback。
+        return exc.code
 
 
 if __name__ == "__main__":
