@@ -206,9 +206,9 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 
 | 位置 | 睇法 |
 |---|---|
-| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.4` |
-| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.4)` |
-| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.4` |
+| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.5` |
+| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.5)` |
+| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.5` |
 
 回報問題時請一併附上版本號，唔然冇辦法對照當時的 code。
 
@@ -317,8 +317,8 @@ karaoke-vX.Y.Z/
 包內有 `tests/`，缺任何一件都會令它變成死檔（裝不到 pytest / 噴 unknown marker /
 要人手記長指令）。三者由 `tools/build_release.py` 的 `TOP_FILES` 收錄。
 
-實測（v1.0.4，2026-11-03，含 P0/P1 修復）：**66 個檔案、原始 0.76 MB、zip 0.32 MB**；
-解壓到空目錄（無 `_smoke/`）直接跑 `pytest` → **139 passed**，與 repo 內一致。
+實測（v1.0.5，2026-11-05，逐字時間碼／跨字均分／連動順延）：**70 個檔案、原始 0.84 MB、zip 0.35 MB**；
+解壓到空目錄（無 `_smoke/`）直接跑 `pytest` → **170 passed**，與 repo 內一致。
 
 > ⚠️ 每次改動 `tests/` 或新增根目錄模組後，這個數字都會變。出包前必須重新實測
 > （`tools.build_release.collect()` 可直接數檔數），**唔好照抄上一版**。
