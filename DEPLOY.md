@@ -366,7 +366,27 @@ curl -I -L https://github.com/hklamsir/karaoke/releases/download/v<VERSION>/kara
 > 只要 tag 名同 `VERSION` 一致，README 的 `releases/latest` 連結就永遠有效
 > （GitHub 自動指向最新一個非 prerelease）。
 >
-> 本機未安裝 `gh` CLI，所以上面用網頁介面。若日後裝了 `gh`，等效命令：
+> 本機未安裝 `gh` CLI。除網頁介面外，亦可以用 REST API 直接出 release
+> （v1.0.5 實測成功，2026-11-05）：
+>
+> ```bash
+> TOKEN=$(tr -d '\r\n' < ~/github_karaoke.txt)
+> # 1) 建 release（payload.json 由 notes.md 生成，見下）
+> curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+>   https://api.github.com/repos/hklamsir/karaoke/releases \
+>   --data-binary @dist/release_payload.json -o dist/release_resp.json
+> # 2) 上傳 zip（<id> 由 release_resp.json 的 id 讀）
+> curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/zip" \
+>   --data-binary @dist/karaoke-v<VERSION>.zip \
+>   "https://uploads.github.com/repos/hklamsir/karaoke/releases/<id>/assets?name=karaoke-v<VERSION>.zip"
+> ```
+>
+> `payload.json` 只需 `tag_name` / `target_commitish` / `name` / `body` / `draft` / `prerelease`。
+> 用 `python -c` 由 `notes.md` 讀入再 `json.dumps(..., ensure_ascii=False)` 寫檔，
+> 唔好喺 shell 直接砌中文 JSON（引號同跳脫會出事）。
+> 之後 `git fetch --tags` 同步本機 tag；token 只放喺環境變數，唔好寫入 `.git/config`。
+>
+> 若日後裝了 `gh`，等效命令：
 > `gh release create v<VERSION> dist/karaoke-v<VERSION>.zip --title "..." --notes-file notes.md`
 >
 > 上面用 `<VERSION>` 而非寫死版本號：這一節每次出包都要照做一次，寫死的話
