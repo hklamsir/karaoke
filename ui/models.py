@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+import statistics
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
@@ -98,16 +99,22 @@ def doc_stats(doc: dict) -> dict[str, Any]:
     """統計（R4：每次開檔即時重算，唔可以硬編碼比例）。"""
     num_lines = len(doc.get("lines") or [])
     num_chars = 0
+    zero_chars = 0          # 時長 <= 1ms 的字：AI 漏詞／時長崩壞的直接徵狀
     est_words = est_total = 0
     for line in doc.get("lines") or []:
         for word in line.get("words") or []:
-            num_chars += len(word.get("chars") or [])
+            chars = word.get("chars") or []
+            num_chars += len(chars)
+            for c in chars:
+                if int(c.get("end_ms", 0)) - int(c.get("begin_ms", 0)) <= 1:
+                    zero_chars += 1
             est_total += 1
             if word.get("estimated"):
                 est_words += 1
     return {
         "num_lines": num_lines,
         "num_chars": num_chars,
+        "zero_chars": zero_chars,
         "estimated_words": est_words,
         "estimated_total_words": est_total,
         "estimated_ratio": (est_words / est_total) if est_total else 0.0,
@@ -284,6 +291,240 @@ def respread_word(line: dict, word_i: int) -> bool:
 def has_estimated(line: dict) -> bool:
     """呢行有冇估算字（篩選 chip 用，§4.4）。"""
     return any(w.get("estimated") for w in line.get("words") or [])
+
+
+# ---------------------------------------------------------------------------
+# 跨字均分 / 修補（用戶 2026-11-03 回報：AI 漏字後中間字冇時長）
+#
+# 背景：ASR 只吐 word 級時間，`word_slot_to_group()` 只在**詞內部**按字數平分。
+# 一旦整段詞被漏掉（「那裡保證何時能突破」），呢批字之間完全冇時間依據；
+# `respread_word()` 亦只作用於單一個 word 內部，跨詞的缺口永遠冇人填。
+# 下面三個函數就係補呢個洞 —— 全部純資料操作，無 Tk，可直接單測。
+# ---------------------------------------------------------------------------
+
+#: 單字時長超過「本行中位數 × 此倍數」就當係崩壞。漏字段的典型徵狀係
+#: 「一堆 100ms 字 + 一個 10 秒字」；正常長音拖 2–3 倍中位數唔會誤中。
+REPAIR_STRETCH_RATIO = 6.0
+#: 上述倍數的絕對下限：中位數細到 100ms 時 ×6 只有 600ms，太易誤中。
+REPAIR_STRETCH_FLOOR_MS = 1500
+
+
+def iter_flat_chars(line: dict) -> list[tuple[int, int, dict]]:
+    """按播放次序攤平 ``(word_i, char_i, char)``。
+
+    逐字面板的選取可以**跨詞**（一句歌詞通常 3–6 個詞），所以均分要用一個
+    跨 ``words[]`` 的單一索引；``iter_chars()`` 係 generator，每次都要重跑。
+    """
+    return [(wi, ci, c) for wi, ci, c, _w in iter_chars(line)]
+
+
+def flat_index_map(line: dict) -> dict[tuple[int, int], int]:
+    """``(word_i, char_i) → 攤平索引``（面板 Treeview iid 轉索引用）。"""
+    return {(wi, ci): k for k, (wi, ci, _c) in enumerate(iter_flat_chars(line))}
+
+
+def sync_word_bounds(line: dict) -> None:
+    """word 的 ``[begin_ms, end_ms]`` 一律由首尾 char 推導（避免兩份真相）。"""
+    for word in line.get("words") or []:
+        chars = word.get("chars") or []
+        if chars:
+            word["begin_ms"] = int(chars[0]["begin_ms"])
+            word["end_ms"] = int(chars[-1]["end_ms"])
+
+
+def span_plan(line: dict, i_from: int, i_to: int, *,
+              keep_ends: bool = True) -> dict[str, Any] | None:
+    """試算「均分」結果但**唔改資料**（面板要喺 push command 前防呆）。
+
+    Args:
+        line: 一行歌詞 dict。
+        i_from / i_to: 攤平字索引（次序不拘）。
+        keep_ends: ``True`` = 首字、末字時間原封不動，只攤中間；
+            ``False`` = 連首末字一齊由 ``[首.begin, 末.end]`` 重算。
+
+    Returns:
+        ``{"begin", "end", "count", "kind", "per_char_ms"}``；選取不足、
+        索引越界、或中間冇位可攤（首字 end ≥ 末字 begin）→ ``None``。
+    """
+    chars = iter_flat_chars(line)
+    lo, hi = sorted((int(i_from), int(i_to)))
+    if lo < 0 or hi >= len(chars) or hi <= lo:
+        return None
+    if keep_ends and hi - lo < 2:
+        return None                      # 冇中間字可以攤
+    first_c, last_c = chars[lo][2], chars[hi][2]
+    if keep_ends:
+        begin, end = int(first_c["end_ms"]), int(last_c["begin_ms"])
+        count, kind = hi - lo - 1, "middle"
+    else:
+        begin, end = int(first_c["begin_ms"]), int(last_c["end_ms"])
+        count, kind = hi - lo + 1, "span"
+    if count <= 0 or end - begin < count:
+        return None                      # 每個字至少要分到 1ms
+    return {"begin": begin, "end": end, "count": count, "kind": kind,
+            "per_char_ms": round((end - begin) / count, 1)}
+
+
+def redistribute_span(line: dict, i_from: int, i_to: int, *,
+                      keep_ends: bool = True) -> dict[str, Any] | None:
+    """把攤平索引 ``[i_from, i_to]`` 的逐字時間平均分配（跨詞 C4+）。
+
+    兩個模式對應兩種真實情境：
+
+    - ``keep_ends=True``：用戶已用耳對好兩個錨點（例如把尾字拖到正確收尾），
+      只係中間幾個字仲疊埋一秒內 → 保留首末字，中間平均攤。
+    - ``keep_ends=False``：整段時長崩壞（漏字），用 ``[首.begin, 末.end]``
+      全段重攤，連端點都重算。
+
+    ⚠️ 分配結果**仍然係估算**（冇 ASR 依據）→ 受影響 word 標
+    ``estimated=True``，面板以橙色顯示，提醒仲要人手覆核。
+
+    Args:
+        line: 一行歌詞 dict（in-place 改）。
+        i_from / i_to: 攤平字索引。
+        keep_ends: 見上。
+
+    Returns:
+        同 :func:`span_plan`；``None`` = 冇改動（呼叫方唔應該 push undo）。
+    """
+    plan = span_plan(line, i_from, i_to, keep_ends=keep_ends)
+    if plan is None:
+        return None
+    chars = iter_flat_chars(line)
+    lo, hi = sorted((int(i_from), int(i_to)))
+    targets = chars[lo + 1:hi] if keep_ends else chars[lo:hi + 1]
+    spans = proportional_split(plan["begin"], plan["end"], len(targets))
+    touched: set[int] = set()
+    for (wi, _ci, c), (b, e) in zip(targets, spans):
+        c["begin_ms"], c["end_ms"] = b, e
+        touched.add(wi)
+    sync_word_bounds(line)
+    for wi in touched:
+        line["words"][wi]["estimated"] = True
+    return plan
+
+
+def shift_range(line: dict, i_from: int, i_to: int, delta_ms: int) -> int:
+    """把攤平索引 ``[i_from, i_to]`` 內所有字整體平移 ``delta_ms``（字距不變）。
+
+    用喺「連動順延」：改一個字之後要為它騰位，但唔想逐個字跟住改。字與字之間
+    的相對間距保持 —— 只係整段搬屋，唔會重新分配。
+
+    任何字會被推到 0 之前就**整體少移**（保持相對間距）：寧願唔夠位，都好過
+    出現負時間。上界唔夾 —— 推到後面由 ``normalize()`` N5 喺存檔時收口。
+
+    Args:
+        line: 一行歌詞（in-place）。
+        i_from / i_to: 攤平字索引（次序不拘）。
+        delta_ms: 位移（正 = 向後、負 = 向前）。
+
+    Returns:
+        實際位移（夾到 0 時會細過 ``delta_ms``，甚至 0）。
+    """
+    chars = iter_flat_chars(line)
+    lo, hi = sorted((int(i_from), int(i_to)))
+    if lo < 0 or hi >= len(chars) or hi < lo or not delta_ms:
+        return 0
+    block = chars[lo:hi + 1]
+    earliest = min(int(c["begin_ms"]) for _w, _c, c in block)
+    delta = max(int(delta_ms), -earliest)
+    if delta == 0:
+        return 0
+    for _w, _c, c in block:
+        c["begin_ms"] = int(c["begin_ms"]) + delta
+        c["end_ms"] = int(c["end_ms"]) + delta
+    sync_word_bounds(line)
+    return delta
+
+
+def repair_plan(line: dict) -> dict[str, Any]:
+    """診斷本行時長但**唔改資料**。
+
+    判斷次序：
+
+    1. ``mode="line"`` —— 全行崩壞：最長字 > ``max(6 × 中位數, 1500ms)``。
+       漏字段的特徵係「一堆 100ms 字 + 一個 10 秒字」，逐字判斷捉唔到，
+       只有整行重攤救得返。
+    2. ``mode="spans"`` —— 局部崩壞：連續 ≥1 個零時長（``end - begin ≤ 1``）字。
+    3. ``mode="none"`` —— 冇事。
+
+    Returns:
+        ``{"mode", "count", "median_ms", "longest_ms", ...}``（``line`` 模式
+        另帶 ``begin`` / ``end``；``spans`` 模式另帶 ``spans``）。
+    """
+    chars = iter_flat_chars(line)
+    if len(chars) < 3:
+        return {"mode": "none", "count": 0}
+    durs = [int(c["end_ms"]) - int(c["begin_ms"]) for _w, _ci, c in chars]
+    median = float(statistics.median(durs))
+    longest = max(durs)
+    if longest > max(REPAIR_STRETCH_RATIO * median, REPAIR_STRETCH_FLOOR_MS):
+        return {"mode": "line", "from": 0, "to": len(chars) - 1,
+                "count": len(chars), "median_ms": round(median, 1),
+                "longest_ms": longest,
+                "begin": int(chars[0][2]["begin_ms"]),
+                "end": int(chars[-1][2]["end_ms"])}
+    runs: list[tuple[int, int]] = []
+    i = 0
+    while i < len(chars):
+        if durs[i] <= 1:
+            j = i
+            while j + 1 < len(chars) and durs[j + 1] <= 1:
+                j += 1
+            runs.append((i, j))
+            i = j + 1
+        else:
+            i += 1
+    return {"mode": "spans" if runs else "none", "spans": runs,
+            "count": sum(j - i + 1 for i, j in runs),
+            "median_ms": round(median, 1), "longest_ms": longest}
+
+
+def repair_line(line: dict) -> dict[str, Any]:
+    """一鍵修補本行時長；回傳實際做咗咩（面板顯示用）。
+
+    見 :func:`repair_plan` 的判斷規則；``mode="line"`` 會連端點一齊重攤
+    （因為人手量度出嚟的尾字 end 正是最好的錨），``mode="spans"`` 只補
+    零時長段、段外時間一律唔郁。
+
+    Returns:
+        ``{"mode": "line"|"spans"|"none", "count", ...}``。
+    """
+    plan = repair_plan(line)
+    mode = plan["mode"]
+    if mode == "line":
+        done = redistribute_span(line, 0, plan["to"], keep_ends=False)
+        if done is None:
+            return {"mode": "none", "count": 0}
+        return {**done, "mode": "line", "median_ms": plan["median_ms"],
+                "longest_ms": plan["longest_ms"]}
+    if mode != "spans":
+        return {"mode": "none", "count": 0}
+
+    chars = iter_flat_chars(line)
+    fixed = 0
+    touched: set[int] = set()
+    for i, j in plan["spans"]:
+        if j > i:
+            if redistribute_span(line, i, j, keep_ends=False) is not None:
+                fixed += j - i + 1
+                touched.update(chars[k][0] for k in range(i, j + 1))
+            continue
+        # 單一個零時長字：兩邊夾得出空隙就填滿，冇空隙就補 1ms
+        cur = chars[i][2]
+        prev_end = (int(chars[i - 1][2]["end_ms"]) if i > 0
+                    else int(cur["begin_ms"]))
+        next_begin = (int(chars[i + 1][2]["begin_ms"]) if i + 1 < len(chars)
+                      else int(cur["end_ms"]))
+        begin = max(prev_end, int(cur["begin_ms"]))
+        end = max(begin + 1, next_begin)
+        cur["begin_ms"], cur["end_ms"] = begin, end
+        fixed += 1
+        touched.add(chars[i][0])
+    sync_word_bounds(line)
+    for wi in touched:
+        line["words"][wi]["estimated"] = True
+    return {"mode": "spans", "count": fixed, "median_ms": plan["median_ms"]}
 
 
 # ---------------------------------------------------------------------------

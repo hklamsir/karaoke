@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 import tkinter as tk
 import tkinter.filedialog as filedialog
 import tkinter.messagebox as messagebox
@@ -18,11 +19,13 @@ from pathlib import Path
 
 import ttkbootstrap as ttkb
 
-from .. import models, state, theme
-from ..commands import DeleteLine, InsertWord, MergeLines, SetCharTiming, SetLineText, SplitLine
+from .. import models, settings, state, theme, timefmt
+from ..commands import (DeleteLine, InsertWord, MergeLines, NudgeChars, RedistributeSpan,
+                        RepairLine, SetCharTiming, SetCharTimingRipple, SetLineText, SplitLine)
 from ..widgets.lyric_tree import LyricTree
 from ..widgets.progress import QueueLogHandler
 from ..widgets.timeline import TimelineCanvas
+from ..widgets.time_spinbox import TimeSpinbox
 from ..widgets.tooltip import Tooltip
 
 FETCH_MS = 100      # ←→ 游標步長
@@ -50,6 +53,10 @@ class EditorPage(ttkb.Frame):
         # 永不停止的 30ms 鏈，每條都觸發全量重繪（CPU 白燒、越用越卡）。
         self._polling = False
         self._edit_target_i = None  # inline 修改歌詞目標行
+        # ▲▼ 連撳合併 undo 用：記住上一個 timing command、目標字、時間戳
+        self._spin_cmd: SetCharTiming | None = None
+        self._spin_sel: tuple[int, int, int] | None = None
+        self._spin_at = 0.0
 
         self._build_toolbar()
         body = ttkb.Frame(self, bootstyle="light")
@@ -61,6 +68,13 @@ class EditorPage(ttkb.Frame):
         self._left = left = ttkb.Frame(body, bootstyle="light", width=LEFT_W)
         left.pack(side="left", fill="y", padx=(0, theme.SPACE))
         left.pack_propagate(False)
+
+        # ⚠️ 逐字微調**必須先 pack**（side="bottom"）—— pack 係按加入次序分配
+        # 空間：先 pack 嘅 widget 先攞夠自己需要的高度，最後嗰個唔夠位就被裁。
+        # 之前微調面板 pack 喺歌詞樹之後，加多兩行掣之後 reqheight 370px > 剩餘
+        # 319px，成行「✂ 斷句 ／ ＋ 插字 ／ ↻ 重劃」連提示列**完全冇顯示**
+        # （實測 winfo_ismapped()=0）—— 同用戶 2026-10 回報「冇確定掣」同一個坑。
+        self._build_finetune(left)
 
         tree_box = ttkb.LabelFrame(left, text="歌詞樹", bootstyle="light")
         tree_box.pack(fill="both", expand=True)
@@ -110,7 +124,7 @@ class EditorPage(ttkb.Frame):
         self._apply_btn.pack(side="right", padx=2)
         ttkb.Button(ebtns, text="取消 (Esc)", bootstyle="secondary", takefocus=False,
                     command=self._hide_line_edit).pack(side="right")
-        # 預設收埋；pack 時用 before=self._ft_box 插喺逐字微調前面
+        # 預設收埋；pack 時用 after=self._ft_box 插喺逐字微調**上面**
 
         # --- inline 插字 / 新增歌詞行列（用戶回報 _ask_text 彈窗冇生效 →
         #     同「修改歌詞」一樣改 inline，徹底鏟走 Toplevel 焦點陷阱）---
@@ -134,9 +148,7 @@ class EditorPage(ttkb.Frame):
         ttkb.Button(self._ask_frame, text="取消 (Esc)", bootstyle="secondary",
                     takefocus=False, command=self._hide_ask) \
             .pack(side="right", pady=(2, theme.SPACE))
-        # 預設收埋；pack 時用 before=self._ft_box 插喺逐字微調前面
-
-        self._build_finetune(left)
+        # 預設收埋；pack 時用 after=self._ft_box 插喺逐字微調**上面**
 
         # --- 右欄：大 preview 窗 + 可拖曳分隔條 + 時間軸 ---
         self._right = ttkb.Frame(body, bootstyle="light")
@@ -279,6 +291,9 @@ class EditorPage(ttkb.Frame):
         """換主題後重設自訂 style 與 tag 色（ttk 控件本身會跟 style 自動變）。"""
         self._symbol_styles()
         self._ft_tree.tag_configure("estimated", foreground=theme.WARNING)
+        for spin in (getattr(self, "_begin_spin", None), getattr(self, "_end_spin", None)):
+            if spin is not None:
+                spin.restyle()      # Canvas 箭頭唔會跟 ttk style 自動變色
         for btn in (self._burn_btn, getattr(self, "_apply_btn", None),
                     getattr(self, "_ask_ok_btn", None)):
             if btn is None:
@@ -302,20 +317,26 @@ class EditorPage(ttkb.Frame):
 
     def _build_finetune(self, parent) -> None:
         self._ft_box = box = ttkb.LabelFrame(parent, text="逐字微調", bootstyle="light")
-        box.pack(fill="both", pady=(theme.SPACE, 0))
+        # side="bottom"：先 pack（喺歌詞樹之前）攞夠自己需要的高度，歌詞樹
+        # 之後 pack 用 expand 食剩餘空間。倒過來做的話，面板底部兩行掣會被裁。
+        box.pack(side="bottom", fill="x", pady=(theme.SPACE, 0))
 
         mono = theme.mono_font_family()
+        # selectmode="extended"：⊞ 均分 / ± 平移要**跨字多選**。AI 漏詞通常係
+        # 連續幾個字（例如「那裡保證何時能突破」8 個字），逐個改等於冇工具。
         self._ft_tree = ttkb.Treeview(box, columns=("ch", "word", "begin", "end"),
-                                      show="headings", height=6, bootstyle="light")
+                                      show="headings", height=6, bootstyle="light",
+                                      selectmode="extended")
         # 用戶需求：**「詞」要靠左對齊** —— 之前只設 column anchor="w"，但標題
         # 仍然置中，結果「詞」字浮喺右邊同下面嘅詞語對唔上，讀起上嚟唔知邊欄
         # 打邊欄。而家 heading 同 cell 用**同一個 anchor**，四欄一致。
-        # 亦固定 ch/begin 闊度、由 word/end 吸收剩餘闊度，欄位唔會因視窗闊度跳位。
+        # begin/end 由 64 → 84px：時間碼「3:41.995」比裸 ms「221995」長兩個字，
+        # 唔加闊最後一位會被裁（2026-11-03）。
         for key, label, width, anchor, stretch in (
-                ("ch", "字", 36, "center", False),
-                ("word", "詞", 140, "w", True),
-                ("begin", "begin", 64, "e", False),
-                ("end", "end", 64, "e", True)):
+                ("ch", "字", 30, "center", False),
+                ("word", "詞", 104, "w", True),
+                ("begin", "開始", 84, "e", False),
+                ("end", "結束", 84, "e", True)):
             self._ft_tree.heading(key, text=label, anchor=anchor)
             self._ft_tree.column(key, width=width, anchor=anchor, stretch=stretch)
         self._ft_tree.tag_configure("estimated", foreground=theme.WARNING)
@@ -323,33 +344,94 @@ class EditorPage(ttkb.Frame):
         self._ft_tree.bind("<<TreeviewSelect>>", self._on_ft_select)
         self._ft_syncing = False   # 防 selection_set ↔ <<TreeviewSelect>> 無限循環
 
+        # 時間欄改時間碼（用戶回報：純毫秒唔人性化，唔知個字喺曲中第幾分幾秒）。
+        # Entry 而唔係 Spinbox：時間碼冇「加一格」的語意，用 ± 掣平移更直接。
         row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=2, pady=2)
-        ttkb.Label(row, text="begin", bootstyle="secondary",
+        ttkb.Label(row, text="開始", bootstyle="secondary",
                    font=(mono, 9)).pack(side="left")
-        self._begin_var = tk.StringVar(value="0")
-        ttkb.Spinbox(row, textvariable=self._begin_var, from_=0, to=10_000_000,
-                     increment=10, width=8,
-                     font=(mono, 9)).pack(side="left", padx=(2, theme.SPACE))
-        ttkb.Label(row, text="end", bootstyle="secondary",
+        self._begin_var = tk.StringVar(value="—")
+        # ▲▼ 用自繪箭頭（TimeSpinbox）：ttk.Spinbox 對「3:41.995」加減會靜靜
+        # 咁唔郁 —— 有箭頭但撳咗冇反應，比冇箭頭更難察覺。
+        self._begin_spin = TimeSpinbox(
+            row, textvariable=self._begin_var, width=10,
+            on_step=lambda ms: self._spin_edge("begin", ms))
+        self._begin_spin.pack(side="left", padx=(2, theme.SPACE))
+        self._begin_entry = self._begin_spin.entry
+        ttkb.Label(row, text="結束", bootstyle="secondary",
                    font=(mono, 9)).pack(side="left")
-        self._end_var = tk.StringVar(value="0")
-        ttkb.Spinbox(row, textvariable=self._end_var, from_=0, to=10_000_000,
-                     increment=10, width=8,
-                     font=(mono, 9)).pack(side="left", padx=2)
+        self._end_var = tk.StringVar(value="—")
+        self._end_spin = TimeSpinbox(
+            row, textvariable=self._end_var, width=10,
+            on_step=lambda ms: self._spin_edge("end", ms))
+        self._end_spin.pack(side="left", padx=2)
+        self._end_entry = self._end_spin.entry
+        for entry in (self._begin_entry, self._end_entry):
+            entry.bind("<Return>", lambda _e: self._apply_ft())
+            entry.bind("<Escape>", lambda _e: self._sync_ft_spinboxes())
+        for spin, name in ((self._begin_spin, "開始"), (self._end_spin, "結束")):
+            Tooltip(spin,
+                    f"{name}：接受 3:41.995 / 3:41 / 221.995（秒）/ 221995（毫秒）。"
+                    f"▲▼ 每次 ±10ms，即時生效（連撳合併成一個 undo 步驟）")
         # ⚠️ 套用掣原本喺呢行尾——左欄 260px 唔夠闊，被裁出畫面外（用戶實測
         # 「冇確定掣」）。搬落 row2 頭，同斷句/插入字並排。
+
+        nudge = ttkb.Frame(box, bootstyle="light")
+        nudge.pack(fill="x", padx=2, pady=(0, 2))
+        ttkb.Label(nudge, text="平移", bootstyle="secondary",
+                   font=(mono, 8)).pack(side="left", padx=(0, 2))
+        for label, delta in (("-100", -100), ("-10", -10), ("+10", 10), ("+100", 100)):
+            btn = ttkb.Button(nudge, text=label, width=4, bootstyle="secondary",
+                              takefocus=False, command=lambda d=delta: self._nudge(d))
+            btn.pack(side="left", padx=1)
+            Tooltip(btn, f"選取字整體平移 {delta:+d} ms（字距不變）")
+        # 連動順延（ADR-026 補記）：改一個字撞到鄰字時，是否自動把整段推開？
+        # 預設**關** —— 音軌係事實，字幕只係描述；默默改掉已用耳對好的字
+        # 比「要自己再撳一下」危險得多。需要時開，設定會記住。
+        self._ripple_var = tk.BooleanVar(value=bool(settings.load().get("ripple_edit")))
+        self._ripple_cb = ttkb.Checkbutton(nudge, text="連動",
+                                           variable=self._ripple_var,
+                                           bootstyle="secondary", takefocus=False,
+                                           command=self._on_ripple_toggle)
+        self._ripple_cb.pack(side="right", padx=(2, 0))
+        Tooltip(self._ripple_cb,
+                "連動順延：改一個字的開始／結束時間撞到旁邊的字時，自動把後面"
+                "（或前面）整段推開，字距不變。預設關閉。")
 
         row2 = ttkb.Frame(box, bootstyle="light")
         row2.pack(fill="x", padx=2, pady=(0, 2))
         ttkb.Button(row2, text="✓ 確定", bootstyle="secondary", takefocus=False,
                     command=self._apply_ft).pack(side="left", padx=(0, 2))
-        ttkb.Button(row2, text="✂ 斷句", bootstyle="secondary", takefocus=False,
-                    command=self._split_at_word).pack(side="left", padx=2)
-        ttkb.Button(row2, text="＋ 插字", bootstyle="secondary", takefocus=False,
+        b_split = ttkb.Button(row2, text="⊞ 均分", bootstyle="secondary",
+                              takefocus=False,
+                              command=lambda: self._redistribute(keep_ends=True))
+        b_split.pack(side="left", padx=2)
+        Tooltip(b_split, "選 3 個字以上：保留首末字，中間平均攤（你已對好兩個錨）")
+        b_full = ttkb.Button(row2, text="⊞ 全段", bootstyle="secondary",
+                             takefocus=False,
+                             command=lambda: self._redistribute(keep_ends=False))
+        b_full.pack(side="left", padx=2)
+        Tooltip(b_full, "選 2 個字以上：由首字開始到末字結束，全部重攤（漏字用）")
+        b_fix = ttkb.Button(row2, text="✚ 修補", bootstyle="secondary",
+                            takefocus=False, command=self._repair_line)
+        b_fix.pack(side="left", padx=2)
+        Tooltip(b_fix, "自動偵測本行時長崩壞（一堆短字 + 一個超長字）並重攤")
+
+        row3 = ttkb.Frame(box, bootstyle="light")
+        row3.pack(fill="x", padx=2, pady=(0, 2))
+        ttkb.Button(row3, text="✂ 斷句", bootstyle="secondary", takefocus=False,
+                    command=self._split_at_word).pack(side="left", padx=(0, 2))
+        ttkb.Button(row3, text="＋ 插字", bootstyle="secondary", takefocus=False,
                     command=self._insert_char).pack(side="left", padx=2)
-        ttkb.Button(row2, text="↻ 重劃", bootstyle="secondary", takefocus=False,
+        ttkb.Button(row3, text="↻ 重劃本詞", bootstyle="secondary", takefocus=False,
                     command=self._respawn_selected_word).pack(side="left", padx=2)
+
+        # 最後一次操作的人話回饋（「已均分 6 字：3:42.958 → 3:53.158」）——
+        # 純改表格數字的話，用戶唔知究竟改咗幾多個字、攤咗幾長。
+        self._ft_hint_var = tk.StringVar(value="")
+        ttkb.Label(box, textvariable=self._ft_hint_var, bootstyle="secondary",
+                   font=(theme.ui_font_family(), 8), anchor="w", justify="left",
+                   wraplength=LEFT_W - 20).pack(fill="x", padx=2, pady=(0, 2))
     # ------------------------------------------------------------------
     # 開檔 / 存檔（§5.3 / E2）
     # ------------------------------------------------------------------
@@ -474,8 +556,13 @@ class EditorPage(ttkb.Frame):
         est_pct = f"{s['estimated_ratio'] * 100:.0f}%" if s["estimated_total_words"] else "—"
         dirty = "●未儲存" if st.dirty else "已儲存"
         total = models.total_duration_ms(st.doc)
+        # 零時長字 = AI 漏詞／時長崩壞的直接徵狀。唔顯示的話，用戶要逐句查
+        # 成首歌幾百行先搵到（2026-11-03 用戶就係咁漏咗第 39 句）。
+        zero = int(s.get("zero_chars") or 0)
+        zero_note = f" ⚠{zero}字冇時長" if zero else ""
         return (f"游標 {_fmt_ms(st.cursor_ms)}/{_fmt_ms(total)} │ "
-                f"{s['num_lines']}行·{s['num_chars']}字 │ ●估算 {s['estimated_words']}詞 {est_pct} │ "
+                f"{s['num_lines']}行·{s['num_chars']}字{zero_note} │ "
+                f"●估算 {s['estimated_words']}詞 {est_pct} │ "
                 f"{dirty} │ {st.path.name}")
 
     def _ensure_polling(self) -> None:
@@ -795,7 +882,7 @@ class EditorPage(ttkb.Frame):
         self._edit_target_i = line_i
         self._edit_line_label.configure(text=f"第 {line_i + 1} 行")
         self._edit_line_var.set(self._state.lines[line_i].get("text") or "")
-        self._edit_frame.pack(fill="x", pady=(2, 0), before=self._ft_box)
+        self._edit_frame.pack(side="bottom", fill="x", pady=(2, 0), after=self._ft_box)
         self._edit_entry.focus_force()
         self._edit_entry.select_range(0, "end")
 
@@ -875,7 +962,7 @@ class EditorPage(ttkb.Frame):
         self._ask_ref = ref
         self._ask_label.configure(text=prompt, bootstyle="secondary")
         self._ask_var.set("")
-        self._ask_frame.pack(fill="x", pady=(2, 0), before=self._ft_box)
+        self._ask_frame.pack(side="bottom", fill="x", pady=(2, 0), after=self._ft_box)
         self._ask_entry.focus_force()
 
     def _hide_ask(self) -> None:
@@ -919,32 +1006,41 @@ class EditorPage(ttkb.Frame):
         self._update_time_display()
     def _refresh_finetune(self) -> None:
         st = self._state
+        # 重建前記住選取，重建後原樣還原（多選 + 每次編輯都 refresh，唔記住就
+        # 每次撳掣都跳返去冇選中，根本冇法連續操作）。
+        keep = list(self._ft_tree.selection())
         # ⚠️ selection_set 會同步觸發 <<TreeviewSelect>> → _on_ft_select → set_selection
         #    → notify → 呢度 —— 無限循環（實測 freeze）。程式化同步要 flag 擋住。
         self._ft_syncing = True
         try:
             self._ft_tree.delete(*self._ft_tree.get_children())
-            if not st.lines:
-                return
-            line_i = st.clamp_line_i(st.current_line_i)
-            line = st.lines[line_i]
-            for word_i, word in enumerate(line.get("words") or []):
-                for char_i, char in enumerate(word.get("chars") or []):
-                    self._ft_tree.insert("", "end", iid=f"{line_i},{word_i},{char_i}", values=(
-                        char.get("text", ""), word.get("text", ""),
-                        char.get("begin_ms", 0), char.get("end_ms", 0)),
-                        tags=("estimated",) if word.get("estimated") else ())
-            sel = st.selected
-            if sel is not None and sel[0] == line_i:
-                iid = ",".join(map(str, sel))
-                if self._ft_tree.exists(iid):
-                    self._ft_tree.selection_set(iid)
-                    self._ft_tree.see(iid)
+            if st.lines:
+                line_i = st.clamp_line_i(st.current_line_i)
+                line = st.lines[line_i]
+                for word_i, word in enumerate(line.get("words") or []):
+                    for char_i, char in enumerate(word.get("chars") or []):
+                        # 時間一律顯示時間碼（3:41.995）——裸毫秒用戶要心算位置
+                        self._ft_tree.insert(
+                            "", "end", iid=f"{line_i},{word_i},{char_i}", values=(
+                                char.get("text", ""), word.get("text", ""),
+                                timefmt.fmt_ms(char.get("begin_ms", 0)),
+                                timefmt.fmt_ms(char.get("end_ms", 0))),
+                            tags=("estimated",) if word.get("estimated") else ())
+                ids = [iid for iid in keep if self._ft_tree.exists(iid)]
+                if not ids and st.selected is not None and st.selected[0] == line_i:
+                    iid = ",".join(map(str, st.selected))
+                    if self._ft_tree.exists(iid):
+                        ids = [iid]
+                if ids:
+                    self._ft_tree.selection_set(ids)
+                    self._ft_tree.focus(ids[-1])
+                    self._ft_tree.see(ids[-1])
         finally:
             self._ft_syncing = False
         self._sync_ft_spinboxes()
 
     def _sync_ft_spinboxes(self) -> None:
+        """把選中字的時間寫入兩個輸入框（時間碼格式）。"""
         sel = self._state.selected
         if sel is None:
             self._begin_var.set("—")
@@ -953,8 +1049,8 @@ class EditorPage(ttkb.Frame):
         line = self._state.lines[sel[0]] if sel[0] < len(self._state.lines) else None
         char = models.char_of(line, sel[1], sel[2]) if line else None
         if char:
-            self._begin_var.set(str(char["begin_ms"]))
-            self._end_var.set(str(char["end_ms"]))
+            self._begin_var.set(timefmt.fmt_ms(char["begin_ms"]))
+            self._end_var.set(timefmt.fmt_ms(char["end_ms"]))
 
     def _on_ft_select(self, _event=None) -> None:
         if self._ft_syncing:
@@ -962,22 +1058,46 @@ class EditorPage(ttkb.Frame):
         sel = self._ft_tree.selection()
         if not sel:
             return
-        line_i, word_i, char_i = map(int, sel[0].split(","))
+        # 多選時以「焦點」嗰個為準（輸入框顯示佢），其餘留畀 ⊞ 均分 / ± 平移
+        focus = self._ft_tree.focus() or sel[0]
+        iid = focus if focus in sel else sel[0]
+        line_i, word_i, char_i = map(int, iid.split(","))
         self._state.set_selection((line_i, word_i, char_i))
 
+    def _ft_selection(self) -> list[tuple[int, int, int]]:
+        """面板目前選取的 ``(line_i, word_i, char_i)`` 清單（可多選）。"""
+        out: list[tuple[int, int, int]] = []
+        for iid in self._ft_tree.selection():
+            try:
+                line_i, word_i, char_i = (int(x) for x in iid.split(","))
+            except ValueError:
+                continue
+            out.append((line_i, word_i, char_i))
+        return out
+
     def _apply_ft(self) -> None:
-        """精確 ms 輸入（C1 三軌之一）：Spinbox 數值 → SetCharTiming。"""
+        """精確輸入（C1 三軌之一）：時間碼 → SetCharTiming。
+
+        接受 ``3:41.995`` / ``3:41`` / ``221.995``（秒）/ ``221995``（毫秒），
+        見 :mod:`ui.timefmt` —— 舊用戶打慣純 ms，唔會被打斷。
+        """
         sel = self._state.selected
         if sel is None:
             messagebox.showinfo("逐字微調", "先喺時間軸 / 面板選中一個字。")
             return
         try:
-            begin, end = int(self._begin_var.get()), int(self._end_var.get())
-        except ValueError:
-            messagebox.showwarning("格式錯誤", "begin / end 要係整數 ms。")
+            begin = timefmt.parse_time(self._begin_var.get())
+            end = timefmt.parse_time(self._end_var.get())
+        except timefmt.TimeParseError as exc:
+            messagebox.showwarning(
+                "時間格式",
+                f"{exc}\n\n可以填：3:41.995 ／ 3:41 ／ 221.995（秒）／ 221995（毫秒）")
             return
         if end <= begin:
-            messagebox.showwarning("格式錯誤", "end 要大過 begin。")
+            messagebox.showwarning(
+                "時間格式",
+                f"結束時間要大過開始時間"
+                f"（{timefmt.fmt_ms(begin)} → {timefmt.fmt_ms(end)}）。")
             return
         line = self._state.lines[sel[0]]
         char = models.char_of(line, sel[1], sel[2])
@@ -985,7 +1105,218 @@ class EditorPage(ttkb.Frame):
             return
         old = (int(char["begin_ms"]), int(char["end_ms"]))
         if (begin, end) != old:
+            info = self._commit_timing(sel, begin, end, coalesce=False)
+            self._set_timing_hint(char.get("text", ""), info["begin"], info["end"], info)
+
+    def _on_ripple_toggle(self) -> None:
+        """記住「連動順延」開關（跨 session），並即刻講清楚現在係開定關。"""
+        on = bool(self._ripple_var.get())
+        try:
+            settings.save({**settings.load(), "ripple_edit": on})
+        except OSError as exc:      # 寫唔到設定唔應該阻住編輯
+            LOGGER.warning("連動順延設定儲存失敗：%s", exc)
+        self._ft_hint_var.set(
+            "連動順延：開 —— 改時間撞到鄰字會自動推開整段（一個 undo 可還原）"
+            if on else "連動順延：關 —— 改時間只改嗰個字，撞到鄰字會提示重疊")
+
+    def _commit_timing(self, sel: tuple[int, int, int], begin: int, end: int, *,
+                       coalesce: bool = False) -> dict[str, int]:
+        """統一套用逐字時間；「連動順延」開咗就先為該字騰位。
+
+        Args:
+            sel: ``(line_i, word_i, char_i)``。
+            begin / end: 新時間（可能被夾）。
+            coalesce: 連撳箭頭時合併 undo（見 :meth:`_push_timing`）。
+
+        Returns:
+            ``{"begin", "end" 實際套用值, "after" 其後順延 ms,
+            "before" 其前前移 ms, "overlap" 未處理的重疊 ms}`` —— 提示列要用
+            真實位移講嘢，唔好照抄 overlap。
+        """
+        line = self._state.lines[sel[0]]
+        chars = models.iter_flat_chars(line)
+        flat_i = models.flat_index_map(line).get((sel[1], sel[2]))
+        info = {"begin": begin, "end": end, "after": 0, "before": 0, "overlap": 0}
+        if flat_i is None:
+            return info
+
+        next_begin = (int(chars[flat_i + 1][2]["begin_ms"])
+                      if flat_i + 1 < len(chars) else None)
+        prev_end = (int(chars[flat_i - 1][2]["end_ms"]) if flat_i > 0 else None)
+        after = max(0, end - next_begin) if next_begin is not None else 0
+        before = max(0, prev_end - begin) if prev_end is not None else 0
+
+        if self._ripple_var.get() and before:
+            # 前面最多可以退到 0。唔夠位就**夾住自己**（唔好硬推去負數，
+            # 亦唔好靜靜留低一個重疊）—— 手感同「拖到牆就停」一致。
+            earliest = min(int(c["begin_ms"]) for _w, _c, c in chars[:flat_i])
+            if before > earliest:
+                before = earliest
+                begin = prev_end - before
+                info["begin"] = begin
+
+        if self._ripple_var.get() and (after or before):
+            cmd = SetCharTimingRipple(sel[0], flat_i, (begin, end),
+                                      after_delta=after,
+                                      before_delta=-before)
+            self._state.push(cmd)
+            info["after"] = cmd.shifted_after
+            info["before"] = -cmd.shifted_before      # 負數 → 講「前移」
+            return info
+
+        info["overlap"] = max(after, before)
+        if coalesce:
+            self._push_timing(sel, begin, end)
+        else:
+            char = models.char_of(line, sel[1], sel[2])
+            old = (int(char["begin_ms"]), int(char["end_ms"]))
             self._state.push(SetCharTiming(sel[0], sel[1], sel[2], old, (begin, end)))
+        return info
+
+    def _set_timing_hint(self, text: str, begin: int, end: int,
+                         info: dict[str, int]) -> None:
+        """提示列：講清楚改咗乜、有冇推鄰字、有冇未處理的重疊。"""
+        msg = (f"「{text}」{timefmt.fmt_ms(begin)} → {timefmt.fmt_ms(end)}"
+               f"（{end - begin}ms）")
+        if info["after"]:
+            msg += f"　其後順延 {info['after']:+d}ms"
+        elif info["before"]:
+            msg += f"　其前前移 {info['before']:+d}ms"
+        elif info["overlap"]:
+            msg += f"　⚠ 與鄰字重疊 {info['overlap']}ms（開「連動」可自動推開）"
+        self._ft_hint_var.set(msg)
+
+    def _spin_edge(self, which: str, new_ms: int) -> int | None:
+        """▲▼ 改「開始」或「結束」其中一邊，**即時套用**。
+
+        箭頭語意係「拉／縮這一邊」，唔係移動整個字 —— 移動整個字交返「平移」掣，
+        兩個動作唔應該搶同一個控制。
+
+        Args:
+            which: ``"begin"`` 或 ``"end"``。
+            new_ms: 箭頭試算出的新毫秒值（未夾）。
+
+        Returns:
+            實際套用的毫秒值（夾過邊界）；``None`` = 未選中字 → 輸入框唔郁
+            （否則會出現「顯示 0:00.000 但其實乜都冇改」的假狀態）。
+        """
+        sel = self._state.selected
+        if sel is None or sel[0] >= len(self._state.lines):
+            return None
+        char = models.char_of(self._state.lines[sel[0]], sel[1], sel[2])
+        if char is None:
+            return None
+        begin, end = int(char["begin_ms"]), int(char["end_ms"])
+        if which == "begin":
+            begin = max(0, min(new_ms, end - 1))      # 最少留 1ms 畀這個字
+        else:
+            end = max(new_ms, begin + 1)
+        if (begin, end) == (int(char["begin_ms"]), int(char["end_ms"])):
+            return begin if which == "begin" else end
+        info = self._commit_timing(sel, begin, end, coalesce=True)
+        self._set_timing_hint(char.get("text", ""), info["begin"], info["end"], info)
+        return info["begin"] if which == "begin" else info["end"]
+
+    def _push_timing(self, sel: tuple[int, int, int], begin: int, end: int,
+                     *, window_s: float = 1.5) -> None:
+        """改一個字的 ``[begin, end]``；同一個字連續微調合併成**一個** undo 步驟。
+
+        連撳 10 下 ▲ 如果入 10 個 command，用戶要 undo 10 次先返到原位 ——
+        佢心目中係「一個動作」（2026-11-05 加箭頭時刻意處理）。
+        """
+        cmd = self._spin_cmd
+        now = time.monotonic()
+        if (cmd is not None and self._spin_sel == sel
+                and now - self._spin_at < window_s
+                and self._state.undo_stack.peek_undo() is cmd):
+            cmd.new = (begin, end)
+            self._state.reapply(cmd)          # 原地再套用，唔新增 undo 步驟
+        else:
+            char = models.char_of(self._state.lines[sel[0]], sel[1], sel[2])
+            if char is None:
+                return
+            old = (int(char["begin_ms"]), int(char["end_ms"]))
+            cmd = SetCharTiming(sel[0], sel[1], sel[2], old, (begin, end))
+            self._state.push(cmd)
+            self._spin_cmd, self._spin_sel = cmd, sel
+        self._spin_at = now
+
+    def _nudge(self, delta_ms: int) -> None:
+        """± 平移：選取字整體移動，字距不變（最常見的修正動作）。"""
+        sels = self._ft_selection()
+        if not sels:
+            sel = self._state.selected
+            if sel is None:
+                messagebox.showinfo("平移", "先喺上面揀一個字（Ctrl / Shift 可多選）。")
+                return
+            sels = [sel]
+        line_i = sels[0][0]
+        if any(s[0] != line_i for s in sels):
+            messagebox.showinfo("平移", "一次只可以平移同一行嘅字。")
+            return
+        self._state.push(NudgeChars(line_i, [(s[1], s[2]) for s in sels], delta_ms))
+        self._ft_hint_var.set(f"已平移 {len(sels)} 個字 {delta_ms:+d} ms")
+
+    def _redistribute(self, *, keep_ends: bool) -> None:
+        """⊞ 均分 / ⊞ 全段：把選取範圍的逐字時間平均重攤。
+
+        ``keep_ends=True`` 保留首末字（用戶已用耳對好兩個錨），只攤中間；
+        ``False`` 全段重攤 —— 漏字崩壞用呢個。
+        """
+        st = self._state
+        sels = self._ft_selection()
+        if not sels:
+            if st.selected is None:
+                messagebox.showinfo("均分", "先喺上面揀字（Ctrl / Shift 可多選）。")
+                return
+            sels = [st.selected]
+        line_i = sels[0][0]
+        if any(s[0] != line_i for s in sels):
+            messagebox.showinfo("均分", "一次只可以均分同一行嘅字。")
+            return
+        line = st.lines[line_i]
+        index = models.flat_index_map(line)
+        flat = sorted(index[(s[1], s[2])] for s in sels if (s[1], s[2]) in index)
+        if not flat:
+            return
+        plan = models.span_plan(line, flat[0], flat[-1], keep_ends=keep_ends)
+        if plan is None:
+            if keep_ends:
+                messagebox.showwarning(
+                    "均分",
+                    "「⊞ 均分」要最少揀 3 個字，而且首字結束時間要早過末字開始時間"
+                    "（中間要有位攤）。\n\n如果係漏了一大段字，改用「⊞ 全段」。")
+            else:
+                messagebox.showwarning("均分", "最少要揀 2 個字。")
+            return
+        st.push(RedistributeSpan(line_i, flat[0], flat[-1], keep_ends=keep_ends))
+        label = "均分" if keep_ends else "全段重攤"
+        self._ft_hint_var.set(
+            f"已{label} {plan['count']} 字：{timefmt.fmt_span(plan['begin'], plan['end'])}"
+            f"　每字 {plan['per_char_ms']:.0f}ms")
+
+    def _repair_line(self) -> None:
+        """✚ 修補：自動偵測本行時長崩壞（漏字）並重攤。"""
+        st = self._state
+        if not st.lines:
+            return
+        line_i = st.clamp_line_i(st.current_line_i)
+        plan = models.repair_plan(st.lines[line_i])
+        if plan["mode"] == "none":
+            self._ft_hint_var.set("本行時長正常，冇嘢要修補。")
+            return
+        cmd = RepairLine(line_i)
+        st.push(cmd)
+        rep = cmd.report
+        if rep.get("mode") == "line":
+            self._ft_hint_var.set(
+                f"本行時長崩壞（中位 {rep['median_ms']:.0f}ms、最長 {rep['longest_ms']}ms）"
+                f" → 已重攤 {rep['count']} 字："
+                f"{timefmt.fmt_span(rep['begin'], rep['end'])}")
+        elif rep.get("mode") == "spans":
+            self._ft_hint_var.set(f"已補 {rep['count']} 個冇時長嘅字。")
+        else:
+            self._ft_hint_var.set("冇改動。")
 
     # ------------------------------------------------------------------
     # 狀態顯示
@@ -1201,10 +1532,8 @@ class EditorPage(ttkb.Frame):
 
 
 def _fmt_ms(ms: int) -> str:
-    ms = max(0, int(ms))
-    minutes, rest = divmod(ms, 60_000)
-    seconds, msec = divmod(rest, 1000)
-    return f"{minutes:02d}:{seconds:02d}.{msec:03d}"
+    """時間碼 ``3:41.995``（委派 :func:`ui.timefmt.fmt_ms`，保留舊名畀舊 call site）。"""
+    return timefmt.fmt_ms(ms)
 
 
 def _describe_style(style: dict) -> str:

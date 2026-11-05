@@ -83,7 +83,20 @@ class EditorState:
     # ------------------------------------------------------------------
 
     def push(self, cmd: commands.Command) -> None:
-        self.undo_stack.push(cmd, self)
+        """執行 + 入 undo 棧；noop（例如均分冇位可攤）唔標髒、唔通知。"""
+        if not self.undo_stack.push(cmd, self):
+            return
+        self._refresh_texts()
+        self.dirty = True
+        self.notify("edit")
+
+    def reapply(self, cmd: commands.Command) -> None:
+        """原地再套用**已經喺棧頂**嘅 command（唔新增 undo 步驟）。
+
+        用途：逐字微調的 ▲▼ 連撳 10 下，用戶心目中係「一個動作」，唔想
+        undo 10 次先返到原位。呼叫方負責將 ``cmd.new`` 改成最新值。
+        """
+        cmd.apply(self)
         self._refresh_texts()
         self.dirty = True
         self.notify("edit")
