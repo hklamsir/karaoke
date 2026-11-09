@@ -206,9 +206,9 @@ main.py    run_ui.bat    requirements.txt    requirements-ui.txt    ui\    asset
 
 | 位置 | 睇法 |
 |---|---|
-| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.5` |
-| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.5)` |
-| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.5` |
+| 啟動視窗 | `run_ui.bat` 第一行：`Karaoke AI Subtitler   v1.0.6` |
+| 介面 | 視窗標題列：`Karaoke AI Subtitler - Designed by Lamsir  (v1.0.6)` |
+| 命令列 | `.venv-ui\Scripts\python.exe main.py --version` → `main.py 1.0.6` |
 
 回報問題時請一併附上版本號，唔然冇辦法對照當時的 code。
 
@@ -317,8 +317,8 @@ karaoke-vX.Y.Z/
 包內有 `tests/`，缺任何一件都會令它變成死檔（裝不到 pytest / 噴 unknown marker /
 要人手記長指令）。三者由 `tools/build_release.py` 的 `TOP_FILES` 收錄。
 
-實測（v1.0.5，2026-11-05，逐字時間碼／跨字均分／連動順延）：**70 個檔案、原始 0.84 MB、zip 0.35 MB**；
-解壓到空目錄（無 `_smoke/`）直接跑 `pytest` → **170 passed**，與 repo 內一致。
+實測（v1.0.6，2026-11-09，雙行歌詞／進度條／對齊與字型）：**71 個檔案、原始 0.89 MB、zip 0.37 MB**；
+解壓到空目錄（無 `_smoke/`）直接跑 `pytest -m "not slow"` → **184 passed**，與 repo 內一致。
 
 > ⚠️ 每次改動 `tests/` 或新增根目錄模組後，這個數字都會變。出包前必須重新實測
 > （`tools.build_release.collect()` 可直接數檔數），**唔好照抄上一版**。
@@ -336,7 +336,7 @@ karaoke-vX.Y.Z/
   run_tests.bat -m "not slow"   快速回歸（約 10 秒）
   ```
 
-  判準是 **exit code 0**。現時 **139 條全綠、0 xfail**（審查報告 §9.2 全部案例已實作）；
+  判準是 **exit code 0**。現時 **184 條全綠、0 xfail**（快速回歸，另 10 條標記 `slow` 的整合測試要真實 ffmpeg）；
   需要真實 ffmpeg 的整合測試在無 ffmpeg 的機器會自動 skip，不會假綠。
   新增功能若先寫 `xfail(strict=True)` 契約，未實作時 xfail 屬預期，實作完成後
   會 XPASS 並令 suite 變紅 —— 那是提醒要拆標記，不是壞掉。
