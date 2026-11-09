@@ -683,10 +683,28 @@ class EditorPage(ttkb.Frame):
         output = source.with_name(f"{source.stem}_karaoke.mp4")
         strip_punct = bool((doc.get("source") or {}).get("strip_punctuation", True))
         import main as _main
+        from dataclasses import replace as _replace
         _, doc_style = _main.timings_doc_to_lines(doc)
+        # ADR-006 補強：座標系要跟**燒錄片**，唔係 timings 的出處。
+        # 舊 timings 可能來自 480p（640×480），直接沿用會令 16:9 的片字幕走位／變形。
+        # 按高度比例換算字級／留白／描邊，令視覺大小保持不變（之後 home_style 會覆寫）。
+        if ffprobe:
+            try:
+                src_w, src_h = _main.probe_video_size(ffprobe, source)
+                old_h = doc_style.play_res_y or src_h
+                if (src_w, src_h) != (doc_style.play_res_x, old_h):
+                    k = src_h / old_h if old_h else 1.0
+                    LOGGER.info("燒錄座標系 %dx%d → %dx%d（按高度 ×%.2f）",
+                                doc_style.play_res_x, old_h, src_w, src_h, k)
+                    doc_style = _replace(
+                        doc_style, play_res_x=src_w, play_res_y=src_h,
+                        font_size=max(8, round(doc_style.font_size * k)),
+                        margin_v=round(doc_style.margin_v * k),
+                        outline_width=round(doc_style.outline_width * k, 1))
+            except Exception as exc:   # noqa: BLE001 — 讀唔到就沿用原座標系
+                LOGGER.warning("讀取燒錄片解析度失敗（%s），沿用 timings 座標系", exc)
         if home_style:
             # 顯式覆寫：連舊檔 style 缺欄位都保證跟主頁
-            from dataclasses import replace as _replace
             doc_style = _replace(doc_style, **home_style)
         ass_text = _main.render_timings(doc, doc_style, strip_punctuation=strip_punct)
         # 原子寫入（§2.8）：燒錄中途斷電唔應該留下一份半截 .ass 覆蓋舊的
@@ -731,6 +749,7 @@ class EditorPage(ttkb.Frame):
         def worker() -> None:
             try:
                 _main.burn_video(source, ass_path, output, progress_cb=prog.report,
+                                 percent_cb=prog.set_fraction,
                                  cancel_event=cancel_event)
             except _main.TaskCancelled:
                 # 取消唔算失敗：唔彈 error dialog（半截輸出檔已由 burn_subtitles 刪除）

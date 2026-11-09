@@ -53,6 +53,8 @@ class StageProgress(ttkb.Frame):
         self._queue: queue.Queue = queue.Queue()
         self._states: dict[str, str] = {s: "pending" for s in self._stages}
         self._chips: dict[str, ttkb.Label] = {}
+        #: 外部已用 set_fraction() 喂真實進度 → 唔好再被 report() 打回跑馬燈
+        self._determinate = False
 
         chips_row = ttkb.Frame(self, bootstyle="light")
         chips_row.pack(fill="x")
@@ -93,6 +95,18 @@ class StageProgress(ttkb.Frame):
     def log(self, text: str) -> None:
         self._queue.put(("", "LOG:" + text))
 
+    def set_fraction(self, pct: float, message: str | None = None) -> None:
+        """餵入真實百分比（0–100），把進度條由跑馬燈切成確定模式（ADR-028）。
+
+        背景 thread 可直接呼叫。之後同階段的 ``report()`` 唔會再打回
+        indeterminate —— 直到 ``reset()`` / ``succeed()``。
+
+        Args:
+            pct: 0–100；超出範圍會 clamp。
+            message: 同時更新嘅說明文字；``None`` = 唔改。
+        """
+        self._queue.put(("__pct__", f"{pct}|{message or ''}"))
+
     def reset(self) -> None:
         self._queue.put(("__reset__", ""))
 
@@ -117,13 +131,28 @@ class StageProgress(ttkb.Frame):
 
     def _apply(self, stage: str, message: str) -> None:
         if stage == "__reset__":
+            self._determinate = False
             self._states = {s: "pending" for s in self._stages}
             self._refresh_chips()
             self._bar.stop()
             self._bar.configure(mode="determinate", value=0)
             self._msg_var.set("待命")
             return
+        if stage == "__pct__":
+            raw, _sep, msg = message.partition("|")
+            try:
+                pct = float(raw)
+            except ValueError:
+                return
+            self._determinate = True
+            self._bar.stop()
+            self._bar.configure(mode="determinate", maximum=100,
+                                value=max(0.0, min(100.0, pct)))
+            if msg:
+                self._msg_var.set(msg)
+            return
         if stage == "__fail__":
+            self._determinate = False
             if self._current_stage():
                 self._states[self._current_stage()] = "error"
             self._refresh_chips()
@@ -132,6 +161,7 @@ class StageProgress(ttkb.Frame):
             self._msg_var.set(message)
             return
         if stage == "__done__":
+            self._determinate = False
             for s in self._states:
                 if self._states[s] in ("pending", "active"):
                     self._states[s] = "done"
@@ -148,11 +178,14 @@ class StageProgress(ttkb.Frame):
             self._states[stage] = "done" if not message else "active"
             self._refresh_chips()
             self._msg_var.set(f"{stage}：{message}" if message else f"{stage} 完成")
-            # 上傳階段時長波動大（3 秒~3 分鐘）→ indeterminate（計劃書 §5.2）
+            # 上傳階段時長波動大（3 秒~3 分鐘）→ 未有真實百分比前用跑馬燈
+            # （計劃書 §5.2）；set_fraction() 餵過數就一路保持確定模式。
             if message and self._states[stage] == "active":
-                self._bar.configure(mode="indeterminate")
-                self._bar.start(24)
+                if not self._determinate:
+                    self._bar.configure(mode="indeterminate")
+                    self._bar.start(24)
             else:
+                self._determinate = False
                 self._bar.stop()
                 self._bar.configure(mode="determinate")
                 self._advance_determinate(stage)

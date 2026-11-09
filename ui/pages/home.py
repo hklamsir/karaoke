@@ -34,10 +34,30 @@ _OUTLINE_WIDTHS = [("自動", 0.0), ("幼 2", 2.0), ("中 3", 3.0), ("粗 4", 4.
 
 #: 反查表：ASS alignment 數值 → 中文名（開啟舊檔同步樣式時用）
 _ALIGN_NAME = {code: name for name, code in _ALIGNMENTS}
+
+#: ADR-030：雙行水平錯位（% 畫面闊度）；對應 ASS 的 \pos x 偏移
+_POSITIONS = [("偏左", -10), ("居中", 0), ("偏右", 10)]
+_POS_NAME = {value: name for name, value in _POSITIONS}
+
+#: 常見中文字型關鍵字（排序用）：命中就排前，方便一次過揀到明體／黑體／楷體
+_CJK_FONT_HINTS = (
+    "mingliu", "pmingliu", "jhenghei", "yahei", "simsun", "simhei", "kaiti",
+    "dfkai", "fangsong", "noto sans cjk", "noto serif cjk", "source han",
+    "heiti", "songti", "kaiti", "ms gothic", "ms mincho", "yu gothic",
+    "yu mincho", "meiryo", "pingfang", "hiragino", "wenquanyi", "droid sans fallback",
+    "lihei", "uming", "ukai",
+)
 #: 反查表：描邊 px → 中文名
 _OUTLINE_NAME = {width: name for name, width in _OUTLINE_WIDTHS}
 
 _DEFAULT_FONT = "Microsoft JhengHei"
+
+#: 找不到儲存字型時的優先序（全部要係「實際存在」的字型名；Windows 10/11 常見組合）
+_FONT_PREFERENCE = (
+    "Microsoft JhengHei", "Microsoft JhengHei UI", "Microsoft YaHei",
+    "PingFang TC", "Noto Sans CJK TC", "Noto Sans CJK HK", "Source Han Sans TC",
+    "PMingLiU", "MingLiU", "SimSun", "Noto Serif CJK TC",
+)
 
 #: `#RRGGBB` / `RRGGBB` —— 色塊只認呢個格式（Tk 對 `#0000F` 之類會直接拋 TclError）
 _HEX_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
@@ -151,8 +171,12 @@ class HomePage(ttkb.Frame):
         row.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
         ttkb.Label(row, text="字體", width=10, bootstyle="secondary").pack(side="left")
         families = self._font_families()
-        self._font_var = tk.StringVar(
-            value=str(self._saved_style.get("font_name") or _DEFAULT_FONT))
+        saved_font = str(self._saved_style.get("font_name") or "")
+        if saved_font not in families:
+            if saved_font:
+                LOGGER.info("儲存的字型 %r 未安裝，自動改用可用字型", saved_font)
+            saved_font = self._pick_font(families)
+        self._font_var = tk.StringVar(value=saved_font)
         self._font_combo = ttkb.Combobox(row, textvariable=self._font_var,
                                          values=families, width=26)
         self._font_combo.pack(side="left", padx=(0, theme.SPACE))
@@ -218,7 +242,7 @@ class HomePage(ttkb.Frame):
         combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
 
         row = ttkb.Frame(box, bootstyle="light")
-        row.pack(fill="x", padx=theme.SPACE, pady=(2, theme.SPACE))
+        row.pack(fill="x", padx=theme.SPACE, pady=(2, 2))
         ttkb.Label(row, text="底部留白", width=10, bootstyle="secondary").pack(side="left")
         self._margin_var = tk.IntVar(value=self._int_saved("margin_v", 0))
         scale = ttkb.Scale(row, from_=0, to=400, variable=self._margin_var,
@@ -228,6 +252,53 @@ class HomePage(ttkb.Frame):
                                         bootstyle="secondary",
                                         font=(theme.mono_font_family(), 9))
         self._margin_label.pack(side="left", padx=theme.SPACE)
+
+        # ADR-027：雙行歌詞（奇數句上行、偶數句下行，每行隔兩句才換）
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
+        self._dual_var = tk.BooleanVar(value=bool(self._saved_style.get("dual_line", False)))
+        ttkb.Checkbutton(row, text="雙行歌詞", variable=self._dual_var,
+                         bootstyle="primary-round-toggle",
+                         command=self._refresh_preview).pack(side="left")
+        ttkb.Label(row, text="換行延遲", bootstyle="secondary").pack(
+            side="left", padx=(theme.SPACE, 2))
+        self._delay_var = tk.IntVar(value=self._int_saved("switch_delay_ms", 1000))
+        delay_spin = ttkb.Spinbox(row, textvariable=self._delay_var, from_=0, to=3000,
+                                  increment=100, width=6, command=self._refresh_preview)
+        delay_spin.pack(side="left")
+        delay_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="ms", bootstyle="secondary").pack(side="left", padx=(2, 0))
+
+        # ADR-030：上下行水平錯位（原片效果 = 上偏左、下偏右）
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
+        ttkb.Label(row, text="上行位置", width=8, bootstyle="secondary").pack(side="left")
+        self._up_pos_var = tk.StringVar(
+            value=_POS_NAME.get(self._int_saved("up_offset_pct", 0), "居中"))
+        up_combo = ttkb.Combobox(row, textvariable=self._up_pos_var, state="readonly",
+                                 values=[n for n, _ in _POSITIONS], width=6)
+        up_combo.pack(side="left")
+        up_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="下行位置", width=8, bootstyle="secondary").pack(
+            side="left", padx=(theme.SPACE, 0))
+        self._down_pos_var = tk.StringVar(
+            value=_POS_NAME.get(self._int_saved("down_offset_pct", 0), "居中"))
+        down_combo = ttkb.Combobox(row, textvariable=self._down_pos_var, state="readonly",
+                                   values=[n for n, _ in _POSITIONS], width=6)
+        down_combo.pack(side="left")
+        down_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
+
+        # ADR-029：整體時間平移（換另一版剪輯的 MV 時微調；只影響 render）
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, theme.SPACE))
+        ttkb.Label(row, text="整體平移", width=10, bootstyle="secondary").pack(side="left")
+        self._shift_var = tk.IntVar(value=self._int_saved("shift_ms", 0))
+        shift_spin = ttkb.Spinbox(row, textvariable=self._shift_var, from_=-5000, to=5000,
+                                  increment=50, width=7, command=self._refresh_preview)
+        shift_spin.pack(side="left", padx=4)
+        shift_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="ms（正值 = 全部延後；唔會改 timings 原始時間）",
+                   bootstyle="secondary", font=(theme.ui_font_family(), 8)).pack(side="left")
 
     # ------------------------------------------------------------------
     # 左欄 · 進階（預設收埋，B2）
@@ -296,6 +367,12 @@ class HomePage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _build_right(self, parent) -> None:
+        # ⚠️ 進度框必須**最先** pack（side="bottom"）：Tk 空間不足時會裁掉最後
+        #    pack 的 widget，而右欄冇 scroll。用戶回報「生成／燒錄冇進度條」，
+        #    根因之一就係進度框被裁走（同 burn_dialog.py 踩過嘅坑一樣）。
+        prog_box = ttkb.LabelFrame(parent, text="進度", bootstyle="light")
+        prog_box.pack(side="bottom", fill="x")
+
         box = ttkb.LabelFrame(parent, text="即時預覽", bootstyle="light")
         box.pack(fill="x", pady=(0, theme.SPACE))
         self._preview = StylePreviewCanvas(box)
@@ -336,9 +413,7 @@ class HomePage(ttkb.Frame):
         ttkb.Button(parent, text="⧉ 複製等價 CLI 指令", bootstyle="secondary-link",
                     takefocus=False, command=self._copy_cli).pack(fill="x", pady=(0, theme.SPACE))
 
-        box = ttkb.LabelFrame(parent, text="進度", bootstyle="light")
-        box.pack(fill="x", pady=(0, 0))
-        self._progress = StageProgress(box)
+        self._progress = StageProgress(prog_box)
         self._progress.pack(fill="x", padx=theme.SPACE, pady=theme.SPACE)
 
     def restyle(self) -> None:
@@ -360,9 +435,37 @@ class HomePage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _font_families(self) -> list[str]:
+        """系統字型清單：**中文字型排前**（ADR-030）。
+
+        tkinter 會列出全部已安裝字型（幾百個），英文體在前會令用戶以為「冇中文
+        字型可揀」。按常見中文字型關鍵字分成兩組，中文組排前並按名排序。
+        """
         from ..widgets.style_preview import tk_font_families_safe
-        families = tk_font_families_safe()
-        return families or [_DEFAULT_FONT]
+
+        families = tk_font_families_safe() or [_DEFAULT_FONT]
+
+        def _is_cjk(name: str) -> bool:
+            low = name.lower()
+            return any(hint in low for hint in _CJK_FONT_HINTS)
+
+        cjk = sorted(f for f in families if _is_cjk(f))
+        other = sorted(f for f in families if not _is_cjk(f))
+        return cjk + other
+
+    @staticmethod
+    def _pick_font(families: list[str]) -> str:
+        """由優先序揀第一個**實際存在**的字型；全部冇就退第一個。
+
+        ⚠️ 實測：Windows 只裝了 `Microsoft JhengHei UI`，冇 `Microsoft JhengHei`
+        本體 —— 寫死名字會令 libass 靜默 fallback 去別的字型（用戶見到「揀了都
+        唔似」）。所以初始值一定要對照系統清單。
+        """
+        if not families:
+            return _DEFAULT_FONT
+        for name in _FONT_PREFERENCE:
+            if name in families:
+                return name
+        return families[0]
 
     # ------------------------------------------------------------------
     # 樣式狀態：snapshot / apply（ADR-015：主頁 = 燒錄權威來源）
@@ -396,6 +499,14 @@ class HomePage(ttkb.Frame):
             margin_v = max(0, int(self._margin_var.get()))
         except (tk.TclError, ValueError):
             margin_v = 0
+        try:
+            delay_ms = max(0, int(self._delay_var.get()))
+        except (tk.TclError, ValueError):
+            delay_ms = 1000
+        try:
+            shift_ms = int(self._shift_var.get())
+        except (tk.TclError, ValueError):
+            shift_ms = 0
         return {
             "font_name": self._font_var.get().strip() or _DEFAULT_FONT,
             "font_size": font_size,
@@ -405,6 +516,14 @@ class HomePage(ttkb.Frame):
             "alignment": dict(_ALIGNMENTS).get(self._align_var.get(), 2),
             "margin_v": margin_v,
             "outline_width": self._outline_width_value(),
+            # ADR-027：雙行歌詞（舊 settings.json 冇呢兩個 key → 自動單行）
+            "dual_line": bool(self._dual_var.get()),
+            "switch_delay_ms": delay_ms,
+            # ADR-029：整體平移（正值 = 延後）
+            "shift_ms": shift_ms,
+            # ADR-030：上下行水平錯位
+            "up_offset_pct": dict(_POSITIONS).get(self._up_pos_var.get(), 0),
+            "down_offset_pct": dict(_POSITIONS).get(self._down_pos_var.get(), 0),
         }
 
     def apply_style(self, style: dict[str, Any]) -> None:
@@ -420,7 +539,10 @@ class HomePage(ttkb.Frame):
             return
         font = str(style.get("font_name") or "").strip()
         if font:
-            self._font_var.set(font)
+            if font in self._font_families():
+                self._font_var.set(font)
+            else:
+                LOGGER.warning("timings.json 的字型 %r 未安裝，沿用目前字型", font)
         for key, var in self._color_vars.items():
             value = str(style.get(f"{key}_color") or "").strip()
             if len(value) == 6:
@@ -440,6 +562,15 @@ class HomePage(ttkb.Frame):
         outline = float(style.get("outline_width") or 0.0)
         # 對唔上預設級距（例如人手改過 JSON）就直接顯示 px 值，唔好靜靜當「自動」
         self._outline_var.set(_OUTLINE_NAME.get(outline, f"{outline:g}"))
+        # ADR-027：舊檔冇呢兩個 key → 保持單行、延遲沿用預設
+        if "dual_line" in style:
+            self._dual_var.set(bool(style.get("dual_line")))
+        if style.get("switch_delay_ms") is not None:
+            self._delay_var.set(int(style.get("switch_delay_ms") or 1000))
+        if style.get("shift_ms") is not None:
+            self._shift_var.set(int(style.get("shift_ms") or 0))
+        self._up_pos_var.set(_POS_NAME.get(int(style.get("up_offset_pct") or 0), "居中"))
+        self._down_pos_var.set(_POS_NAME.get(int(style.get("down_offset_pct") or 0), "居中"))
         self._refresh_preview()
 
     def _schedule_style_save(self) -> None:
@@ -595,7 +726,11 @@ class HomePage(ttkb.Frame):
             secondary_color=self._color_vars["secondary"].get(),
             outline_color=self._color_vars["outline"].get(),
             outline_width=self._outline_width_value(),
-            margin_v=margin)
+            margin_v=margin,
+            dual_line=bool(self._dual_var.get()),
+            alignment=dict(_ALIGNMENTS).get(self._align_var.get(), 2),
+            up_offset_pct=dict(_POSITIONS).get(self._up_pos_var.get(), 0),
+            down_offset_pct=dict(_POSITIONS).get(self._down_pos_var.get(), 0))
         self._schedule_style_save()
 
     def _outline_width_value(self) -> float:
@@ -631,6 +766,14 @@ class HomePage(ttkb.Frame):
                 alignment=snap["alignment"],
                 outline_width=snap["outline_width"],
                 margin_v=snap["margin_v"],
+                # ADR-027：雙行歌詞開關
+                dual_line=bool(snap.get("dual_line", False)),
+                switch_delay_ms=int(snap.get("switch_delay_ms") or 1000),
+                # ADR-029：整體平移
+                shift_ms=int(snap.get("shift_ms") or 0),
+                # ADR-030：上下行水平錯位
+                up_offset_pct=int(snap.get("up_offset_pct") or 0),
+                down_offset_pct=int(snap.get("down_offset_pct") or 0),
             )
         except (ValueError, tk.TclError):
             messagebox.showerror("樣式參數錯誤", "字級 / 留白要係整數。", parent=self)
@@ -695,7 +838,8 @@ class HomePage(ttkb.Frame):
         def worker() -> None:
             import main
             try:
-                result = main.generate_timings(opts, progress_cb=self._progress.report)
+                result = main.generate_timings(opts, progress_cb=self._progress.report,
+                                               percent_cb=self._progress.set_fraction)
             except main.TaskCancelled:
                 # 取消唔係錯誤 → 唔彈 error dialog，只標記狀態（ADR-025）
                 self._progress.fail("已取消（未產生新檔）")

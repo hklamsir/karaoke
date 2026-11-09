@@ -486,11 +486,26 @@ class StyleConfig:
     margin_v: int = 0                     # 0 = 由 render 按 PlayResY 推算
     outline_width: float = 0.0            # 0 = 由 render 按 PlayResY 推算
 
+    #: 雙行交替（ADR-027）：奇數句固定上行、偶數句固定下行，每行隔兩句才換。
+    #: False（預設）= 舊行為，一句一個 event，完全唔會變。
+    dual_line: bool = False
+    #: 雙行換行延遲（ms）：下一句「開唱」之後幾耐，才把上一句換成再下一句。
+    switch_delay_ms: int = 1000
+    #: 雙行行距（px，上行底部同下行底部的距離）；0 = 按 font_size × 1.45 推算
+    line_gap: int = 0
+    #: 整體時間平移（ms，ADR-029）：正值 = 字幕整體延後。用於換了另一版剪輯的 MV
+    #: （前奏長度唔同）。**唔會改 timings 的原始時間**，只喺 render 時偏移。
+    shift_ms: int = 0
+    #: 雙行水平錯位（% 畫面闊度，ADR-030）：負 = 偏左、正 = 偏右。0 = 居中。
+    up_offset_pct: int = 0
+    down_offset_pct: int = 0
+
     def resolved(self) -> "StyleConfig":
         """把 0 值換算成相對 PlayResY 的預設值。"""
         margin_v = self.margin_v or max(24, round(self.play_res_y * 0.055))
         outline = self.outline_width or max(2.0, round(self.play_res_y / 360, 1))
-        return replace(self, margin_v=margin_v, outline_width=outline)
+        gap = self.line_gap or max(24, round(self.font_size * 1.45))
+        return replace(self, margin_v=margin_v, outline_width=outline, line_gap=gap)
 
 
 # ---------------------------------------------------------------------------
@@ -736,16 +751,108 @@ def separate_vocals(wav: Path, workdir: Path) -> Path:
 # Stage 3 · 本地音頻上傳（ADR-003）
 # ---------------------------------------------------------------------------
 
-def upload_audio(wav: Path) -> str:
+def _upload_file_with_progress(wav: Path, progress_cb: Callable[[float], None]) -> dict[str, Any]:
+    """自己砌 multipart POST，邊傳邊報位元組進度（ADR-028）。
+
+    ⚠️ 為何唔用 ``dashscope.Files.upload``：官方 SDK 喺 ``_upload_form()`` 一次
+    ``f.read()`` 讀完整個檔才交畀 transport，中間**冇任何回調點** —— 想有真進度
+    只能自己發請求。契約同 legacy SDK 完全一致：
+    ``POST {base_http_api_url}/files``、``Authorization: Bearer``、
+    multipart 欄位名 ``files``、回應 ``output.uploaded_files[0].file_id``。
+
+    Args:
+        wav: 要上傳的音訊檔。
+        progress_cb: ``(pct)``，0–100；最多回調約 200 次。
+
+    Returns:
+        伺服器回應 JSON。
+
+    Raises:
+        Exception: 任何網絡／HTTP 錯誤（呼叫方會 fallback 去 SDK）。
+    """
+    import uuid
+
+    import requests
+
+    import dashscope
+
+    size = wav.stat().st_size
+    boundary = "----karaoke" + uuid.uuid4().hex
+    head = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="files"; filename="{wav.name}"\r\n'
+        "Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8")
+    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+    total = len(head) + size + len(tail)
+    step = max(1, total // 200)
+    sent = 0
+    last_reported = 0
+
+    def _tick() -> None:
+        nonlocal last_reported
+        if sent - last_reported < step and sent < total:
+            return
+        last_reported = sent
+        progress_cb(min(100.0, 100.0 * sent / total if total else 0.0))
+
+    def _gen():
+        nonlocal sent
+        yield head
+        sent += len(head)
+        with wav.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(256 * 1024), b""):
+                sent += len(chunk)
+                _tick()
+                yield chunk
+        sent += len(tail)
+        _tick()
+        yield tail
+
+    base = (getattr(dashscope, "base_http_api_url", "") or
+            "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
+    resp = requests.post(
+        f"{base}/files",
+        data=_gen(),
+        headers={
+            "Authorization": f"Bearer {dashscope.api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(total),
+        },
+        timeout=900,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def upload_audio(wav: Path,
+                 progress_cb: Callable[[float], None] | None = None) -> str:
     """上傳 TempAudio → UploadedURL。
 
     主路線：``Files.upload()`` 拎 ``file_id`` → ``Files.get()`` 拎**預簽名 https URL**。
     ⚠️ Files.upload 淨係畀 file_id，**唔係**可以直接餵畀 ASR 的 URL。
     後備：``OssUtils.upload()`` 返 ``oss://`` URL（需配合 resolve header）。
+
+    ADR-028：有 ``progress_cb`` 時改用自建 multipart 上傳（可報真進度）；
+    自建路線失敗會**靜靜退回** SDK，唔會令整個 generate 失敗。
     """
     import dashscope
 
     LOGGER.info("上傳音訊到百煉臨時儲存 …")
+    if progress_cb is not None:
+        try:
+            payload = _upload_file_with_progress(wav, progress_cb)
+            file_id = payload["output"]["uploaded_files"][0]["file_id"]
+            url = dashscope.Files.get(file_id=file_id).output.get("url")
+            if not url:
+                raise KeyError("Files.get() 冇返 url 字段")
+            if url.startswith("http://"):
+                url = url.replace("http://", "https://", 1)
+            LOGGER.info("UploadedURL 取得成功（自建上傳 + 進度）")
+            return url
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning("自建上傳失敗（%s），退回 SDK 上傳（無進度）", exc)
+
     try:
         resp = dashscope.Files.upload(file_path=str(wav), purpose="assistants")
         file_id = resp.output["uploaded_files"][0]["file_id"]
@@ -1209,6 +1316,15 @@ def lines_to_timings_doc(
             "alignment": style.alignment,
             "margin_v": style.margin_v,
             "outline_width": style.outline_width,
+            # ADR-027：只在啟用雙行時才寫，單行輸出維持同舊版 byte-identical
+            **({"dual_line": True,
+                "switch_delay_ms": style.switch_delay_ms,
+                "line_gap": style.line_gap,
+                # ADR-030：上下行水平錯位
+                "up_offset_pct": style.up_offset_pct,
+                "down_offset_pct": style.down_offset_pct} if style.dual_line else {}),
+            # ADR-029：平移值有非 0 才寫
+            **({"shift_ms": style.shift_ms} if style.shift_ms else {}),
         },
         "lines": [
             {
@@ -1274,6 +1390,13 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
         alignment=int(raw_style.get("alignment") or defaults.alignment),
         margin_v=int(raw_style.get("margin_v") or 0),
         outline_width=float(raw_style.get("outline_width") or 0.0),
+        # ADR-027：舊檔冇呢三個欄位 → 自動當單行，行為同以前一模一樣
+        dual_line=bool(raw_style.get("dual_line", False)),
+        switch_delay_ms=int(raw_style.get("switch_delay_ms") or defaults.switch_delay_ms),
+        line_gap=int(raw_style.get("line_gap") or 0),
+        shift_ms=int(raw_style.get("shift_ms") or 0),
+        up_offset_pct=int(raw_style.get("up_offset_pct") or 0),
+        down_offset_pct=int(raw_style.get("down_offset_pct") or 0),
     )
     for name, value in (("primary_color", style.primary_color),
                         ("secondary_color", style.secondary_color),
@@ -1361,6 +1484,103 @@ def escape_ass_text(text: str) -> str:
     return out.replace("{", "\\{").replace("}", "\\}")
 
 
+def _shift_lines(lines: list[LyricLine], delta_ms: int) -> list[LyricLine]:
+    """整體平移所有時間（ADR-029）。
+
+    **只影響 render 出來的 .ass**，`timings.json` 的原始時間完全不變 ——
+    這樣換不同剪輯版本的 MV 時可以微調，又唔會破壞 canonical 資料。
+
+    Args:
+        lines: 原始歌詞行。
+        delta_ms: 位移（毫秒）；正值 = 全部延後，負值 = 提早。
+
+    Returns:
+        平移後的新 list（不修改輸入）。
+    """
+    if not delta_ms:
+        return lines
+    out: list[LyricLine] = []
+    for line in lines:
+        words: list[WordGroup] = []
+        for word in line.words:
+            chars = [replace(c, begin_ms=max(0, c.begin_ms + delta_ms),
+                             end_ms=max(0, c.end_ms + delta_ms)) for c in word.chars]
+            words.append(replace(word, chars=chars))
+        out.append(replace(line, start_ms=max(0, line.start_ms + delta_ms),
+                           end_ms=max(0, line.end_ms + delta_ms), words=words))
+    return out
+
+
+def _karaoke_pieces(line: LyricLine, gap_ms: int, strip_punctuation: bool) -> list[str]:
+    """把一行歌詞砌成 ASS 逐字片段（單行／雙行共用）。
+
+    C-5 停頓補償：前一字 end 與本字 begin 相差 > ``gap_ms`` 會插一條無文字的
+    ``{\\k<gap>}``，令高亮等埋真實停頓。ADR-013 的標點處理亦喺呢度做。
+    """
+    pieces: list[str] = []
+    prev_end: int | None = None
+    n_words = len(line.words)
+    for wi, word in enumerate(line.words):
+        for c in word.chars:
+            if prev_end is not None:
+                gap = c.begin_ms - prev_end
+                if gap > gap_ms:
+                    pieces.append("{\\k%d}" % ms_to_cs(gap))
+            pieces.append("{\\kf%d}%s" % (ms_to_cs(c.end_ms - c.begin_ms), escape_ass_text(c.text)))
+            prev_end = c.end_ms
+        # ADR-013：標點喺 WordGroup 邊界處理（行尾剝走 / 行中變空格 + 停頓）
+        if word.punctuation:
+            if wi + 1 < n_words:
+                nxt = line.words[wi + 1]
+                if not strip_punctuation:
+                    pieces.append(escape_ass_text(word.punctuation))
+                elif not nxt.text.startswith(" "):
+                    # 防雙空格：英文 word 自帶前導空格時唔補空格，
+                    # 停頓交返俾下一字嘅 C-5 機制
+                    gap = nxt.begin_ms - word.end_ms
+                    if gap > gap_ms:
+                        pieces.append("{\\k%d} " % ms_to_cs(gap))
+                        # ⚠️ 食咗呢段 gap（R6）：唔更新 prev_end 嘅話，
+                        # 下一個字會再計一次同一段 gap、插多一條 \k（停頓雙倍）
+                        prev_end = nxt.begin_ms
+                    else:
+                        pieces.append(" ")
+            elif not strip_punctuation:
+                # --keep-punctuation：行尾標點照出（同 v1 行為一致）
+                pieces.append(escape_ass_text(word.punctuation))
+    return pieces
+
+
+def _dual_line_window(lines: list[LyricLine], i: int, delay_ms: int) -> tuple[int, int]:
+    """雙行模式：第 ``i`` 句喺畫面上嘅顯示窗口 ``(start_ms, end_ms)``（ADR-027）。
+
+    規則（對應《舊夢不須記》原片）：
+      - 第 1、2 句由 0 開始就顯示
+      - 之後每句喺「前一句開唱 + ``delay_ms``」時出現，取代同一行上兩句之前的內容
+      - 每句喺「下一句開唱 + ``delay_ms``」時被同一行的再下一句取代
+
+    Args:
+        lines: 全部歌詞行。
+        i: 目標行索引。
+        delay_ms: 換行延遲（毫秒）。
+
+    Returns:
+        ``(start_ms, end_ms)``；保證 ``end_ms > start_ms``。
+    """
+    line = lines[i]
+    start = 0 if i < 2 else lines[i - 1].start_ms + delay_ms
+    if i + 1 < len(lines):
+        end = lines[i + 1].start_ms + delay_ms
+    else:
+        end = line.end_ms
+    # 同行下一句（i+2）本來就喺 i+1 開唱 +delay 出現 → 上限即係「下一句開唱 +delay」。
+    # 快歌句距不足 delay 時，寧願本句遲啲出（start 後移），都唔好同行兩個 event 疊字。
+    if end <= start:
+        start = min(start, line.start_ms)
+        end = max(line.end_ms, start + 500)
+    return start, end
+
+
 def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 50,
                       strip_punctuation: bool = True) -> str:
     """產生完整 ASS 文字（KaraokeAss）。
@@ -1373,6 +1593,9 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
         （輸出同 v1 完全一致 —— 標點黐喺前一個字嘅 syllable 度）
     """
     s = style.resolved()
+    if s.shift_ms:
+        lines = _shift_lines(lines, s.shift_ms)
+        LOGGER.info("整體時間平移 %+d ms（只影響本次 render，timings.json 不變）", s.shift_ms)
     header = [
         "[Script Info]",
         "; Generated by karaoke-ass-generator",
@@ -1404,42 +1627,50 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
     ]
 
     events: list[str] = []
-    for line in lines:
-        pieces: list[str] = []
-        prev_end: int | None = None
-        n_words = len(line.words)
-        for wi, word in enumerate(line.words):
-            for c in word.chars:
-                # C-5 停頓補償：前一字 end 與本字 begin 相差 > gap_ms，插入不帶文字嘅 \k
-                if prev_end is not None:
-                    gap = c.begin_ms - prev_end
-                    if gap > gap_ms:
-                        pieces.append("{\\k%d}" % ms_to_cs(gap))
-                pieces.append("{\\kf%d}%s" % (ms_to_cs(c.end_ms - c.begin_ms), escape_ass_text(c.text)))
-                prev_end = c.end_ms
-            # ADR-013：標點喺 WordGroup 邊界處理（行尾剝走 / 行中變空格 + 停頓）
-            if word.punctuation:
-                if wi + 1 < n_words:
-                    nxt = line.words[wi + 1]
-                    if not strip_punctuation:
-                        pieces.append(escape_ass_text(word.punctuation))
-                    elif not nxt.text.startswith(" "):
-                        # 防雙空格：英文 word 自帶前導空格時唔補空格，
-                        # 停頓交返俾下一字嘅 C-5 機制
-                        gap = nxt.begin_ms - word.end_ms
-                        if gap > gap_ms:
-                            pieces.append("{\\k%d} " % ms_to_cs(gap))
-                            # ⚠️ 食咗呢段 gap（R6）：唔更新 prev_end 嘅話，
-                            # 下一個字會再計一次同一段 gap、插多一條 \k（停頓雙倍）
-                            prev_end = nxt.begin_ms
-                        else:
-                            pieces.append(" ")
-                elif not strip_punctuation:
-                    # --keep-punctuation：行尾標點照出（同 v1 行為一致）
-                    pieces.append(escape_ass_text(word.punctuation))
-        start = ms_to_ass_time(line.start_ms)       # ⚠️ ADR-005：必須 H:MM:SS.cc
-        end = ms_to_ass_time(line.end_ms)
-        events.append(f"Dialogue: 0,{start},{end},Karaoke,,0,0,0,,{''.join(pieces)}")
+    dual = bool(s.dual_line) and len(lines) > 0
+    if dual:
+        delay = max(0, int(s.switch_delay_ms))
+        # ADR-030：垂直位置跟「對齊」設定（2 底 / 8 頂 / 5 中），唔再硬編碼底部。
+        # \an 的值同時決定 y 係「底邊」(an2) 抑或「頂邊」(an8)／「中心」(an5)。
+        an = s.alignment if s.alignment in (2, 5, 8) else 2
+        if an == 8:
+            up_y = s.margin_v
+            down_y = s.margin_v + s.line_gap
+        elif an == 5:
+            mid = s.play_res_y // 2
+            up_y = mid - s.line_gap // 2
+            down_y = mid + s.line_gap // 2
+        else:
+            an = 2
+            down_y = s.play_res_y - s.margin_v
+            up_y = down_y - s.line_gap
+        # ADR-030：上下行各自水平錯位（% 闊度；原片係「上偏左、下偏右」）
+        cx_mid = s.play_res_x // 2
+        up_x = cx_mid + round(s.play_res_x * s.up_offset_pct / 100)
+        down_x = cx_mid + round(s.play_res_x * s.down_offset_pct / 100)
+
+    for i, line in enumerate(lines):
+        pieces = _karaoke_pieces(line, gap_ms, strip_punctuation)
+
+        if not dual:
+            start_ms, end_ms = line.start_ms, line.end_ms
+            body = "".join(pieces)
+        else:
+            start_ms, end_ms = _dual_line_window(lines, i, delay)
+            # 奇數句（索引 0,2,4…）固定上行、偶數句（1,3,5…）固定下行
+            is_up = i % 2 == 0
+            x = up_x if is_up else down_x
+            y = up_y if is_up else down_y
+            lead = ""
+            chars = list(line.iter_chars())
+            if chars and chars[0].begin_ms > start_ms:
+                # 預覽期（未開唱）要先用一條空 \k 佔住時間軸，否則 \kf 會提早啟動
+                lead = "{\\k%d}" % ms_to_cs(chars[0].begin_ms - start_ms)
+            body = f"{{\\an{an}\\pos({x},{y})}}{lead}" + "".join(pieces)
+
+        start = ms_to_ass_time(start_ms)       # ⚠️ ADR-005：必須 H:MM:SS.cc
+        end = ms_to_ass_time(end_ms)
+        events.append(f"Dialogue: 0,{start},{end},Karaoke,,0,0,0,,{body}")
 
     return "\n".join(header + events) + "\n"
 
@@ -1477,21 +1708,54 @@ def _rel_or_abs(path: Path, base: Path) -> str:
         return os.path.abspath(str(path))
 
 
+def _mmss(ms: int) -> str:
+    """毫秒 → ``m:ss``（進度文字用，唔需要百分秒）。"""
+    sec = max(0, int(ms)) // 1000
+    return f"{sec // 60}:{sec % 60:02d}"
+
+
+def _read_ffmpeg_progress_us(path: str) -> int | None:
+    """讀 ffmpeg ``-progress`` 臨時檔，回傳最新 ``out_time``（微秒）。
+
+    ⚠️ ffmpeg 的 ``out_time_ms`` 其實係**微秒**（歷史遺留命名），同
+    ``out_time_us`` 同值；兩個 key 都收，以檔案中最後一個為準。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    latest: int | None = None
+    for raw in text.splitlines():
+        key, _sep, value = raw.strip().partition("=")
+        if key in ("out_time_us", "out_time_ms"):
+            try:
+                latest = int(value)
+            except ValueError:
+                continue
+    return latest
+
+
 def _run_ffmpeg(cmd: list[str], *, cwd: str,
-                cancel_event: threading.Event | None) -> tuple[int, str]:
-    """執行 ffmpeg，支援中途取消（ADR-025）。
+                cancel_event: threading.Event | None,
+                progress_cb: Callable[[int, int], None] | None = None,
+                total_ms: int = 0) -> tuple[int, str]:
+    """執行 ffmpeg，支援中途取消（ADR-025）同編碼進度（ADR-028）。
 
     為何唔用 ``subprocess.run``：它會一路阻塞到程序結束，中間冇任何檢查點，
     用戶只能等（燒錄長片可達數十分鐘）。有 ``cancel_event`` 時改用
     ``Popen`` + poll 迴圈，命中即 ``terminate()``，5 秒內唔死就 ``kill()``。
 
-    ⚠️ stderr 必須導向**臨時檔**而非 ``PIPE``：poll 迴圈期間冇人讀 pipe，
-    ffmpeg 寫滿 64KB 緩衝就會阻塞，變成「取消都取消唔到」的死鎖。
+    ⚠️ stderr **同 ``-progress`` 都必須導向臨時檔**而非 ``PIPE``：poll 迴圈
+    期間冇人同步讀 pipe，ffmpeg 寫滿 64KB 緩衝就會阻塞，變成「取消都取消
+    唔到」的死鎖。``-progress`` 寫檔之後，迴圈每 0.2 秒讀一次即可。
 
     Args:
         cmd: 完整命令列。
         cwd: 工作目錄（ADR-006：ass 所在目錄）。
         cancel_event: 取消旗標；``None`` 走原本的阻塞式 ``run``。
+        progress_cb: ``(done_ms, total_ms)``；只在有 ``cancel_event`` 時生效。
+        total_ms: 影片總時長（毫秒），用嚟計百分比；0 = 唔報進度。
 
     Returns:
         ``(returncode, stderr)``。
@@ -1506,22 +1770,48 @@ def _run_ffmpeg(cmd: list[str], *, cwd: str,
 
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8",
                                 errors="replace") as err_file:
-        proc = subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.DEVNULL, stderr=err_file)
-        while proc.poll() is None:
-            if cancel_event.is_set():
-                proc.terminate()
+        run_cmd = list(cmd)
+        prog_path: str | None = None
+        if progress_cb is not None and total_ms > 0:
+            fd, prog_path = tempfile.mkstemp(prefix="karaoke_ffprog_", suffix=".txt")
+            os.close(fd)
+            # -progress / -nostats 係 global option，放喺 ffmpeg 之後最穩陣
+            run_cmd = [run_cmd[0], "-progress", prog_path, "-nostats"] + run_cmd[1:]
+
+        try:
+            proc = subprocess.Popen(run_cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=err_file)
+            last_step = -1
+            while proc.poll() is None:
+                if cancel_event.is_set():
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        LOGGER.warning("ffmpeg 未能在 5 秒內結束，強制 kill")
+                        proc.kill()
+                        proc.wait(timeout=5)
+                    LOGGER.info("已終止 ffmpeg（用戶取消燒錄）")
+                    raise TaskCancelled("燒錄已取消")
+                if prog_path:
+                    us = _read_ffmpeg_progress_us(prog_path)
+                    if us is not None:
+                        done = max(0, min(total_ms, us // 1000))
+                        step = done // 250          # 每 0.25 秒才更新一次 UI
+                        if step != last_step:
+                            last_step = step
+                            progress_cb(done, total_ms)   # type: ignore[misc]
+                time.sleep(0.2)
+            if prog_path:
+                progress_cb(total_ms, total_ms)           # type: ignore[misc]
+            err_file.seek(0)
+            return proc.returncode, err_file.read()
+        finally:
+            if prog_path:
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    LOGGER.warning("ffmpeg 未能在 5 秒內結束，強制 kill")
-                    proc.kill()
-                    proc.wait(timeout=5)
-                LOGGER.info("已終止 ffmpeg（用戶取消燒錄）")
-                raise TaskCancelled("燒錄已取消")
-            time.sleep(0.2)
-        err_file.seek(0)
-        return proc.returncode, err_file.read()
+                    os.remove(prog_path)
+                except OSError:
+                    pass
 
 
 def burn_subtitles(
@@ -1534,6 +1824,8 @@ def burn_subtitles(
     audio_codec: str | None,
     *,
     cancel_event: threading.Event | None = None,
+    total_ms: int = 0,
+    progress_cb: Callable[[int, int], None] | None = None,
 ) -> None:
     """把 ASS 燒錄進影片。
 
@@ -1588,11 +1880,13 @@ def burn_subtitles(
         try:
             LOGGER.info("開始燒錄字幕（libx264 crf18 medium）…")
             rc, err = _run_ffmpeg(base + audio_args + [out_arg], cwd=str(workdir),
-                                  cancel_event=cancel_event)
+                                  cancel_event=cancel_event,
+                                  progress_cb=progress_cb, total_ms=total_ms)
             if rc != 0 or not output_path.is_file():
                 LOGGER.warning("copy 音軌失敗，降級為 aac 192k 重試…\n%s", err[-600:])
                 rc, err = _run_ffmpeg(base + ["-c:a", "aac", "-b:a", "192k", out_arg],
-                                      cwd=str(workdir), cancel_event=cancel_event)
+                                      cwd=str(workdir), cancel_event=cancel_event,
+                                      progress_cb=progress_cb, total_ms=total_ms)
         except TaskCancelled:
             # 半截 mp4 會令用戶以為「燒錄成功但冇字幕」→ 一定要清走。
             # 但刪不到（例如被播放器鎖住）**唔可以蓋掉取消語義** —— 只記錄，
@@ -1686,7 +1980,8 @@ class GenerateResult:
 
 
 def generate_timings(opts: GenerateOptions, *,
-                     progress_cb: ProgressCB | None = None) -> GenerateResult:
+                     progress_cb: ProgressCB | None = None,
+                     percent_cb: Callable[[float], None] | None = None) -> GenerateResult:
     """影片 → 百煉 ASR → timings.json + ass（唔出影片）。
 
     行為同舊 cmd_generate 完全一致（log 逐句相同）；錯誤路徑改為拋
@@ -1696,6 +1991,7 @@ def generate_timings(opts: GenerateOptions, *,
     Args:
         opts: 全部 generate 參數。
         progress_cb: 階段回呼（可選），stage ∈ 抽音/上傳/ASR/斷句/渲染。
+        percent_cb: 進度百分比回呼（0–100，ADR-028）；暫時只有上傳階段會用。
 
     Returns:
         GenerateResult：產出路徑 + 統計。
@@ -1754,8 +2050,22 @@ def generate_timings(opts: GenerateOptions, *,
 
         if progress_cb:
             progress_cb("上傳", "上傳音訊到百煉臨時儲存 …")
-        uploaded_url = upload_audio(asr_source)
+
+        def _upload_pct(pct: float) -> None:
+            if percent_cb is not None:
+                percent_cb(pct)
+            if progress_cb is not None:
+                progress_cb("上傳", f"上傳音訊 … {pct:.0f}%")
+
+        # 冇 percent_cb 時保持舊呼叫方式（單一位置參數）—— 外部／測試的
+        # monkeypatch 都係 replace 一個食一個參數的函式，唔好破壞佢。
+        if percent_cb is not None:
+            uploaded_url = upload_audio(asr_source, progress_cb=_upload_pct)
+        else:
+            uploaded_url = upload_audio(asr_source)
         _raise_if_cancelled(cancel, stage="上傳")
+        if progress_cb:
+            progress_cb("上傳", "")       # ADR-028：空 message = 呢個階段完成
 
         hints, warn = resolve_language_hints(opts.language)
         if warn:
@@ -1770,6 +2080,8 @@ def generate_timings(opts: GenerateOptions, *,
         if opts.save_raw:
             raw_asr_path = output_dir / f"{video.stem}_raw_asr.json"
             atomic_write_json(raw_asr_path, raw)
+        if progress_cb:
+            progress_cb("ASR", "")        # ADR-028：階段完成
 
         if progress_cb:
             progress_cb("斷句", "解析 ASR 結果、拆字、OpenCC、斷句 …")
@@ -1785,6 +2097,8 @@ def generate_timings(opts: GenerateOptions, *,
         if not lines:
             LOGGER.error("冇產生任何字幕行，可能係 ASR 冇識別到內容。")
             raise NoSubtitlesError("冇產生任何字幕行 —— ASR 可能冇識別到內容，詳見 log")
+        if progress_cb:
+            progress_cb("斷句", "")       # ADR-028：階段完成
 
         style = replace(opts.style, play_res_x=width, play_res_y=height)   # ADR-006
         if progress_cb:
@@ -1911,6 +2225,7 @@ def cmd_render(args: argparse.Namespace) -> int:
         ("primary_color", args.primary_color), ("secondary_color", args.secondary_color),
         ("outline_color", args.outline_color), ("margin_v", args.margin_v),
         ("alignment", args.alignment), ("outline_width", args.outline_width),
+        ("shift_ms", getattr(args, "shift_ms", None)),
     ) if v is not None}
     if overrides:
         # 顏色先驗：--sync-style 會把覆寫寫回 JSON，壞色碼唔可以入檔
@@ -1950,6 +2265,7 @@ def cmd_render(args: argparse.Namespace) -> int:
 
 def burn_video(video: Path, ass_path: Path, output_path: Path, *,
                progress_cb: ProgressCB | None = None,
+               percent_cb: Callable[[float], None] | None = None,
                cancel_event: threading.Event | None = None) -> Path:
     """影片 + .ass → 燒錄 mp4（UI 入口；CLI 見 cmd_burn）。
 
@@ -1960,6 +2276,7 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         ass_path: 要燒錄嘅 .ass 檔。
         output_path: 輸出 mp4 路徑。
         progress_cb: 階段回呼（stage = "燒錄"）。
+        percent_cb: 編碼百分比回呼（0–100），供進度條用（ADR-028）。
         cancel_event: 取消旗標（ADR-025）；命中時 ffmpeg 會被終止，
             半截輸出檔會被刪除，並拋 :class:`TaskCancelled`。
 
@@ -1984,11 +2301,22 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         LOGGER.warning("ASS 冇寫 PlayRes，改用原片解像度 %dx%d", width, height)
 
     audio_codec = probe_audio_codec(ffprobe, video)
+    total_ms = probe_duration_ms(ffprobe, video) or 0
     if progress_cb:
         progress_cb("燒錄", "開始燒錄字幕（libx264 crf18 medium）…")
+
+    def _tick(done: int, total: int) -> None:
+        """ffmpeg 進度 → 百分比 + 人讀文字（ADR-028）。"""
+        pct = (100.0 * done / total) if total else 0.0
+        if percent_cb is not None:
+            percent_cb(pct)
+        if progress_cb is not None:
+            progress_cb("燒錄", f"燒錄中 {_mmss(done)} / {_mmss(total)}（{pct:.0f}%）")
+
     burn_subtitles(ffmpeg=ffmpeg, video=video, ass_path=ass_path, output_path=output_path,
                    play_res_x=width, play_res_y=height, audio_codec=audio_codec,
-                   cancel_event=cancel_event)
+                   cancel_event=cancel_event, total_ms=total_ms,
+                   progress_cb=_tick if (progress_cb or percent_cb) else None)
     if progress_cb:
         progress_cb("燒錄", "完成")
     return output_path
@@ -2053,6 +2381,11 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
         "--margin-v", type=int, default=None if overrides else 0,
         help="字幕底部垂直留白，單位 px（預設 0 = 依 PlayResY 自動推算，1080p 約 59px）。"
              "MV 自帶內嵌字幕時建議調大至 120–200 以避免重疊" + suffix)
+    if overrides:
+        group.add_argument(
+            "--shift-ms", type=int,
+            help="整體時間平移，單位 ms（正值 = 字幕全部延後、負值 = 提早）。"
+                 "用於換了另一版剪輯的 MV（前奏長度唔同）；只影響本次 render" + suffix)
     # UI 主頁「對齊」「描邊粗幼」對應項（ADR-015：主頁設定 = 燒錄權威）
     group.add_argument(
         "--alignment", type=int, choices=[2, 3, 5, 8],

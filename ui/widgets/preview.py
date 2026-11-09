@@ -16,7 +16,7 @@ from pathlib import Path
 import ttkbootstrap as ttkb
 
 from .. import theme
-from .overlay import draw_subtitle
+from .overlay import draw_dual_subtitle, draw_subtitle
 
 LOGGER = logging.getLogger("karaoke.ui.preview")
 
@@ -176,6 +176,16 @@ class PreviewPane(ttkb.Frame):
         return min(lines, key=lambda l: min(
             abs(int(l.get("start_ms", 0)) - cur), abs(int(l.get("end_ms", 0)) - cur)))
 
+    def _draw_overlay(self, canvas, x0: float, y0: float, fw: float, fh: float) -> None:
+        """按 style 決定單行／雙行疊圖（ADR-027）。"""
+        style = self._state.doc.get("style") or {}
+        if style.get("dual_line"):
+            draw_dual_subtitle(canvas, x0, y0, fw, fh, self._state.lines, style,
+                               self._state.cursor_ms)
+        else:
+            draw_subtitle(canvas, x0, y0, fw, fh, self._current_line(), style,
+                          self._state.cursor_ms)
+
     def _redraw_video(self) -> None:
         canvas = self._video_canvas
         canvas.delete("all")
@@ -216,9 +226,7 @@ class PreviewPane(ttkb.Frame):
 
         # 字幕疊圖（§6.7.5）
         if self._overlay_on:
-            line = self._current_line()
-            draw_subtitle(canvas, x0, y0, fw, fh, line,
-                          self._state.doc.get("style") or {}, self._state.cursor_ms)
+            self._draw_overlay(canvas, x0, y0, fw, fh)
 
         self._update_card()
 
@@ -359,8 +367,7 @@ class PreviewPane(ttkb.Frame):
             canvas.create_image(x0, y0, image=photo, anchor="nw")
             canvas.create_rectangle(x0, y0, x0 + fw, y0 + fh, outline=theme.BORDER)
             if self._overlay_on:
-                draw_subtitle(canvas, x0, y0, fw, fh, self._current_line(),
-                              self._state.doc.get("style") or {}, self._state.cursor_ms)
+                self._draw_overlay(canvas, x0, y0, fw, fh)
             self._thumb_progress_var.set(f"高清單幀 @ {ts:.1f}s")
         except Exception as exc:   # noqa: BLE001
             self._thumb_progress_var.set(f"高清單幀顯示失敗：{exc}")
