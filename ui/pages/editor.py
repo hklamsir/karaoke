@@ -744,6 +744,8 @@ class EditorPage(ttkb.Frame):
         def on_error(msg: str) -> None:
             prog.fail(msg)
             self._safe_title(win, "燒錄失敗 ✕")
+            # 燒錄已結束 → 取消鈕必須停用（用戶回報完成後仍可按「取消燒錄」）
+            self._finish_cancel_btn(cancel_btn, "✕ 已失敗")
             messagebox.showerror("燒錄失敗", msg, parent=self)
 
         def worker() -> None:
@@ -755,6 +757,7 @@ class EditorPage(ttkb.Frame):
                 # 取消唔算失敗：唔彈 error dialog（半截輸出檔已由 burn_subtitles 刪除）
                 prog.fail("已取消（未產生輸出檔）")
                 self.after(0, lambda: self._safe_title(win, "燒錄已取消"))
+                self.after(0, lambda: self._finish_cancel_btn(cancel_btn, "已取消"))
             except SystemExit as exc:
                 # 保險層：ADR-024 起 burn_video 拋 BurnError（落到下面 Exception 分支，
                 # 顯示「ffmpeg 燒錄失敗（rc=…）」而不是光禿禿一個 exit code）。
@@ -769,12 +772,23 @@ class EditorPage(ttkb.Frame):
                 prog.succeed("完成 ✅")
                 # 唔自動關窗 —— log 預設打開，畀用戶自己睇完再關
                 self.after(0, lambda: self._safe_title(win, "燒錄完成 ✅"))
+                # 完成後「取消燒錄」已經冇意義 → 停用並改字（唔會閃走，用戶照睇到結果）
+                self.after(0, lambda: self._finish_cancel_btn(cancel_btn, "✔ 已完成"))
                 self.after(0, lambda: self._on_burn_done(output))
             finally:
                 logging.getLogger("karaoke").removeHandler(handler)
                 self.after(0, lambda: self._burn_btn.configure(state="normal"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    @staticmethod
+    def _finish_cancel_btn(btn, text: str) -> None:
+        """燒錄結束後停用「取消燒錄」按鈕（視窗可能已被關 → 吞 TclError）。"""
+        try:
+            if btn.winfo_exists():
+                btn.configure(state="disabled", text=text)
+        except tk.TclError:
+            pass
 
     @staticmethod
     def _safe_title(win, text: str) -> None:

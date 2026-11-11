@@ -501,6 +501,9 @@ class StyleConfig:
     #: 倒數圓點（ADR-031）：長空白段進入歌詞前，喺歌詞上方逐點亮起 3 個「●」。
     #: 只在 lead_in_ms ≥ 1500 且該句確實有一段空白等待時才會出現。
     countdown_dots: bool = True
+    #: 圓點出現門檻（ms，ADR-031 補記）：上一句結束後，同下一句開唱至少隔幾耐
+    #: 才值得出倒數圓點。0 = 只要有一段完整空白就出。預設 5000（5 秒）。
+    dot_min_gap_ms: int = 5000
     #: 雙行行距（px，上行底部同下行底部的距離）；0 = 按 font_size × 1.45 推算
     line_gap: int = 0
     #: 整體時間平移（ms，ADR-029）：正值 = 字幕整體延後。用於換了另一版剪輯的 MV
@@ -1338,6 +1341,8 @@ def lines_to_timings_doc(
             # ADR-031：提前顯示 / 倒數圓點（非預設值才寫，維持舊檔 byte-identical）
             **({"lead_in_ms": style.lead_in_ms} if style.lead_in_ms != 3000 else {}),
             **({"countdown_dots": False} if not style.countdown_dots else {}),
+            **({"dot_min_gap_ms": style.dot_min_gap_ms}
+               if style.dot_min_gap_ms != 5000 else {}),
             # ADR-029：平移值有非 0 才寫
             **({"shift_ms": style.shift_ms} if style.shift_ms else {}),
         },
@@ -1416,6 +1421,9 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
         lead_in_ms=(defaults.lead_in_ms if raw_style.get("lead_in_ms") is None
                     else max(0, int(raw_style.get("lead_in_ms") or 0))),
         countdown_dots=bool(raw_style.get("countdown_dots", True)),
+        dot_min_gap_ms=(defaults.dot_min_gap_ms
+                        if raw_style.get("dot_min_gap_ms") is None
+                        else max(0, int(raw_style.get("dot_min_gap_ms") or 0))),
     )
     for name, value in (("primary_color", style.primary_color),
                         ("secondary_color", style.secondary_color),
@@ -1639,18 +1647,25 @@ def compute_display_windows(starts: Sequence[int], ends: Sequence[int], *,
 
 
 def compute_countdown_dots(starts: Sequence[int], windows: Sequence[tuple[int, int]], *,
-                           lead_in_ms: int, dot_ms: int = 500,
+                           lead_in_ms: int, ends: Sequence[int] | None = None,
+                           min_gap_ms: int = 5000, dot_ms: int = 500,
                            dot_count: int = 3) -> list[list[int]]:
     """每句嘅倒數圓點出現時間（ADR-031）。
 
-    只有「真係由一段空白進入歌詞」才出圓點：該句嘅顯示窗起點要早過
-    ``start - dot_ms * dot_count``，即開唱前至少有一個完整圓點週期（預設 1.5 秒）
-    嘅空白。密密麻麻嘅句子（上一句一走下一句即到）唔會出，避免圓點同歌詞爭位。
+    兩個條件**同時**成立才出圓點：
+
+    1. **空白夠長**：上一句結束（``ends[i-1]``，第一句當 0）到本句開唱，至少
+       ``min_gap_ms``（預設 5000）。太短的句距就算有少少空白都唔出 —— 否則間奏
+       兩三秒的歌會滿屏圓點。
+    2. **真的有空白位**：本句嘅顯示窗起點要早過 ``start - dot_ms * dot_count``，
+       即圓點唔會壓住上一句。
 
     Args:
         starts: 每句開唱時間（ms）。
         windows: :func:`compute_display_windows` 嘅結果。
         lead_in_ms: 提前顯示上限（0 = 功能關閉）。
+        ends: 每句結束時間（ms）；唔傳就當句與句之間冇空隙（只有第一句可能出）。
+        min_gap_ms: 空白門檻（ms）；0 = 唔設門檻。
         dot_ms: 每點間隔（ms）。
         dot_count: 圓點數目。
 
@@ -1663,12 +1678,14 @@ def compute_countdown_dots(starts: Sequence[int], windows: Sequence[tuple[int, i
     # 3 點 × 0.5s = 1.5s：第一點喺開唱前 1.5s，最後一點喺開唱前 0.5s 亮起，
     # 一直亮到開唱一刻（所以整段佔用 lead 的最後 1.5 秒）
     span = dot_ms * max(1, dot_count)
-    for start, disp_start in zip(starts, (w[0] for w in windows)):
+    for i, start in enumerate(starts):
+        prev_end = ends[i - 1] if (ends is not None and i > 0) else 0
+        gap = start - prev_end
         first = start - span
-        if disp_start > first:      # 未有足夠空白時間
+        if gap < max(0, min_gap_ms) or windows[i][0] > first:
             out.append([])
-            continue
-        out.append([first + k * dot_ms for k in range(dot_count)])
+        else:
+            out.append([first + k * dot_ms for k in range(dot_count)])
     return out
 
 
@@ -1727,7 +1744,8 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
     ends = [ln.end_ms for ln in lines]
     windows = compute_display_windows(starts, ends, lead_in_ms=s.lead_in_ms,
                                       dual_line=dual, delay_ms=s.switch_delay_ms)
-    dot_times = (compute_countdown_dots(starts, windows, lead_in_ms=s.lead_in_ms)
+    dot_times = (compute_countdown_dots(starts, windows, lead_in_ms=s.lead_in_ms,
+                                        ends=ends, min_gap_ms=s.dot_min_gap_ms)
                  if s.countdown_dots else [[] for _ in lines])
 
     # ADR-030：垂直位置跟「對齊」設定（2 底 / 3 中下 / 8 頂 / 5 中）
@@ -1757,23 +1775,22 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
         else:
             y = s.play_res_y - s.margin_v
 
-    dot_size = max(8, round(s.font_size * 0.40))
-    dot_pad = max(2, round(s.font_size * 0.12))
-    # 圓點之間要有明顯間隔，否則 3 粒「●」黐成一嚿；\fsp 比半形空格可靠
-    # （CJK 字型的空格闊度太窄，實測幾乎貼在一起）
-    dot_fsp = max(2, round(dot_size * 0.35))
+    dot_size = max(6, round(s.font_size / 3))
+    # 3 粒「●」喺 fs/3 下剛好等於一個中文字嘅 advance（實測 ● 同 CJK 都係全寬），
+    # 所以圓點事件用「3 點 + 其餘歌詞（隱形）」拼出來，總寬度同歌詞事件一模一樣 →
+    # \an2 置中之後，第一粒點自動貼住第一個字，唔需要估字型度量（ADR-031 補記）。
+    dot_fsp = max(0, round(s.font_size * 0.05))
+    dot_lift = round(s.font_size * 0.80)     # 行上方：底邊再上移（實測 ~0.15 字級淨空）
+    dot_drop = round(s.font_size * 0.70)     # 頂部對齊時：放行下方
 
-    def _dot_pos(x: int, row_y: int, row_an: int) -> tuple[int, int]:
-        """圓點錨點 ``(x, y)``（一律用 ``\\an2``，故 ``y`` = 圓點底邊）。
+    def _dot_anchor(row_y: int, row_an: int) -> int:
+        """圓點事件 ``\\an2`` 的 y（= 該行文字框底邊）。
 
-        放喺目標行上方（``an2`` / ``an5``）；頂部對齊（``an8``）時上方冇位，
-        改放喺行下方，永遠留在畫面內。
+        放喺目標行上方；頂部對齊（``an8``）時上方冇位，改放行下方。
         """
-        if row_an == 8:
-            return x, row_y + s.font_size + dot_pad + dot_size
-        if row_an == 5:
-            return x, row_y - s.font_size // 2 - dot_pad
-        return x, row_y - s.font_size - dot_pad      # an2：y 係文字底邊
+        bottom = row_y + s.font_size if row_an == 8 else (
+            row_y + s.font_size // 2 if row_an == 5 else row_y)
+        return bottom - dot_lift if row_an != 8 else bottom + dot_drop
 
     for i, line in enumerate(lines):
         pieces = _karaoke_pieces(line, gap_ms, strip_punctuation)
@@ -1808,7 +1825,8 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
         appears = [t for t in dot_times[i] if t < lyric_start]
         if not appears:
             continue
-        dx, dy = _dot_pos(row_x, row_y, row_an)
+        lyric_text = line.display_text(strip_punctuation)[1:]   # 第一個字位讓畀圓點
+        dy = _dot_anchor(row_y, row_an)
         prev_show: int | None = None
         for k, appear_ms in enumerate(appears):
             shown = max(0, appear_ms)          # 片頭：負時間夾到 0
@@ -1816,10 +1834,16 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
             if end_at <= shown or (prev_show is not None and shown <= prev_show):
                 continue
             prev_show = shown
+            # 已亮 k+1 點 + 未亮（隱形）點 + 隱形歌詞尾巴 → 總寬度永遠等於原句，
+            # 所以三條 event 嘅左邊界完全一致，第一粒點唔會隨點數左右跳。
+            lit = "●" * (k + 1)
+            dark = "●" * max(0, 3 - (k + 1))
+            tail = (f"{{\\alpha&HFF&\\fsp0\\fs{s.font_size}}}"
+                    f"{escape_ass_text(lyric_text)}" if lyric_text else "")
             events.append(
                 f"Dialogue: 1,{ms_to_ass_time(shown)},{ms_to_ass_time(end_at)},"
                 f"Karaoke,,0,0,0,,{{\\an2\\fs{dot_size}\\fsp{dot_fsp}"
-                f"\\pos({dx},{dy})}}{'●' * (k + 1)}")
+                f"\\pos({row_x},{dy})}}{lit}{{\\alpha&HFF&}}{dark}{tail}")
 
     return "\n".join(header + events) + "\n"
 
@@ -2337,6 +2361,7 @@ def cmd_generate(args: argparse.Namespace) -> int:
             # ADR-031：提前顯示 / 倒數圓點
             lead_in_ms=getattr(args, "lead_in_ms", 3000),
             countdown_dots=getattr(args, "countdown_dots", True),
+            dot_min_gap_ms=getattr(args, "dot_min_gap_ms", 5000),
         ),
     ))
     return 0
@@ -2381,6 +2406,7 @@ def cmd_render(args: argparse.Namespace) -> int:
         # ADR-031
         ("lead_in_ms", getattr(args, "lead_in_ms", None)),
         ("countdown_dots", getattr(args, "countdown_dots", None)),
+        ("dot_min_gap_ms", getattr(args, "dot_min_gap_ms", None)),
     ) if v is not None}
     if overrides:
         # 顏色先驗：--sync-style 會把覆寫寫回 JSON，壞色碼唔可以入檔
@@ -2563,6 +2589,10 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
         default=None if overrides else True,
         help="長空白段進入歌詞前，喺歌詞上方逐點亮起 3 個圓點（預設開啟；"
              "--no-countdown-dots 關閉）" + suffix)
+    group.add_argument(
+        "--dot-min-gap-ms", type=int, default=None if overrides else 5000,
+        help="圓點門檻：上一句結束後至少隔幾多 ms 才出倒數圓點（預設 5000；"
+             "0 = 只要有一段空白就出）" + suffix)
 
 
 def _read_version() -> str:

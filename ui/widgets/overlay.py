@@ -62,16 +62,21 @@ def _char_list(line: dict) -> list[tuple[str, int]]:
 
 
 def _draw_line(canvas: tk.Canvas, center_x: float, top_y: float, line: dict,
-               style: dict, cursor_ms: int, size: int, outline: int) -> None:
-    """喺指定中心／頂部位置畫一行逐字變色字幕。"""
+               style: dict, cursor_ms: int, size: int, outline: int) -> float:
+    """喺指定中心／頂部位置畫一行逐字變色字幕。
+
+    Returns:
+        文字左邊的畫布 x（圓點要靠它對齊第一個字）。
+    """
     chars = _char_list(line)
     if not chars:
-        return
+        return center_x
     family = style.get("font_name") or theme.ui_font_family()
     font = (family, size)
     char_w = [canvas.tk.call("font", "measure", font, ch) for ch, _ in chars]
     total_w = sum(char_w)
     x = center_x - total_w / 2
+    left = x
 
     outline_color = style.get("outline_color") or "#000000"
     for (ch, begin_ms), cw in zip(chars, char_w):
@@ -80,6 +85,7 @@ def _draw_line(canvas: tk.Canvas, center_x: float, top_y: float, line: dict,
             else (style.get("secondary_color") or theme.SUB_SECONDARY)
         _draw_outlined(canvas, x, top_y, ch, font, color, outline_color, outline)
         x += cw
+    return left
 
 
 def _style_value(key: str, value: Any, fallback: Any) -> Any:
@@ -118,30 +124,29 @@ def _layout(style: dict, h: float, y0: float) -> dict[str, Any]:
             "single_top": single_top, "up_top": up_top, "down_top": down_top}
 
 
-def _dot_xy(center_x: float, row_top: float, layout: dict[str, Any]) -> tuple[float, float]:
-    """圓點左上角：放喺目標行上方；頂部對齊時改放行下方（同 main 一致）。"""
+def _dot_xy(left_x: float, row_top: float, layout: dict[str, Any]) -> tuple[float, float]:
+    """圓點左上角：左邊對齊歌詞第一個字；頂部對齊時改放行下方。"""
     size = layout["size"]
-    dot_size = max(6, round(size * 0.40))
-    pad = max(1, round(size * 0.12))
+    dot_size = max(6, round(size / 3))
+    pad = max(1, round(size * 0.18))
     if layout["an"] == 8:
-        return center_x, row_top + size + pad
-    return center_x, row_top - pad - dot_size
+        return left_x, row_top + size + pad
+    return left_x, row_top - pad - dot_size
 
 
-def _draw_dots(canvas: tk.Canvas, center_x: float, dot_top: float, count: int,
+def _draw_dots(canvas: tk.Canvas, left_x: float, dot_top: float, count: int,
                layout: dict[str, Any], style: dict) -> None:
-    """逐點畫圓點（全用唱過色 + 描邊，跟 ASS ``\\fs`` / ``\\fsp``）。"""
-    size = max(6, round(layout["size"] * 0.40))
+    """由左向右逐點畫圓點（第一點永遠喺同一位置，唔會隨點數左右跳）。"""
+    size = max(6, round(layout["size"] / 3))
     color = _style_value("primary_color", style.get("primary_color"), theme.SUB_PRIMARY)
     outline_color = _style_value("outline_color", style.get("outline_color"), "#000000")
     font = (style.get("font_name") or theme.ui_font_family(), size)
-    gap = max(2, round(size * 0.35))
-    total = size * count + gap * (count - 1)
-    x = center_x - total / 2
+    advance = size + max(0, round(layout["size"] * 0.05))
+    x = left_x
     for _ in range(count):
         _draw_outlined(canvas, x, dot_top, "●", font, color, outline_color,
                        layout["outline"])
-        x += size + gap
+        x += advance
 
 
 def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
@@ -169,8 +174,10 @@ def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
         starts, ends, lead_in_ms=lead_in, dual_line=dual,
         delay_ms=int(style.get("switch_delay_ms") or 1000))
     dots_on = bool(style.get("countdown_dots", True))
-    dot_times = (main.compute_countdown_dots(starts, windows, lead_in_ms=lead_in)
-                 if dots_on else [[] for _ in lines])
+    dot_times = (main.compute_countdown_dots(
+        starts, windows, lead_in_ms=lead_in, ends=ends,
+        min_gap_ms=int(style.get("dot_min_gap_ms", 5000) or 0))
+        if dots_on else [[] for _ in lines])
 
     layout = _layout(style, h, y0)
     mid_x = x0 + w / 2
@@ -190,8 +197,8 @@ def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
         if not (win_start <= cursor_ms < win_end):
             continue
         center_x, top = row_of(i)
-        _draw_line(canvas, center_x, top, line, style, cursor_ms,
-                   layout["size"], layout["outline"])
+        left_x = _draw_line(canvas, center_x, top, line, style, cursor_ms,
+                            layout["size"], layout["outline"])
         # 圓點：只在**開唱前**畫（ASS 的圓點 event 也是開唱即結束）。
         # ⚠️ 唔加 `cursor_ms < starts[i]` 的話，唱完之後句尾停留期間會一直
         #    見到 3 粒圓點 -- 同成品唔一致。
@@ -199,7 +206,7 @@ def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
             times = [t for t in dot_times[i] if t < starts[i]]
             lit = sum(1 for t in times if cursor_ms >= t)
             if lit:
-                dot_x, dot_top = _dot_xy(center_x, top, layout)
+                dot_x, dot_top = _dot_xy(left_x, top, layout)
                 _draw_dots(canvas, dot_x, dot_top, lit, layout, style)
 
 

@@ -280,6 +280,19 @@ class HomePage(ttkb.Frame):
                          bootstyle="primary-round-toggle",
                          command=self._refresh_preview).pack(side="left", padx=(theme.SPACE, 0))
 
+        # ADR-031 補記：圓點門檻 —— 句距太短就唔應該出圓點（用戶回報「間隔很短都出」）
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
+        ttkb.Label(row, text="圓點條件", width=8, bootstyle="secondary").pack(side="left")
+        ttkb.Label(row, text="上一句結束後至少隔", bootstyle="secondary").pack(side="left")
+        self._dot_gap_var = tk.IntVar(value=self._int_saved("dot_min_gap_ms", 5000))
+        gap_spin = ttkb.Spinbox(row, textvariable=self._dot_gap_var, from_=0, to=60000,
+                                increment=500, width=7, command=self._refresh_preview)
+        gap_spin.pack(side="left", padx=4)
+        gap_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="ms 才出圓點（0 = 有空白就出）", bootstyle="secondary",
+                   font=(theme.ui_font_family(), 8)).pack(side="left")
+
         row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
         ttkb.Label(row, text="換行延遲", width=8, bootstyle="secondary").pack(side="left")
@@ -533,6 +546,10 @@ class HomePage(ttkb.Frame):
             lead_in_ms = max(0, int(self._lead_var.get()))
         except (tk.TclError, ValueError):
             lead_in_ms = 3000
+        try:
+            dot_gap_ms = max(0, int(self._dot_gap_var.get()))
+        except (tk.TclError, ValueError):
+            dot_gap_ms = 5000
         return {
             "font_name": self._font_var.get().strip() or _DEFAULT_FONT,
             "font_size": font_size,
@@ -548,6 +565,7 @@ class HomePage(ttkb.Frame):
             # ADR-031：提前顯示 / 倒數圓點
             "lead_in_ms": lead_in_ms,
             "countdown_dots": bool(self._dots_var.get()),
+            "dot_min_gap_ms": dot_gap_ms,
             # ADR-029：整體平移（正值 = 延後）
             "shift_ms": shift_ms,
             # ADR-030：上下行水平錯位
@@ -601,6 +619,8 @@ class HomePage(ttkb.Frame):
             self._lead_var.set(int(style.get("lead_in_ms") or 0))
         if "countdown_dots" in style:
             self._dots_var.set(bool(style.get("countdown_dots")))
+        if style.get("dot_min_gap_ms") is not None:
+            self._dot_gap_var.set(int(style.get("dot_min_gap_ms") or 0))
         if style.get("shift_ms") is not None:
             self._shift_var.set(int(style.get("shift_ms") or 0))
         self._up_pos_var.set(_POS_NAME.get(int(style.get("up_offset_pct") or 0), "居中"))
@@ -811,6 +831,7 @@ class HomePage(ttkb.Frame):
                 # ADR-031：提前顯示 / 倒數圓點
                 lead_in_ms=int(snap.get("lead_in_ms", 3000)),
                 countdown_dots=bool(snap.get("countdown_dots", True)),
+                dot_min_gap_ms=int(snap.get("dot_min_gap_ms", 5000)),
             )
         except (ValueError, tk.TclError):
             messagebox.showerror("樣式參數錯誤", "字級 / 留白要係整數。", parent=self)
@@ -955,6 +976,7 @@ class HomePage(ttkb.Frame):
         # ADR-031：提前顯示 / 倒數圓點（同預設一樣就唔會出現喺指令度）
         values["lead_in_ms"] = snap["lead_in_ms"]
         values["countdown_dots"] = snap["countdown_dots"]
+        values["dot_min_gap_ms"] = snap["dot_min_gap_ms"]
         if self._output_var.get().strip():
             values["output_dir"] = self._output_var.get().strip()
         cmd = generate_cli_command("generate", values)

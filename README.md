@@ -108,8 +108,9 @@ SDK 路線（該階段退回跑馬燈，不會中斷流程）。進度框固定�
   **主頁樣式為燒錄的權威來源**（ADR-015）：燒錄時一律套用此處設定並寫回 `*_timings.json`；開啟舊檔時會自動載入該檔樣式。
 - **提前顯示 / 倒數圓點**（ADR-031）：長間奏期間**唔會再提早幾十秒**出下一句 ——
   每句最多提早「提前顯示」設定的毫秒（預設 3000）出現；由空白段進入歌詞前的 1.5 秒，
-  歌詞上方會逐點亮起 3 個圓點（每 0.5 秒一點，全用唱過色），開唱一刻消失。
-  設 0 即完全回到舊行為（輸出 byte-identical）。
+  **歌詞第一個字上方**會逐點亮起 3 個圓點（每 0.5 秒一點，全用唱過色），開唱一刻消失。
+  圓點只在「上一句結束後至少隔 5 秒」（可調，0 = 停用）的長空白才出，密的句子唔會出。
+  設「提前顯示」為 0 即完全回到舊行為（輸出 byte-identical）。
   「換行延遲」在提前顯示開啟時 = **句尾停留**（最後一字後多留幾耐才清空，預設 1000ms）。
 - **雙行歌詞**（ADR-027 / ADR-030）：勾選後畫面固定兩行 —— 奇數句在上、偶數句在下，
   每句在「下一句開唱 + 換行延遲（預設 1000ms）」時被同行的再下一句取代。
@@ -257,6 +258,7 @@ python main.py burn -i "MV.mp4" -s "MV_karaoke.ass"
 | `--margin-v` | 底部垂直留白（px），`0` 表示按 PlayResY 自動（1080p 約 59 px） |
 | `--lead-in-ms 3000` | 歌詞提前顯示上限（ms）。長間奏唔會再提早幾十秒出下一句；`0` = 關閉 |
 | `--no-countdown-dots` | 關閉「進入歌詞前 3 個倒數圓點」（預設開啟） |
+| `--dot-min-gap-ms 5000` | 圓點門檻：上一句結束後至少隔幾多 ms 才出圓點（0 = 有空白就出） |
 | `--save-raw` | 額外儲存辨識原始 JSON，方便除錯 |
 | `-v` | 輸出 DEBUG 層級日誌（置於子命令前後皆可） |
 
@@ -305,7 +307,8 @@ python main.py burn -i "MV_純音樂.mp4" -s "MV_karaoke.ass" -o "MV_karaoke_ins
   "style":  { "play_res_x": 1920, "play_res_y": 1080, "font_name": "Microsoft JhengHei",
               "font_size": 48, "primary_color": "#FFFF00", "secondary_color": "#FFFFFF",
               "outline_color": "#000000", "alignment": 2, "margin_v": 0, "outline_width": 0.0,
-              "lead_in_ms": 3000, "countdown_dots": true },   // ADR-031（非預設值才寫）
+              "lead_in_ms": 3000, "countdown_dots": true,
+              "dot_min_gap_ms": 5000 },                     // ADR-031（非預設值才寫）
   "lines": [{
     "start_ms": 3950, "end_ms": 8890,
     "text": "輪迴塵間的人 揮之不能",        // ADR-013：顯示用文字（已移除標點）
@@ -447,7 +450,7 @@ run_tests.bat                 全部（含 3 小時 / 5,000 行的大數據量�
 run_tests.bat -m "not slow"   快速回歸（約 10 秒）
 ```
 
-判準為 **exit code 0**。現時 **208 條全綠、0 xfail** —— 審查報告 §9.2 的必補案例
+判準為 **exit code 0**。現時 **213 條全綠、0 xfail** —— 審查報告 §9.2 的必補案例
 （取消、靜音偵測、跨磁碟燒錄、原子寫入、UI 防呆、長片記憶體）已全部實作並鎖住。
 
 `xfail(strict=True)` 的約定仍然保留：新增功能時先寫契約測試，未實作會 xfail
