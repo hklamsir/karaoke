@@ -10,7 +10,7 @@ main.py — 卡拉OK字幕產生器（阿里百煉 ASR → timings.json → ASS 
 
 設計依據（must keep in sync）：
   - docs/名詞表.md        ：全部術語、單位換算、禁止詞
-  - docs/架構決策紀錄.md  ：ADR-001 ~ ADR-020
+  - docs/架構決策紀錄.md  ：ADR-001 ~ ADR-032
 
 處理管線（次序為鐵律，見 ADR-008）：
     ASR → 拆字（WordSlot→CharSlot，包成 WordGroup；標點獨立存 WordGroup.punctuation）
@@ -489,8 +489,18 @@ class StyleConfig:
     #: 雙行交替（ADR-027）：奇數句固定上行、偶數句固定下行，每行隔兩句才換。
     #: False（預設）= 舊行為，一句一個 event，完全唔會變。
     dual_line: bool = False
-    #: 雙行換行延遲（ms）：下一句「開唱」之後幾耐，才把上一句換成再下一句。
+    #: 雙行「換行延遲」（ms）。有兩種語義，由 ``lead_in_ms`` 決定：
+    #:   - ``lead_in_ms == 0``（舊行為）：下一句「開唱」之後幾耐才換行（ADR-027）
+    #:   - ``lead_in_ms > 0``（新行為，ADR-031）：**句尾停留** —— 最後一個字唱完後
+    #:     畫面仲留幾耐才清空；會夾住「同排下一句開唱」確保不疊字
     switch_delay_ms: int = 1000
+    #: 歌詞提前顯示（ms，ADR-031）：每句最多提早幾耐出現。
+    #: 長間奏期間唔會再提早幾十秒顯示下一句；0 = 完全關閉（回到 ADR-027 舊行為，
+    #: 輸出 byte-identical）。
+    lead_in_ms: int = 3000
+    #: 倒數圓點（ADR-031）：長空白段進入歌詞前，喺歌詞上方逐點亮起 3 個「●」。
+    #: 只在 lead_in_ms ≥ 1500 且該句確實有一段空白等待時才會出現。
+    countdown_dots: bool = True
     #: 雙行行距（px，上行底部同下行底部的距離）；0 = 按 font_size × 1.45 推算
     line_gap: int = 0
     #: 整體時間平移（ms，ADR-029）：正值 = 字幕整體延後。用於換了另一版剪輯的 MV
@@ -1322,7 +1332,12 @@ def lines_to_timings_doc(
                 "line_gap": style.line_gap,
                 # ADR-030：上下行水平錯位
                 "up_offset_pct": style.up_offset_pct,
-                "down_offset_pct": style.down_offset_pct} if style.dual_line else {}),
+                "down_offset_pct": style.down_offset_pct} if style.dual_line else
+               {"switch_delay_ms": style.switch_delay_ms}
+               if style.switch_delay_ms != 1000 else {}),
+            # ADR-031：提前顯示 / 倒數圓點（非預設值才寫，維持舊檔 byte-identical）
+            **({"lead_in_ms": style.lead_in_ms} if style.lead_in_ms != 3000 else {}),
+            **({"countdown_dots": False} if not style.countdown_dots else {}),
             # ADR-029：平移值有非 0 才寫
             **({"shift_ms": style.shift_ms} if style.shift_ms else {}),
         },
@@ -1397,6 +1412,10 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
         shift_ms=int(raw_style.get("shift_ms") or 0),
         up_offset_pct=int(raw_style.get("up_offset_pct") or 0),
         down_offset_pct=int(raw_style.get("down_offset_pct") or 0),
+        # ADR-031：舊檔冇 lead_in_ms → 用新預設 3 秒；明寫 0 才是「關閉提前顯示」
+        lead_in_ms=(defaults.lead_in_ms if raw_style.get("lead_in_ms") is None
+                    else max(0, int(raw_style.get("lead_in_ms") or 0))),
+        countdown_dots=bool(raw_style.get("countdown_dots", True)),
     )
     for name, value in (("primary_color", style.primary_color),
                         ("secondary_color", style.secondary_color),
@@ -1551,34 +1570,106 @@ def _karaoke_pieces(line: LyricLine, gap_ms: int, strip_punctuation: bool) -> li
     return pieces
 
 
-def _dual_line_window(lines: list[LyricLine], i: int, delay_ms: int) -> tuple[int, int]:
-    """雙行模式：第 ``i`` 句喺畫面上嘅顯示窗口 ``(start_ms, end_ms)``（ADR-027）。
+def compute_display_windows(starts: Sequence[int], ends: Sequence[int], *,
+                            lead_in_ms: int, dual_line: bool,
+                            delay_ms: int = 1000) -> list[tuple[int, int]]:
+    """計算每句喺畫面上嘅顯示窗口 ``(start_ms, end_ms)`` —— **唯一真源**。
 
-    規則（對應《舊夢不須記》原片）：
-      - 第 1、2 句由 0 開始就顯示
-      - 之後每句喺「前一句開唱 + ``delay_ms``」時出現，取代同一行上兩句之前的內容
-      - 每句喺「下一句開唱 + ``delay_ms``」時被同一行的再下一句取代
+    `main.build_karaoke_ass`（燒錄）同 `ui.widgets.overlay`（預覽）都呼叫呢個
+    函數，所以預覽同成品永遠一致（ADR-027 嘅「所見非所得」警告）。
+
+    兩種模式：
+
+    **舊行為（``lead_in_ms == 0``）** — 與 ADR-027 完全相同，輸出 byte-identical：
+      - 單行：窗口 = 句子本身
+      - 雙行：第 1、2 句由 0 開始；第 ``i`` 句喺「前一句開唱 + ``delay_ms``」出現，
+        到「下一句開唱 + ``delay_ms``」消失
+
+    **新行為（``lead_in_ms > 0``）** — ADR-031：
+      - 每句最多提早 ``lead_in_ms`` 出現，長間奏唔會提早幾十秒顯示下一句
+      - 同排（雙行 = 奇偶分排；單行 = 同一行）上一句未清空前，本句唔會出現
+      - 句尾停留 ``delay_ms``（「換行延遲」新語義），但**唔可以蓋過下一句開唱**
 
     Args:
-        lines: 全部歌詞行。
-        i: 目標行索引。
-        delay_ms: 換行延遲（毫秒）。
+        starts: 每句開唱時間（ms）。
+        ends: 每句結束時間（ms，已含句尾 hold）。
+        lead_in_ms: 提前顯示上限；0 = 舊行為。
+        dual_line: 是否雙行交替。
+        delay_ms: 換行延遲 / 句尾停留（ms）。
 
     Returns:
-        ``(start_ms, end_ms)``；保證 ``end_ms > start_ms``。
+        與輸入等長的 ``(start_ms, end_ms)`` list，保證 ``end_ms > start_ms``。
     """
-    line = lines[i]
-    start = 0 if i < 2 else lines[i - 1].start_ms + delay_ms
-    if i + 1 < len(lines):
-        end = lines[i + 1].start_ms + delay_ms
-    else:
-        end = line.end_ms
-    # 同行下一句（i+2）本來就喺 i+1 開唱 +delay 出現 → 上限即係「下一句開唱 +delay」。
-    # 快歌句距不足 delay 時，寧願本句遲啲出（start 後移），都唔好同行兩個 event 疊字。
-    if end <= start:
-        start = min(start, line.start_ms)
-        end = max(line.end_ms, start + 500)
-    return start, end
+    n = len(starts)
+    if n == 0:
+        return []
+    if lead_in_ms <= 0:
+        out: list[tuple[int, int]] = []
+        for i in range(n):
+            if not dual_line:
+                out.append((starts[i], ends[i]))
+                continue
+            start = 0 if i < 2 else starts[i - 1] + delay_ms
+            end = starts[i + 1] + delay_ms if i + 1 < n else ends[i]
+            # 快歌句距不足 delay 時，寧願本句遲啲出，都唔好同排兩個 event 疊字
+            if end <= start:
+                start = min(start, starts[i])
+                end = max(ends[i], start + 500)
+            out.append((start, end))
+        return out
+
+    lead = max(0, int(lead_in_ms))
+    hold = max(0, int(delay_ms))
+    out = []
+    for i in range(n):
+        start = max(0, starts[i] - lead)
+        end = ends[i] + hold
+        prev_same_row = i - 2 if dual_line else i - 1
+        if prev_same_row >= 0:
+            # 上一句仲喺畫面（包括句尾停留）→ 本句要等佢清空
+            start = max(start, out[prev_same_row][1])
+        next_same_row = i + 2 if dual_line else i + 1
+        if next_same_row < n:
+            # 句尾停留唔可以拖到下一句已經開唱（會同下一句搶同一行）
+            end = min(end, starts[next_same_row])
+        if end <= start:
+            end = start + 300
+        out.append((start, end))
+    return out
+
+
+def compute_countdown_dots(starts: Sequence[int], windows: Sequence[tuple[int, int]], *,
+                           lead_in_ms: int, dot_ms: int = 500,
+                           dot_count: int = 3) -> list[list[int]]:
+    """每句嘅倒數圓點出現時間（ADR-031）。
+
+    只有「真係由一段空白進入歌詞」才出圓點：該句嘅顯示窗起點要早過
+    ``start - dot_ms * dot_count``，即開唱前至少有一個完整圓點週期（預設 1.5 秒）
+    嘅空白。密密麻麻嘅句子（上一句一走下一句即到）唔會出，避免圓點同歌詞爭位。
+
+    Args:
+        starts: 每句開唱時間（ms）。
+        windows: :func:`compute_display_windows` 嘅結果。
+        lead_in_ms: 提前顯示上限（0 = 功能關閉）。
+        dot_ms: 每點間隔（ms）。
+        dot_count: 圓點數目。
+
+    Returns:
+        每句一個 list：``[t1, t2, t3]``（圓點逐個亮起嘅時間）；冇圓點 = ``[]``。
+    """
+    out: list[list[int]] = []
+    if lead_in_ms <= 0:
+        return [[] for _ in starts]
+    # 3 點 × 0.5s = 1.5s：第一點喺開唱前 1.5s，最後一點喺開唱前 0.5s 亮起，
+    # 一直亮到開唱一刻（所以整段佔用 lead 的最後 1.5 秒）
+    span = dot_ms * max(1, dot_count)
+    for start, disp_start in zip(starts, (w[0] for w in windows)):
+        first = start - span
+        if disp_start > first:      # 未有足夠空白時間
+            out.append([])
+            continue
+        out.append([first + k * dot_ms for k in range(dot_count)])
+    return out
 
 
 def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 50,
@@ -1591,6 +1682,10 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
         下一詞已以空白開頭（英文）就唔補，避免雙空格
       - ``strip_punctuation=False``（``--keep-punctuation``）：標點原樣照出
         （輸出同 v1 完全一致 —— 標點黐喺前一個字嘅 syllable 度）
+
+    ADR-031：顯示窗由 :func:`compute_display_windows` 計（提前顯示上限 + 句尾停留），
+    並按 :func:`compute_countdown_dots` 喺開唱前 1.5 秒逐個亮起 3 粒圓點
+    （Layer 1，唔會同層 0 的歌詞打架）。
     """
     s = style.resolved()
     if s.shift_ms:
@@ -1628,11 +1723,17 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
 
     events: list[str] = []
     dual = bool(s.dual_line) and len(lines) > 0
+    starts = [ln.start_ms for ln in lines]
+    ends = [ln.end_ms for ln in lines]
+    windows = compute_display_windows(starts, ends, lead_in_ms=s.lead_in_ms,
+                                      dual_line=dual, delay_ms=s.switch_delay_ms)
+    dot_times = (compute_countdown_dots(starts, windows, lead_in_ms=s.lead_in_ms)
+                 if s.countdown_dots else [[] for _ in lines])
+
+    # ADR-030：垂直位置跟「對齊」設定（2 底 / 3 中下 / 8 頂 / 5 中）
+    # \an 的值同時決定 y 係「底邊」(an2) 抑或「頂邊」(an8)／「中心」(an5)。
+    an = s.alignment if s.alignment in (2, 5, 8) else 2
     if dual:
-        delay = max(0, int(s.switch_delay_ms))
-        # ADR-030：垂直位置跟「對齊」設定（2 底 / 8 頂 / 5 中），唔再硬編碼底部。
-        # \an 的值同時決定 y 係「底邊」(an2) 抑或「頂邊」(an8)／「中心」(an5)。
-        an = s.alignment if s.alignment in (2, 5, 8) else 2
         if an == 8:
             up_y = s.margin_v
             down_y = s.margin_v + s.line_gap
@@ -1644,33 +1745,81 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
             an = 2
             down_y = s.play_res_y - s.margin_v
             up_y = down_y - s.line_gap
-        # ADR-030：上下行各自水平錯位（% 闊度；原片係「上偏左、下偏右」）
         cx_mid = s.play_res_x // 2
         up_x = cx_mid + round(s.play_res_x * s.up_offset_pct / 100)
         down_x = cx_mid + round(s.play_res_x * s.down_offset_pct / 100)
+    else:
+        # 單行唔用 \pos（沿用 Style 的 Alignment + MarginV），但圓點要座標 → 計出嚟
+        if an == 8:
+            y = s.margin_v
+        elif an == 5:
+            y = s.play_res_y // 2
+        else:
+            y = s.play_res_y - s.margin_v
+
+    dot_size = max(8, round(s.font_size * 0.40))
+    dot_pad = max(2, round(s.font_size * 0.12))
+    # 圓點之間要有明顯間隔，否則 3 粒「●」黐成一嚿；\fsp 比半形空格可靠
+    # （CJK 字型的空格闊度太窄，實測幾乎貼在一起）
+    dot_fsp = max(2, round(dot_size * 0.35))
+
+    def _dot_pos(x: int, row_y: int, row_an: int) -> tuple[int, int]:
+        """圓點錨點 ``(x, y)``（一律用 ``\\an2``，故 ``y`` = 圓點底邊）。
+
+        放喺目標行上方（``an2`` / ``an5``）；頂部對齊（``an8``）時上方冇位，
+        改放喺行下方，永遠留在畫面內。
+        """
+        if row_an == 8:
+            return x, row_y + s.font_size + dot_pad + dot_size
+        if row_an == 5:
+            return x, row_y - s.font_size // 2 - dot_pad
+        return x, row_y - s.font_size - dot_pad      # an2：y 係文字底邊
 
     for i, line in enumerate(lines):
         pieces = _karaoke_pieces(line, gap_ms, strip_punctuation)
+        start_ms, end_ms = windows[i]
+        chars = list(line.iter_chars())
 
         if not dual:
-            start_ms, end_ms = line.start_ms, line.end_ms
-            body = "".join(pieces)
+            row_an = an if an in (5, 8) else 2
+            row_x, row_y = s.play_res_x // 2, y
+            head = ""
         else:
-            start_ms, end_ms = _dual_line_window(lines, i, delay)
             # 奇數句（索引 0,2,4…）固定上行、偶數句（1,3,5…）固定下行
             is_up = i % 2 == 0
-            x = up_x if is_up else down_x
-            y = up_y if is_up else down_y
-            lead = ""
-            chars = list(line.iter_chars())
-            if chars and chars[0].begin_ms > start_ms:
-                # 預覽期（未開唱）要先用一條空 \k 佔住時間軸，否則 \kf 會提早啟動
-                lead = "{\\k%d}" % ms_to_cs(chars[0].begin_ms - start_ms)
-            body = f"{{\\an{an}\\pos({x},{y})}}{lead}" + "".join(pieces)
+            row_x, row_y = (up_x, up_y) if is_up else (down_x, down_y)
+            row_an = an
+            head = f"{{\\an{an}\\pos({row_x},{row_y})}}"
 
-        start = ms_to_ass_time(start_ms)       # ⚠️ ADR-005：必須 H:MM:SS.cc
-        end = ms_to_ass_time(end_ms)
-        events.append(f"Dialogue: 0,{start},{end},Karaoke,,0,0,0,,{body}")
+        # 預覽／提前顯示期：先用一條空 \k 佔住時間軸，否則 \kf 會提早啟動
+        lead = ""
+        if chars and chars[0].begin_ms > start_ms:
+            lead = "{\\k%d}" % ms_to_cs(chars[0].begin_ms - start_ms)
+        body = head + lead + "".join(pieces)
+
+        events.append(
+            f"Dialogue: 0,{ms_to_ass_time(start_ms)},{ms_to_ass_time(end_ms)},"   # ADR-005
+            f"Karaoke,,0,0,0,,{body}")
+
+        # --- 倒數圓點（ADR-031）：逐個亮起，最後一點亮到開唱一刻 ---
+        # ⚠️ 用「開唱時間」starts[i] 而唔係顯示窗開始 start_ms —— 兩者喺提前顯示
+        # 被上一句夾住時會唔同，用錯就會成段圓點被過濾走。
+        lyric_start = starts[i]
+        appears = [t for t in dot_times[i] if t < lyric_start]
+        if not appears:
+            continue
+        dx, dy = _dot_pos(row_x, row_y, row_an)
+        prev_show: int | None = None
+        for k, appear_ms in enumerate(appears):
+            shown = max(0, appear_ms)          # 片頭：負時間夾到 0
+            end_at = appears[k + 1] if k + 1 < len(appears) else lyric_start
+            if end_at <= shown or (prev_show is not None and shown <= prev_show):
+                continue
+            prev_show = shown
+            events.append(
+                f"Dialogue: 1,{ms_to_ass_time(shown)},{ms_to_ass_time(end_at)},"
+                f"Karaoke,,0,0,0,,{{\\an2\\fs{dot_size}\\fsp{dot_fsp}"
+                f"\\pos({dx},{dy})}}{'●' * (k + 1)}")
 
     return "\n".join(header + events) + "\n"
 
@@ -2185,6 +2334,9 @@ def cmd_generate(args: argparse.Namespace) -> int:
             alignment=args.alignment,
             margin_v=args.margin_v,
             outline_width=args.outline_width,
+            # ADR-031：提前顯示 / 倒數圓點
+            lead_in_ms=getattr(args, "lead_in_ms", 3000),
+            countdown_dots=getattr(args, "countdown_dots", True),
         ),
     ))
     return 0
@@ -2226,6 +2378,9 @@ def cmd_render(args: argparse.Namespace) -> int:
         ("outline_color", args.outline_color), ("margin_v", args.margin_v),
         ("alignment", args.alignment), ("outline_width", args.outline_width),
         ("shift_ms", getattr(args, "shift_ms", None)),
+        # ADR-031
+        ("lead_in_ms", getattr(args, "lead_in_ms", None)),
+        ("countdown_dots", getattr(args, "countdown_dots", None)),
     ) if v is not None}
     if overrides:
         # 顏色先驗：--sync-style 會把覆寫寫回 JSON，壞色碼唔可以入檔
@@ -2394,8 +2549,20 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
              "5 = 中部置中、8 = 頂部置中（預設 2）" + suffix)
     group.add_argument(
         "--outline-width", type=float, default=None if overrides else 0.0,
-        help="描邊粗細，單位 px（預設 0 = 依 PlayResY 自動推算，一般等於字級的 4%）。"
+        # ⚠️ 「4%%」：argparse 會用 help 做 ``%`` 格式化，單一個 % 跟住全形括號
+        #    會拋 ValueError: unsupported format character（實測 render -h 直接 crash）
+        help="描邊粗細，單位 px（預設 0 = 依 PlayResY 自動推算，一般等於字級的 4%%）。"
              "畫面雜亂時可加粗至 3–4px" + suffix)
+    # ADR-031：提前顯示 / 倒數圓點（UI 主頁「提前顯示」「倒數圓點」對應項）
+    group.add_argument(
+        "--lead-in-ms", type=int, default=None if overrides else 3000,
+        help="歌詞提前顯示上限，單位 ms（預設 3000）。長間奏期間唔會再提早幾十秒"
+             "出下一句；0 = 關閉（回到舊行為）" + suffix)
+    group.add_argument(
+        "--countdown-dots", action=argparse.BooleanOptionalAction,
+        default=None if overrides else True,
+        help="長空白段進入歌詞前，喺歌詞上方逐點亮起 3 個圓點（預設開啟；"
+             "--no-countdown-dots 關閉）" + suffix)
 
 
 def _read_version() -> str:

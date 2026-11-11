@@ -245,8 +245,14 @@ class HomePage(ttkb.Frame):
         row.pack(fill="x", padx=theme.SPACE, pady=(2, 2))
         ttkb.Label(row, text="底部留白", width=10, bootstyle="secondary").pack(side="left")
         self._margin_var = tk.IntVar(value=self._int_saved("margin_v", 0))
-        scale = ttkb.Scale(row, from_=0, to=400, variable=self._margin_var,
-                           command=lambda _v: self._refresh_preview(), length=200)
+        # ADR-031：滑桿 + 精確 px 數字框雙向同步（同一 IntVar，唔會兩個值打架）
+        margin_spin = ttkb.Spinbox(row, textvariable=self._margin_var, from_=0, to=1000,
+                                   increment=10, width=6, command=self._refresh_preview)
+        margin_spin.pack(side="left")
+        margin_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="px", bootstyle="secondary").pack(side="left", padx=(2, 4))
+        scale = ttkb.Scale(row, from_=0, to=1000, variable=self._margin_var,
+                           command=lambda _v: self._refresh_preview(), length=150)
         scale.pack(side="left", padx=4)
         self._margin_label = ttkb.Label(row, text="0 = 自動（1080p ≈ 59px）",
                                         bootstyle="secondary",
@@ -254,20 +260,36 @@ class HomePage(ttkb.Frame):
         self._margin_label.pack(side="left", padx=theme.SPACE)
 
         # ADR-027：雙行歌詞（奇數句上行、偶數句下行，每行隔兩句才換）
+        # ADR-031：提前顯示 + 倒數圓點（長間奏唔會再提早幾十秒出下一句）
         row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
         self._dual_var = tk.BooleanVar(value=bool(self._saved_style.get("dual_line", False)))
         ttkb.Checkbutton(row, text="雙行歌詞", variable=self._dual_var,
                          bootstyle="primary-round-toggle",
                          command=self._refresh_preview).pack(side="left")
-        ttkb.Label(row, text="換行延遲", bootstyle="secondary").pack(
+        ttkb.Label(row, text="提前顯示", bootstyle="secondary").pack(
             side="left", padx=(theme.SPACE, 2))
+        self._lead_var = tk.IntVar(value=self._int_saved("lead_in_ms", 3000))
+        lead_spin = ttkb.Spinbox(row, textvariable=self._lead_var, from_=0, to=10000,
+                                 increment=500, width=6, command=self._refresh_preview)
+        lead_spin.pack(side="left")
+        lead_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="ms", bootstyle="secondary").pack(side="left", padx=(2, 0))
+        self._dots_var = tk.BooleanVar(value=bool(self._saved_style.get("countdown_dots", True)))
+        ttkb.Checkbutton(row, text="倒數圓點", variable=self._dots_var,
+                         bootstyle="primary-round-toggle",
+                         command=self._refresh_preview).pack(side="left", padx=(theme.SPACE, 0))
+
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
+        ttkb.Label(row, text="換行延遲", width=8, bootstyle="secondary").pack(side="left")
         self._delay_var = tk.IntVar(value=self._int_saved("switch_delay_ms", 1000))
         delay_spin = ttkb.Spinbox(row, textvariable=self._delay_var, from_=0, to=3000,
                                   increment=100, width=6, command=self._refresh_preview)
         delay_spin.pack(side="left")
         delay_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
-        ttkb.Label(row, text="ms", bootstyle="secondary").pack(side="left", padx=(2, 0))
+        ttkb.Label(row, text="ms（句尾多留）", bootstyle="secondary",
+                   font=(theme.ui_font_family(), 8)).pack(side="left", padx=(2, theme.SPACE))
 
         # ADR-030：上下行水平錯位（原片效果 = 上偏左、下偏右）
         row = ttkb.Frame(box, bootstyle="light")
@@ -507,6 +529,10 @@ class HomePage(ttkb.Frame):
             shift_ms = int(self._shift_var.get())
         except (tk.TclError, ValueError):
             shift_ms = 0
+        try:
+            lead_in_ms = max(0, int(self._lead_var.get()))
+        except (tk.TclError, ValueError):
+            lead_in_ms = 3000
         return {
             "font_name": self._font_var.get().strip() or _DEFAULT_FONT,
             "font_size": font_size,
@@ -519,6 +545,9 @@ class HomePage(ttkb.Frame):
             # ADR-027：雙行歌詞（舊 settings.json 冇呢兩個 key → 自動單行）
             "dual_line": bool(self._dual_var.get()),
             "switch_delay_ms": delay_ms,
+            # ADR-031：提前顯示 / 倒數圓點
+            "lead_in_ms": lead_in_ms,
+            "countdown_dots": bool(self._dots_var.get()),
             # ADR-029：整體平移（正值 = 延後）
             "shift_ms": shift_ms,
             # ADR-030：上下行水平錯位
@@ -567,6 +596,11 @@ class HomePage(ttkb.Frame):
             self._dual_var.set(bool(style.get("dual_line")))
         if style.get("switch_delay_ms") is not None:
             self._delay_var.set(int(style.get("switch_delay_ms") or 1000))
+        # ADR-031：舊檔冇呢兩個 key → 用預設（3 秒 / 開圓點）
+        if style.get("lead_in_ms") is not None:
+            self._lead_var.set(int(style.get("lead_in_ms") or 0))
+        if "countdown_dots" in style:
+            self._dots_var.set(bool(style.get("countdown_dots")))
         if style.get("shift_ms") is not None:
             self._shift_var.set(int(style.get("shift_ms") or 0))
         self._up_pos_var.set(_POS_NAME.get(int(style.get("up_offset_pct") or 0), "居中"))
@@ -774,6 +808,9 @@ class HomePage(ttkb.Frame):
                 # ADR-030：上下行水平錯位
                 up_offset_pct=int(snap.get("up_offset_pct") or 0),
                 down_offset_pct=int(snap.get("down_offset_pct") or 0),
+                # ADR-031：提前顯示 / 倒數圓點
+                lead_in_ms=int(snap.get("lead_in_ms", 3000)),
+                countdown_dots=bool(snap.get("countdown_dots", True)),
             )
         except (ValueError, tk.TclError):
             messagebox.showerror("樣式參數錯誤", "字級 / 留白要係整數。", parent=self)
@@ -915,6 +952,9 @@ class HomePage(ttkb.Frame):
         snap = self.style_snapshot()
         values["alignment"] = snap["alignment"]
         values["outline_width"] = snap["outline_width"]
+        # ADR-031：提前顯示 / 倒數圓點（同預設一樣就唔會出現喺指令度）
+        values["lead_in_ms"] = snap["lead_in_ms"]
+        values["countdown_dots"] = snap["countdown_dots"]
         if self._output_var.get().strip():
             values["output_dir"] = self._output_var.get().strip()
         cmd = generate_cli_command("generate", values)

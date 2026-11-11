@@ -1562,11 +1562,16 @@ def _describe_style(style: dict) -> str:
     align_names = {2: "底部置中", 3: "中下", 5: "中部置中", 8: "頂部置中"}
     margin = int(style.get("margin_v") or 0)
     outline = float(style.get("outline_width") or 0.0)
+    # ADR-031：提前顯示／倒數圓點也要顯示，否則用戶唔知燒錄會唔會出圓點
+    lead = int(style.get("lead_in_ms", 3000))
+    lead_text = "唔提前" if lead <= 0 else f"提前 {lead / 1000:.1f}s"
+    dots_text = "圓點開" if style.get("countdown_dots", True) else "圓點關"
     return (
         f"{style.get('font_name', '?')} {style.get('font_size', '?')}px · "
         f"唱過 {style.get('primary_color', '?')} / 未唱 {style.get('secondary_color', '?')} / "
         f"描邊 {style.get('outline_color', '?')}"
         f"（{'自動' if not outline else f'{outline:g}px'}）· "
         f"{align_names.get(int(style.get('alignment') or 2), '底部置中')} · "
-        f"留白 {'自動' if not margin else f'{margin}px'}"
+        f"留白 {'自動' if not margin else f'{margin}px'} · "
+        f"{lead_text} · {dots_text}"
     )

@@ -13,8 +13,13 @@ import pytest
 import main
 
 
-def _make_doc(n: int = 4, *, dual: bool = True, delay: int = 1000) -> dict:
-    """每句 3000ms、句句緊接（start_{i+1} = end_i + 200）。"""
+def _make_doc(n: int = 4, *, dual: bool = True, delay: int = 1000,
+              lead_in: int = 0) -> dict:
+    """每句 3000ms、句句緊接（start_{i+1} = end_i + 200）。
+
+    ``lead_in=0`` 明確關閉 ADR-031 的提前顯示 —— 本檔鎖的是 **ADR-027 舊契約**，
+    要維持 byte-identical（提前顯示／圓點見 ``test_lead_in.py``）。
+    """
     lines = []
     for i in range(n):
         start = i * 3000
@@ -34,7 +39,7 @@ def _make_doc(n: int = 4, *, dual: bool = True, delay: int = 1000) -> dict:
     style = {
         "play_res_x": 1920, "play_res_y": 1080,
         "font_size": 100, "margin_v": 100, "outline_width": 4.0,
-        "switch_delay_ms": delay,
+        "switch_delay_ms": delay, "lead_in_ms": lead_in,
     }
     if dual:
         style["dual_line"] = True

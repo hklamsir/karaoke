@@ -7,9 +7,9 @@ tkinter.Canvas 直接畫字（唔用 libass）：
 - 游標之前嘅字 = primary（唱過）；之後 = secondary（未唱）
 - Canvas 無原生描邊 → 8 向疊同色文字模擬
 
-ADR-027：``draw_dual_subtitle`` 對應雙行模式（奇數句上行、偶數句下行），
-換行窗口規則同 ``main._dual_line_window`` 一致 —— 兩邊改動必須同步，
-否則編輯器預覽同燒錄結果會唔同（所見非所得）。
+ADR-031：顯示窗同倒數圓點**一律呼叫 ``main.compute_display_windows`` /
+``main.compute_countdown_dots``**，同燒錄共用同一份計算 —— 以前呢度自己抄一份
+``_dual_rows``，兩邊一改就「所見非所得」，現在只有一個真源。
 
 ⚠️ R20：Canvas 用系統字型 vs libass PlayRes 座標系，**唔係逐像素預覽**；
 疊圖只係睇大概位置同效果，要精確確認就燒錄。
@@ -82,66 +82,28 @@ def _draw_line(canvas: tk.Canvas, center_x: float, top_y: float, line: dict,
         x += cw
 
 
-def draw_subtitle(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
-                  line: dict | None, style: dict, cursor_ms: int) -> None:
-    """喺影片畫面（x0,y0,w,h）上面畫當前行字幕疊圖（單行模式）。"""
-    if line is None:
-        return
-    size, outline, margin_v, _gap = _metrics(style, h)
-    if not _char_list(line):
-        return
-    # ADR-030：預覽亦要跟「對齊」，否則預覽底部、燒錄頂部（所見非所得）
-    an = int(style.get("alignment") or 2)
-    if an == 8:
-        top = y0 + margin_v
-    elif an == 5:
-        top = y0 + h / 2 - size / 2
-    else:
-        top = y0 + h - margin_v - size
-    _draw_line(canvas, x0 + w / 2, top, line, style, cursor_ms, size, outline)
+def _style_value(key: str, value: Any, fallback: Any) -> Any:
+    return value if value not in (None, "") else fallback
 
 
-def _dual_rows(lines: list[dict[str, Any]], delay_ms: int,
-               cursor_ms: int) -> tuple[dict | None, dict | None]:
-    """回傳 ``(上行句, 下行句)``；窗口規則同步 ``main._dual_line_window``。"""
-    n = len(lines)
-    up: dict | None = None
-    down: dict | None = None
-    for i, line in enumerate(lines):
-        start = 0 if i < 2 else int(lines[i - 1].get("start_ms", 0)) + delay_ms
-        if i + 1 < n:
-            end = int(lines[i + 1].get("start_ms", 0)) + delay_ms
-        else:
-            end = int(line.get("end_ms", 0))
-        if end <= start:
-            continue
-        if start <= cursor_ms < end:
-            if i % 2 == 0:
-                up = line
-            else:
-                down = line
-    return up, down
+def _layout(style: dict, h: float, y0: float) -> dict[str, Any]:
+    """算出所有行位置（PlayRes → 畫布座標），單行／雙行共用。
 
-
-def draw_dual_subtitle(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
-                       lines: list[dict[str, Any]], style: dict,
-                       cursor_ms: int) -> None:
-    """雙行模式疊圖（ADR-027）：上行 = 奇數句、下行 = 偶數句。
-
-    Args:
-        lines: 全部歌詞行（timings.json 的 ``lines``）。
-        style: timings.json 的 ``style`` 段（含 ``switch_delay_ms`` /
-            ``line_gap``；缺就按預設）。
-        cursor_ms: 目前播放位置（絕對毫秒）。
+    Returns:
+        ``{"an", "size", "outline", "single_top", "up_top", "down_top"}``
     """
-    if not lines:
-        return
-    delay_ms = max(0, int(style.get("switch_delay_ms") or 1000))
-    up, down = _dual_rows(lines, delay_ms, cursor_ms)
-
     size, outline, margin_v, gap = _metrics(style, h)
-    # ADR-030：垂直位置跟「對齊」（2 底 / 8 頂 / 5 中），水平各自錯位
     an = int(style.get("alignment") or 2)
+    if an not in (2, 5, 8):
+        an = 2
+    # 單行：跟 ASS Style 的 Alignment + MarginV
+    if an == 8:
+        single_top = y0 + margin_v
+    elif an == 5:
+        single_top = y0 + h / 2 - size / 2
+    else:
+        single_top = y0 + h - margin_v - size
+    # 雙行：上行 = 下行 − 行距（an8 反過來由頂往下排）
     if an == 8:
         up_top = y0 + margin_v
         down_top = up_top + gap
@@ -152,13 +114,93 @@ def draw_dual_subtitle(canvas: tk.Canvas, x0: float, y0: float, w: float, h: flo
     else:
         down_top = y0 + h - margin_v - size
         up_top = down_top - gap
-    up_cx = x0 + w / 2 + w * float(style.get("up_offset_pct") or 0) / 100.0
-    down_cx = x0 + w / 2 + w * float(style.get("down_offset_pct") or 0) / 100.0
+    return {"an": an, "size": size, "outline": outline,
+            "single_top": single_top, "up_top": up_top, "down_top": down_top}
 
-    if down is not None:
-        _draw_line(canvas, down_cx, down_top, down, style, cursor_ms, size, outline)
-    if up is not None:
-        _draw_line(canvas, up_cx, up_top, up, style, cursor_ms, size, outline)
+
+def _dot_xy(center_x: float, row_top: float, layout: dict[str, Any]) -> tuple[float, float]:
+    """圓點左上角：放喺目標行上方；頂部對齊時改放行下方（同 main 一致）。"""
+    size = layout["size"]
+    dot_size = max(6, round(size * 0.40))
+    pad = max(1, round(size * 0.12))
+    if layout["an"] == 8:
+        return center_x, row_top + size + pad
+    return center_x, row_top - pad - dot_size
+
+
+def _draw_dots(canvas: tk.Canvas, center_x: float, dot_top: float, count: int,
+               layout: dict[str, Any], style: dict) -> None:
+    """逐點畫圓點（全用唱過色 + 描邊，跟 ASS ``\\fs`` / ``\\fsp``）。"""
+    size = max(6, round(layout["size"] * 0.40))
+    color = _style_value("primary_color", style.get("primary_color"), theme.SUB_PRIMARY)
+    outline_color = _style_value("outline_color", style.get("outline_color"), "#000000")
+    font = (style.get("font_name") or theme.ui_font_family(), size)
+    gap = max(2, round(size * 0.35))
+    total = size * count + gap * (count - 1)
+    x = center_x - total / 2
+    for _ in range(count):
+        _draw_outlined(canvas, x, dot_top, "●", font, color, outline_color,
+                       layout["outline"])
+        x += size + gap
+
+
+def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
+                 lines: list[dict[str, Any]], style: dict, cursor_ms: int) -> None:
+    """按 ``style`` 畫歌詞疊圖（單行／雙行）＋ 倒數圓點（ADR-031）。
+
+    顯示窗同圓點時間全部由 ``main`` 嘅純函數提供 —— 燒錄與預覽永遠一致。
+
+    Args:
+        canvas: 目標 Canvas。
+        x0, y0, w, h: 影片畫面喺畫布上嘅位置與大小。
+        lines: ``timings.json`` 的 ``lines``。
+        style: ``timings.json`` 的 ``style`` 段。
+        cursor_ms: 目前播放位置（絕對毫秒）。
+    """
+    if not lines:
+        return
+    import main     # 延遲 import：UI ↔ CLI 共用同一份窗計算
+
+    dual = bool(style.get("dual_line"))
+    starts = [int(ln.get("start_ms", 0)) for ln in lines]
+    ends = [int(ln.get("end_ms", 0)) for ln in lines]
+    lead_in = int(style.get("lead_in_ms", 3000))
+    windows = main.compute_display_windows(
+        starts, ends, lead_in_ms=lead_in, dual_line=dual,
+        delay_ms=int(style.get("switch_delay_ms") or 1000))
+    dots_on = bool(style.get("countdown_dots", True))
+    dot_times = (main.compute_countdown_dots(starts, windows, lead_in_ms=lead_in)
+                 if dots_on else [[] for _ in lines])
+
+    layout = _layout(style, h, y0)
+    mid_x = x0 + w / 2
+    up_pct = float(style.get("up_offset_pct") or 0)
+    down_pct = float(style.get("down_offset_pct") or 0)
+
+    def row_of(index: int) -> tuple[float, float]:
+        """回傳 ``(center_x, top_y)``；單行固定用 ``single_top``。"""
+        if not dual:
+            return mid_x, layout["single_top"]
+        if index % 2 == 0:
+            return mid_x + w * up_pct / 100.0, layout["up_top"]
+        return mid_x + w * down_pct / 100.0, layout["down_top"]
+
+    for i, line in enumerate(lines):
+        win_start, win_end = windows[i]
+        if not (win_start <= cursor_ms < win_end):
+            continue
+        center_x, top = row_of(i)
+        _draw_line(canvas, center_x, top, line, style, cursor_ms,
+                   layout["size"], layout["outline"])
+        # 圓點：只在**開唱前**畫（ASS 的圓點 event 也是開唱即結束）。
+        # ⚠️ 唔加 `cursor_ms < starts[i]` 的話，唱完之後句尾停留期間會一直
+        #    見到 3 粒圓點 -- 同成品唔一致。
+        if cursor_ms < starts[i]:
+            times = [t for t in dot_times[i] if t < starts[i]]
+            lit = sum(1 for t in times if cursor_ms >= t)
+            if lit:
+                dot_x, dot_top = _dot_xy(center_x, top, layout)
+                _draw_dots(canvas, dot_x, dot_top, lit, layout, style)
 
 
 def _draw_outlined(canvas: tk.Canvas, x: float, y: float, ch: str,

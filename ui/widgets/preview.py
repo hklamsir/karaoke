@@ -16,11 +16,26 @@ from pathlib import Path
 import ttkbootstrap as ttkb
 
 from .. import theme
-from .overlay import draw_dual_subtitle, draw_subtitle
+from .overlay import draw_overlay
 
 LOGGER = logging.getLogger("karaoke.ui.preview")
 
 STRIP_H = 40
+
+#: ADR-032：預覽解析度（"auto" = 跟 timings.json 的 PlayRes，即輸出影片的真實解析度）
+RES_PRESETS: list[tuple[str, str]] = [
+    ("跟原片", "auto"),
+    ("1920×1080", "1920x1080"),
+    ("1280×720", "1280x720"),
+    ("854×480", "854x480"),
+    ("自訂…", "custom"),
+]
+#: 縮放：fit = 填滿窗格；其餘為相對 1:1 的倍率（超出窗格時自動降級並顯示實際比例）
+ZOOM_PRESETS: list[tuple[str, str]] = [
+    ("適合視窗", "fit"),
+    ("50%", "0.5"),
+    ("100%", "1.0"),
+]
 
 
 class PreviewPane(ttkb.Frame):
@@ -79,9 +94,32 @@ class PreviewPane(ttkb.Frame):
         self._strip.bind("<Button-1>", self._on_strip_click)
         self._strip.bind("<B1-Motion>", self._on_strip_click)
 
-        # --- 進度 / 狀態行 ---
+        # --- 進度 / 狀態行（含 ADR-032 解析度與縮放）---
         row = ttkb.Frame(self, bootstyle="light")
         row.pack(fill="x", padx=4, pady=(0, 2))
+        from .. import settings as ui_settings
+        saved = ui_settings.load()
+        self._res_var = tk.StringVar(
+            value=dict(RES_PRESETS).get(str(saved.get("preview_res") or "auto"),
+                                        "跟原片"))
+        self._zoom_var = tk.StringVar(
+            value=dict(ZOOM_PRESETS).get(str(saved.get("preview_zoom") or "fit"),
+                                         "適合視窗"))
+        ttkb.Label(row, text="解析度", bootstyle="secondary",
+                   font=(theme.ui_font_family(), 8)).pack(side="left")
+        res_combo = ttkb.Combobox(row, textvariable=self._res_var, width=10,
+                                  state="readonly", values=[n for n, _ in RES_PRESETS])
+        res_combo.pack(side="left", padx=(2, 6))
+        res_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_view_setting())
+        ttkb.Label(row, text="縮放", bootstyle="secondary",
+                   font=(theme.ui_font_family(), 8)).pack(side="left")
+        zoom_combo = ttkb.Combobox(row, textvariable=self._zoom_var, width=8,
+                                   state="readonly", values=[n for n, _ in ZOOM_PRESETS])
+        zoom_combo.pack(side="left", padx=(2, 6))
+        zoom_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_view_setting())
+        self._view_info_var = tk.StringVar(value="")
+        ttkb.Label(row, textvariable=self._view_info_var, bootstyle="secondary",
+                   font=(theme.mono_font_family(), 8)).pack(side="left", padx=(0, 6))
         ttkb.Label(row, textvariable=self._thumb_progress_var, bootstyle="secondary",
                    font=(theme.mono_font_family(), 8)).pack(side="left")
         ttkb.Button(row, text="高清單幀", bootstyle="secondary", takefocus=False,
@@ -107,6 +145,85 @@ class PreviewPane(ttkb.Frame):
     def set_overlay_visible(self, on: bool) -> None:
         self._overlay_on = on
         self._redraw_video()
+
+    # ------------------------------------------------------------------
+    # ADR-032：預覽解析度 / 縮放
+    # ------------------------------------------------------------------
+
+    def _res_mode(self) -> str:
+        return dict(RES_PRESETS).get(self._res_var.get(), "auto")
+
+    def _target_res(self) -> tuple[int, int]:
+        """預覽用嘅「影片解析度」；預設跟 timings.json 的 PlayRes（= 輸出真實解析度）。"""
+        style = self._state.doc.get("style") or {}
+        auto = (int(style.get("play_res_x") or 1920),
+                int(style.get("play_res_y") or 1080))
+        mode = self._res_mode()
+        if mode == "auto":
+            return auto
+        if mode == "custom":
+            from .. import settings as ui_settings
+            custom = ui_settings.load().get("preview_res_custom") or []
+            try:
+                return int(custom[0]), int(custom[1])
+            except (IndexError, TypeError, ValueError):
+                return auto
+        try:
+            w_str, h_str = mode.split("x")
+            return int(w_str), int(h_str)
+        except ValueError:
+            return auto
+
+    def _frame_geometry(self, w: float, h: float) -> tuple[float, float, float, float, float]:
+        """回傳 ``(x0, y0, fw, fh, scale)``。
+
+        ``scale`` 係「畫面像素 ÷ PlayRes 像素」的實際比例 —— 100% 就係 1:1。
+        窗格唔夠大時自動降到「適合視窗」並喺狀態列顯示**實際**百分比，
+        唔會靜靜畫到爆框。
+        """
+        res_w, res_h = self._target_res()
+        fit = min(w / res_w, h / res_h)
+        zoom = dict(ZOOM_PRESETS).get(self._zoom_var.get(), "fit")
+        want = fit if zoom == "fit" else float(zoom)
+        scale = max(0.01, min(want, fit))
+        fw, fh = res_w * scale, res_h * scale
+        return (w - fw) / 2, (h - fh) / 2, fw, fh, scale
+
+    def _on_view_setting(self) -> None:
+        """解析度／縮放變更 → 記入 settings.json 並重繪。"""
+        from .. import settings as ui_settings
+        mode = self._res_mode()
+        if mode == "custom" and not self._ask_custom_res():
+            self._res_var.set("跟原片")      # 取消 → 還原，唔好留住半套設定
+            mode = "auto"
+        data = ui_settings.load()
+        data["preview_res"] = mode
+        data["preview_zoom"] = dict(ZOOM_PRESETS).get(self._zoom_var.get(), "fit")
+        ui_settings.save(data)
+        self._photo_cache.clear()      # 舊尺寸的縮圖快取唔可以重用
+        self._redraw_video()
+
+    def _ask_custom_res(self) -> bool:
+        """問自訂闊×高；成功寫入 settings 並回傳 True。"""
+        from tkinter import simpledialog
+        from .. import settings as ui_settings
+        cur = ui_settings.load().get("preview_res_custom") or [1920, 1080]
+        answer = simpledialog.askstring(
+            "自訂預覽解析度", "闊 × 高（例如 1920x1080）",
+            initialvalue=f"{cur[0]}x{cur[1]}", parent=self)
+        if not answer:
+            return False
+        try:
+            w_str, h_str = answer.lower().replace("×", "x").split("x")
+            width, height = int(w_str.strip()), int(h_str.strip())
+        except ValueError:
+            return False
+        if not (160 <= width <= 7680 and 90 <= height <= 4320):
+            return False
+        data = ui_settings.load()
+        data["preview_res_custom"] = [width, height]
+        ui_settings.save(data)
+        return True
 
     def start_thumbs(self, video: Path | None, ffmpeg: str, ffprobe: str) -> None:
         """開檔 / 原片指定後啟動縮圖抽取（背景 thread；§6.7.4）。"""
@@ -177,24 +294,32 @@ class PreviewPane(ttkb.Frame):
             abs(int(l.get("start_ms", 0)) - cur), abs(int(l.get("end_ms", 0)) - cur)))
 
     def _draw_overlay(self, canvas, x0: float, y0: float, fw: float, fh: float) -> None:
-        """按 style 決定單行／雙行疊圖（ADR-027）。"""
+        """疊圖（單行／雙行／倒數圓點）—— 窗計算同燒錄共用 ``main`` 的純函數。"""
         style = self._state.doc.get("style") or {}
-        if style.get("dual_line"):
-            draw_dual_subtitle(canvas, x0, y0, fw, fh, self._state.lines, style,
-                               self._state.cursor_ms)
-        else:
-            draw_subtitle(canvas, x0, y0, fw, fh, self._current_line(), style,
-                          self._state.cursor_ms)
+        draw_overlay(canvas, x0, y0, fw, fh, self._state.lines, style,
+                     self._state.cursor_ms)
+
+    @staticmethod
+    def _fit_photo(photo: tk.PhotoImage, target_w: float) -> tk.PhotoImage:
+        """把縮圖縮／放到大約 ``target_w`` 闊（PhotoImage 只支援整數倍）。"""
+        if photo.width() <= 0 or target_w <= 0:
+            return photo
+        ratio = target_w / photo.width()
+        if ratio >= 1.5:
+            return photo.zoom(max(1, int(round(ratio))))
+        if ratio <= 0.66:
+            return photo.subsample(max(1, int(round(1 / ratio))))
+        return photo
 
     def _redraw_video(self) -> None:
         canvas = self._video_canvas
         canvas.delete("all")
         w = max(canvas.winfo_width(), 100)
         h = max(canvas.winfo_height(), 60)
-        # 16:9 置中
-        fw = min(w, round(h * 16 / 9))
-        fh = round(fw * 9 / 16)
-        x0, y0 = (w - fw) / 2, (h - fh) / 2
+        # ADR-032：畫面框按所選解析度／縮放擺位（唔再寫死 16:9）
+        x0, y0, fw, fh, scale = self._frame_geometry(w, h)
+        res_w, res_h = self._target_res()
+        self._view_info_var.set(f"{res_w}×{res_h} · {scale * 100:.0f}%")
 
         self._photo = None
         if self._thumbs is not None:
@@ -207,10 +332,7 @@ class PreviewPane(ttkb.Frame):
                 path = self._thumbs.frame_path(idx * 1000 // self._thumbs.FPS)
                 if path is not None and Path(path).is_file():
                     try:
-                        photo = tk.PhotoImage(file=str(path))
-                        z = max(1, int(fw // photo.width()))
-                        if z > 1:
-                            photo = photo.zoom(z)
+                        photo = self._fit_photo(tk.PhotoImage(file=str(path)), fw)
                         self._photo_cache[idx] = photo
                         while len(self._photo_cache) > 3:
                             self._photo_cache.pop(next(iter(self._photo_cache)))
@@ -351,19 +473,16 @@ class PreviewPane(ttkb.Frame):
             return
         try:
             photo = tk.PhotoImage(file=str(out))
-            # 縮到畫布（subsample 整數倍）
             canvas = self._video_canvas
             w = max(canvas.winfo_width(), 100)
             h = max(canvas.winfo_height(), 60)
-            sub = max(1, min(photo.width() // max(1, int(w)),
-                             photo.height() // max(1, int(h))))
-            if sub > 1:
-                photo = photo.subsample(sub)
+            x0, y0, fw, fh, scale = self._frame_geometry(w, h)
+            # ADR-032：高清單幀按「實際畫面闊度」縮放（唔再只係 16:9）
+            photo = self._fit_photo(photo, fw)
+            res_w, res_h = self._target_res()
+            self._view_info_var.set(f"{res_w}×{res_h} · {scale * 100:.0f}%")
             self._photo = photo
             canvas.delete("all")
-            fw = min(w, round(h * 16 / 9))
-            fh = round(fw * 9 / 16)
-            x0, y0 = (w - fw) / 2, (h - fh) / 2
             canvas.create_image(x0, y0, image=photo, anchor="nw")
             canvas.create_rectangle(x0, y0, x0 + fw, y0 + fh, outline=theme.BORDER)
             if self._overlay_on:

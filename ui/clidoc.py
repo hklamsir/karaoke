@@ -66,12 +66,18 @@ def collect() -> dict[str, list[ParamInfo]]:
     return out
 
 
-def flag_of(command: str, dest: str) -> str:
-    """dest → flag 字串（R17：argparse 冇反查 API，自己 build）。"""
+def flags_of(command: str, dest: str) -> list[str]:
+    """dest → 全部 flag（``--countdown-dots`` / ``--no-countdown-dots`` 兩個都返）。"""
     for param in collect().get(command, []):
         if param.dest == dest:
-            return param.flags.split(",")[0].strip() or f"--{param.dest}"
-    return f"--{dest}"
+            return [f.strip() for f in param.flags.split(",") if f.strip()]
+    return [f"--{dest}"]
+
+
+def flag_of(command: str, dest: str) -> str:
+    """dest → 主要 flag 字串（R17：argparse 冇反查 API，自己 build）。"""
+    flags = flags_of(command, dest)
+    return flags[0] if flags else f"--{dest}"
 
 
 def generate_cli_command(command: str, values: dict[str, Any]) -> str:
@@ -97,6 +103,12 @@ def generate_cli_command(command: str, values: dict[str, Any]) -> str:
         if isinstance(value, bool):
             if value:
                 parts.append(flag)
+            else:
+                # BooleanOptionalAction（例如 --countdown-dots / --no-countdown-dots）：
+                # 預設開、用戶關 → 必須出「否定 flag」，唔出等於冇關到
+                neg = next((f for f in flags_of(command, dest) if f.startswith("--no-")), None)
+                if neg:
+                    parts.append(neg)
         else:
             parts.append(f"{flag} {shlex.quote(str(value))}")
     return " \\\n  ".join(parts)

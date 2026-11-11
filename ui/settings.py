@@ -37,6 +37,12 @@ _DEFAULTS: dict[str, Any] = {
     #: 逐字微調「連動順延」（ADR-026 補記）：改一個字的時間撞到鄰字時，自動
     #: 把後面（或前面）整段推開。預設關 —— 音軌係事實，默默改已對好的字危險。
     "ripple_edit": False,
+    #: ADR-032：編輯器預覽解析度（"auto" = 跟 timings.json 的 PlayRes，
+    #: 即輸出影片的真實解析度）與縮放（"fit" / "0.5" / "1.0"）
+    "preview_res": "auto",
+    "preview_zoom": "fit",
+    #: 自訂解析度 [闊, 高]（只用於 preview_res="custom"）
+    "preview_res_custom": [1920, 1080],
 }
 
 
