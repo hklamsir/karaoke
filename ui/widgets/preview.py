@@ -37,6 +37,39 @@ ZOOM_PRESETS: list[tuple[str, str]] = [
     ("100%", "1.0"),
 ]
 
+#: value → 下拉標籤。settings.json 存的是 **value**（``"1920x1080"``），
+#: 而 ``dict(RES_PRESETS)`` 是 label→value，方向相反會永遠查唔到 ——
+#: 之前就係咁，重開 App 之後「解析度」永遠跳回「跟原片」。
+_RES_BY_VALUE = {value: label for label, value in RES_PRESETS}
+_ZOOM_BY_VALUE = {value: label for label, value in ZOOM_PRESETS}
+
+
+def fit_frame(w: float, h: float, base_w: int, base_h: int,
+              res_w: int, res_h: int, zoom: float | None) -> tuple[float, float, float]:
+    """按**原片比例**把畫面塞入窗格，回傳 ``(fw, fh, scale)``。
+
+    Args:
+        w, h: 窗格可用尺寸（px）。
+        base_w, base_h: 原片／timings 的 PlayRes（決定比例）。
+        res_w, res_h: 使用者選的「輸出模擬」解析度；只用嚟封頂放大倍率，
+            唔會改變畫面比例。
+        zoom: ``None`` = 適合視窗；否則為相對原片 1:1 的倍率。
+
+    Returns:
+        ``(畫面闊, 畫面高, 縮放比例)``。
+
+    Examples:
+        4:3 原片（640×480）在 16:9 窗格 + 1920×1080 輸出模擬 → 仍然 4:3，
+        唔會像以前咁被拉闊裁走上下。
+    """
+    base_w = max(1, int(base_w))
+    base_h = max(1, int(base_h))
+    fit = min(w / base_w, h / base_h)
+    want = fit if zoom is None else float(zoom)
+    cap = min(res_w / base_w, res_h / base_h) if res_w and res_h else 1.0
+    scale = max(0.01, min(want, fit, max(0.01, cap)))
+    return base_w * scale, base_h * scale, scale
+
 
 class PreviewPane(ttkb.Frame):
     """大 preview 窗：影片畫面 + 當前字幕卡 + scrub strip。"""
@@ -101,11 +134,11 @@ class PreviewPane(ttkb.Frame):
         from .. import settings as ui_settings
         saved = ui_settings.load()
         self._res_var = tk.StringVar(
-            value=dict(RES_PRESETS).get(str(saved.get("preview_res") or "auto"),
-                                        "跟原片"))
+            value=_RES_BY_VALUE.get(str(saved.get("preview_res") or "auto"),
+                                    RES_PRESETS[0][0]))
         self._zoom_var = tk.StringVar(
-            value=dict(ZOOM_PRESETS).get(str(saved.get("preview_zoom") or "fit"),
-                                         "適合視窗"))
+            value=_ZOOM_BY_VALUE.get(str(saved.get("preview_zoom") or "fit"),
+                                     ZOOM_PRESETS[0][0]))
         ttkb.Label(row, text="解析度", bootstyle="secondary",
                    font=(theme.ui_font_family(), 8)).pack(side="left")
         res_combo = ttkb.Combobox(row, textvariable=self._res_var, width=10,
@@ -223,14 +256,42 @@ class PreviewPane(ttkb.Frame):
         ``scale`` 係「畫面像素 ÷ PlayRes 像素」的實際比例 —— 100% 就係 1:1。
         窗格唔夠大時自動降到「適合視窗」並喺狀態列顯示**實際**百分比，
         唔會靜靜畫到爆框。
+
+        ⚠️ 畫面比例**一律跟 timings 的 PlayRes**（= 原片比例）：燒錄只會把字幕
+        疊在原片上，唔會改比例。以前用「解析度」設定的比例畫框，4:3 的 MV 揀
+        1920×1080 就會被拉闊／裁走上下，字幕亦因為分母不同而睇落「冇縮小」
+        （2026-11-12 用戶回報）。「解析度」改為只用嚟封頂放大倍率 —— 想睇
+        1080p 效果就揀大於原片的解析度，想模擬 480p 就揀細。
         """
         res_w, res_h = self._target_res()
-        fit = min(w / res_w, h / res_h)
+        style = self._state.doc.get("style") or {}
+        base_w = int(style.get("play_res_x") or res_w) or res_w
+        base_h = int(style.get("play_res_y") or res_h) or res_h
         zoom = dict(ZOOM_PRESETS).get(self._zoom_var.get(), "fit")
-        want = fit if zoom == "fit" else float(zoom)
-        scale = max(0.01, min(want, fit))
-        fw, fh = res_w * scale, res_h * scale
+        fw, fh, scale = fit_frame(w, h, base_w, base_h, res_w, res_h,
+                                  None if zoom == "fit" else float(zoom))
         return (w - fw) / 2, (h - fh) / 2, fw, fh, scale
+
+    def _info_text(self, scale: float) -> str:
+        """狀態列：原片座標系 · 顯示比例（· 輸出模擬）· 字級警告。
+
+        字級警告用「最長一行字數 × 字級 > 畫面闊度」判斷 —— 這正是使用者
+        見到「字幕爆框、預覽唔似成品」的真正原因：字級是相對 PlayRes 的，
+        640×480 的片用 96 字級，一行 10 字就需要 960px，畫面根本放唔落。
+        """
+        style = self._state.doc.get("style") or {}
+        res_w, res_h = self._target_res()
+        base_w = int(style.get("play_res_x") or res_w) or res_w
+        base_h = int(style.get("play_res_y") or res_h) or res_h
+        text = f"{base_w}×{base_h} · {scale * 100:.0f}%"
+        if (res_w, res_h) != (base_w, base_h):
+            text += f" · 模擬 {res_w}×{res_h}"
+        font = int(style.get("font_size") or 48)
+        longest = max((len(str(ln.get("text") or "")) for ln in self._state.lines),
+                      default=0)
+        if longest and font * longest > base_w:
+            text += f" · ⚠ {longest}×{font}>{base_w}"
+        return text
 
     def _on_view_setting(self) -> None:
         """解析度／縮放變更 → 記入 settings.json 並重繪。"""
@@ -361,8 +422,7 @@ class PreviewPane(ttkb.Frame):
         h = max(canvas.winfo_height(), 60)
         # ADR-032：畫面框按所選解析度／縮放擺位（唔再寫死 16:9）
         x0, y0, fw, fh, scale = self._frame_geometry(w, h)
-        res_w, res_h = self._target_res()
-        self._view_info_var.set(f"{res_w}×{res_h} · {scale * 100:.0f}%")
+        self._view_info_var.set(self._info_text(scale))
 
         self._photo = None
         if self._thumbs is not None:
@@ -522,8 +582,7 @@ class PreviewPane(ttkb.Frame):
             x0, y0, fw, fh, scale = self._frame_geometry(w, h)
             # ADR-032：高清單幀按「實際畫面闊度」縮放（唔再只係 16:9）
             photo = self._fit_photo(photo, fw)
-            res_w, res_h = self._target_res()
-            self._view_info_var.set(f"{res_w}×{res_h} · {scale * 100:.0f}%")
+            self._view_info_var.set(self._info_text(scale))
             self._photo = photo
             canvas.delete("all")
             canvas.create_image(x0, y0, image=photo, anchor="nw")

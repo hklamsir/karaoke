@@ -1292,7 +1292,10 @@ class EditorPage(ttkb.Frame):
         # 但用戶正正要用空格做可見間隔（2026-11-11 回報「唔接受全形空格」）。
         # 有實字就照 strip；全部係空白就保留原字元（再由 len()==1 判斷）。
         one = raw.strip() or raw
-        text = raw.strip()
+        # 整行模式同樣唔可以只用 strip 判斷：全形空白「　」是合法輸入
+        # （用作句中的可見間隔，或整句留白表示停頓），strip 完變空就會誤報
+        # 「請輸入歌詞」（2026-11-12 回報）。只有完全冇打字（raw == ""）才算空。
+        text = raw.strip() or raw
         mode = self._ask_mode
         if mode == "char_edit":
             # 用戶明確要求：只可以改**一個字**，多過一個字一律拒絕
