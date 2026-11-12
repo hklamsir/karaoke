@@ -34,6 +34,8 @@ def load_doc(path: str | Path) -> dict[str, Any]:
     doc.setdefault("source", {})
     doc.setdefault("style", {})
     doc.setdefault("lines", [])
+    # 開檔即實體化「標點 → 空格」，令歌詞樹／逐字微調／預覽三邊一致
+    materialize_punct_spaces(doc)
     return doc
 
 
@@ -73,18 +75,57 @@ def char_of(line: dict, word_i: int, char_i: int) -> dict | None:
     return chars[char_i] if 0 <= char_i < len(chars) else None
 
 
+def materialize_punct_spaces(doc: dict) -> int:
+    """把「詞尾標點 → 半形空格」規則實體化成一個真 char（idempotent）。
+
+    用戶 2026-11-11 回報：歌詞樹顯示「逝去種種 昨日經已死」有個空格，但逐字微調
+    同預覽都冇 —— 因為嗰個空格只係 :func:`display_text` 由 ``punctuation`` **即場
+    推導**出嚟，``chars[]`` 冇呢個字，所以微調表、Canvas 疊圖都唔會畫。
+
+    做法：喺下一個詞嘅 chars **最前面**插一個 ``' '``（1ms，時間 = 該詞 begin）。
+    咁樣三邊自然一致：
+      - ``display_text``：下一詞已以空白開頭 → 唔會再加第二個
+      - ``main._karaoke_pieces``：``nxt.text.startswith(" ")`` → 唔會再加第二個
+      - 疊圖／微調：見到真 char，照畫
+
+    Returns:
+        今次插入咗幾個空格 char。
+    """
+    count = 0
+    for line in doc.get("lines") or []:
+        words = line.get("words") or []
+        for i, word in enumerate(words[:-1]):
+            if not (word.get("punctuation") or ""):
+                continue
+            nxt = words[i + 1]
+            chars = nxt.get("chars") or []
+            if not chars or (chars[0].get("text") or "").startswith(" "):
+                continue
+            begin = int(chars[0].get("begin_ms", 0))
+            chars.insert(0, {"text": " ", "begin_ms": begin, "end_ms": begin + 1})
+            nxt["chars"] = chars
+            nxt["text"] = " " + (nxt.get("text") or "")
+            count += 1
+    return count
+
+
 def display_text(line: dict, strip_punctuation: bool = True) -> str:
     """N1：由 words[] 重新組顯示文字（同 main.LyricLine.display_text 規則一致）。
 
     行尾標點剝走；行中標點變半形空格（下一詞以空白開頭就唔補，防雙空格）。
+
+    空白政策（2026-11-11 修訂）：**折疊成一個、去頭尾，但唔會再全刪**。
+    舊版 `re.sub(r"\\s+", "")` 會連用戶刻意打嘅半形空格（例如「種種 昨日」）
+    都刪走，但 `chars[]` 入面仍然有 `' '` 呢個 char —— 結果歌詞樹／字幕卡
+    冇空格、燒錄同預覽反而有罅，UI 同成品唔一致（用戶回報 #2）。而家
+    `word["text"]` 一律由 chars 重建，殘留雜空白只會係一個 char，
+    所以保留一個空格係安全嘅，唔會再出「幽靈空格」。
     """
     words = line.get("words") or []
     parts: list[str] = []
     n = len(words)
     for i, word in enumerate(words):
-        # 清走詞文本所有空白（唔止頭尾）—— 改字/合併後空格可能藏喺 word text
-        # 中間（用戶兩次回報歌詞樹幽靈空格）；行中空格只由 punctuation 規則產生
-        parts.append(re.sub(r"\s+", "", word.get("text") or ""))
+        parts.append(re.sub(r"\s+", " ", word.get("text") or ""))
         punct = word.get("punctuation") or ""
         if not punct:
             continue
@@ -92,7 +133,8 @@ def display_text(line: dict, strip_punctuation: bool = True) -> str:
             parts.append(punct)
         elif i + 1 < n and not (words[i + 1].get("text", "") or "").startswith(" "):
             parts.append(" ")
-    return "".join(parts)
+    # 詞與詞接合後可能出現連續空白 → 再折疊一次；頭尾空白冇意義，清走
+    return re.sub(r"\s+", " ", "".join(parts)).strip()
 
 
 def doc_stats(doc: dict) -> dict[str, Any]:
@@ -157,7 +199,7 @@ def set_line_text(line: dict, new_text: str) -> None:
       （誠實標示要人手校，唔會假裝 ASR 有依據）
     - 標點：新文字入面嘅標點剝出嚟存 ``punctuation``（N6），唔黐字
     """
-    new_text = new_text.strip()
+    new_text = re.sub(r"\s+", " ", new_text.strip())   # 連續空白折疊（同 display_text 一致）
     chars = [c for _, _, c, _ in iter_chars(line)]
     old_puncts = [(w.get("punctuation") or "") for w in line.get("words") or []]
     old_text = "".join(c.get("text", "") for c in chars)
@@ -214,6 +256,76 @@ def split_line_at_word(line: dict, word_i: int) -> dict | None:
     return new_line
 
 
+def split_word_at_char(line: dict, word_i: int, char_i: int) -> int | None:
+    """把一個 WordGroup 喺 ``char_i`` **之後**切成兩個（時間軸原封不動）。
+
+    尾段會佔 ``word_i + 1``；原標點跟尾段（標點永遠屬最後一個字）。
+
+    Args:
+        line: 目標行（原地修改）。
+        word_i: 目標詞索引。
+        char_i: 由 0 起算，斷喺呢個字之後。
+
+    Returns:
+        前半段嘅 word 索引（= ``word_i``）；已係詞尾就唔切、照回 ``word_i``；
+        參數唔合法回傳 ``None``。
+    """
+    words = line.get("words") or []
+    if not (0 <= word_i < len(words)):
+        return None
+    word = words[word_i]
+    chars = word.get("chars") or []
+    if not chars:
+        return None
+    char_i = max(0, min(char_i, len(chars) - 1))
+    if char_i >= len(chars) - 1:
+        return word_i                      # 已經係詞尾，唔使切
+    head_chars, tail_chars = chars[:char_i + 1], chars[char_i + 1:]
+    head_end = int(head_chars[-1].get("end_ms", word.get("end_ms", 0)))
+    tail_begin = int(tail_chars[0].get("begin_ms", head_end))
+    head_word = {
+        "text": "".join(c.get("text", "") for c in head_chars),
+        "begin_ms": int(word.get("begin_ms", head_chars[0].get("begin_ms", 0))),
+        "end_ms": head_end,
+        "estimated": bool(word.get("estimated")),
+        "punctuation": "",                     # 標點永遠跟最後一個字
+        "chars": head_chars,
+    }
+    tail_word = {
+        "text": "".join(c.get("text", "") for c in tail_chars),
+        "begin_ms": tail_begin,
+        "end_ms": int(word.get("end_ms", tail_chars[-1].get("end_ms", tail_begin))),
+        "estimated": bool(word.get("estimated")),
+        "punctuation": word.get("punctuation") or "",
+        "chars": tail_chars,
+    }
+    words[word_i:word_i + 1] = [head_word, tail_word]
+    return word_i
+
+
+def split_line_at_char(line: dict, word_i: int, char_i: int) -> dict | None:
+    """喺**字**邊界斷句（C5b）：可以切穿一個詞，時間軸原封不動。
+
+    ASR 只回 word 級時間，但每個 CharSlot 本身已有 begin/end（``word_slot_to_group``
+    按字數比例分好），所以切穿一個詞係**無損**嘅，唔需要重新估時間。
+
+    Args:
+        line: 目標行（會被就地修改成「前半行」）。
+        word_i: 目標詞索引。
+        char_i: 由 0 起算，斷喺呢個字**之後**。
+
+    Returns:
+        新行（未插入 doc）；索引／參數唔合法回傳 ``None``。
+    """
+    words = line.get("words") or []
+    if not (0 <= word_i < len(words)):
+        return None
+    head_i = split_word_at_char(line, word_i, char_i)
+    if head_i is None:
+        return None
+    return split_line_at_word(line, head_i + 1)
+
+
 def merge_lines(first: dict, second: dict) -> None:
     """合併 second 入 first（C5）：保留所有 char 原始時間軸；中間空隙唔填。"""
     first["words"] = (first.get("words") or []) + (second.get("words") or [])
@@ -222,16 +334,22 @@ def merge_lines(first: dict, second: dict) -> None:
 
 
 def insert_word(line: dict, word_i: int, text: str,
-                begin_ms: int | None = None, end_ms: int | None = None) -> dict:
-    """行中插入一個字（C6 場景 B）：新單字 WordGroup，estimated=true；
-    原 char 時間軸不變（唔推遞）。"""
+                begin_ms: int | None = None, end_ms: int | None = None,
+                duration_ms: int = 100) -> dict:
+    """喺 ``word_i`` **之前**插入一個字（C6 場景 B）：新單字 WordGroup，estimated=true。
+
+    時間：預設貼住下一個字（``end = 下一字 begin``、長度 = ``duration_ms``），
+    唔夠位就夾返前一個字之後。原 char 時間軸不變（唔推遞）。
+    """
     words = line.get("words") or []
     if begin_ms is None or end_ms is None:
-        # 預設：插喺 word_i 前面，用前後 word 之間嘅中點做 1ms 佔位
-        prev_end = words[word_i - 1].get("end_ms", 0) if word_i > 0 else int(line.get("start_ms", 0))
-        next_begin = words[word_i].get("begin_ms", prev_end + 1) if word_i < len(words) else prev_end + 1
-        mid = max(prev_end, (prev_end + next_begin) // 2)
-        begin_ms, end_ms = mid, mid + 1
+        prev_end = (int(words[word_i - 1].get("end_ms", 0)) if word_i > 0
+                    else int(line.get("start_ms", 0)))
+        next_begin = (int(words[word_i].get("begin_ms", prev_end + 1))
+                      if word_i < len(words) else prev_end + 1)
+        dur = max(1, int(duration_ms))
+        begin_ms = max(prev_end, next_begin - dur)
+        end_ms = max(begin_ms + 1, next_begin)
     word = {
         "text": text, "begin_ms": begin_ms, "end_ms": end_ms,
         "estimated": True, "punctuation": "",
@@ -239,6 +357,211 @@ def insert_word(line: dict, word_i: int, text: str,
     }
     words.insert(word_i, word)
     return word
+
+
+def insert_char_after(line: dict, word_i: int, char_i: int, text: str,
+                      duration_ms: int = 100, ripple: bool = False) -> dict | None:
+    """喺某個字**之後**插入一個字（C6 場景 B'：行尾／字尾加字）。
+
+    用戶 2026-11-11 回報：想喺最後一個字（例如「記」）後面加一個字，時間約 0.1 秒
+    （主頁可設定），舊版只可以插喺選中字**前面**而且時長 1ms（等於睇唔到）。
+
+    行為：
+      - 唔係詞尾 → 先切開個詞（時間原封不動），新字插喺兩段之間
+      - 新字時間 = 前字 end 起、長 ``duration_ms``
+      - 撞到後面已有嘅字：``ripple=True`` 就整段順延，否則夾到剛好唔重疊
+        （最短 1ms；最終由 :func:`normalize` 收尾）
+
+    Args:
+        line: 目標行（原地修改）。
+        word_i: 目標詞索引。
+        char_i: 由 0 起算，插喺呢個字之後。
+        text: 新字（多字會變一個多字 WordGroup，但多數字用家在行尾加單字）。
+        duration_ms: 新字時長（ms），預設 100 = 0.1 秒。
+        ripple: 撞到後面的字時，是否整段順延（同「連動」勾選一致）。
+
+    Returns:
+        新 WordGroup；參數唔合法回傳 ``None``。
+    """
+    words = line.get("words") or []
+    if not words:
+        return None
+    word_i = max(0, min(word_i, len(words) - 1))
+    chars = words[word_i].get("chars") or []
+    if not chars:
+        return None
+    head_i = split_word_at_char(line, word_i, char_i)
+    if head_i is None:
+        return None
+    head_chars = words[head_i].get("chars") or []
+    begin = int(head_chars[-1].get("end_ms", words[head_i].get("end_ms", 0)))
+    dur = max(1, int(duration_ms))
+    end = begin + dur
+    was_last = head_i == len(words) - 1
+    nxt_chars = words[head_i + 1].get("chars") or [] if head_i + 1 < len(words) else []
+    if nxt_chars:
+        nxt_begin = int(nxt_chars[0].get("begin_ms", end))
+        if nxt_begin < end:
+            if ripple:
+                shift = end - nxt_begin
+                for word in words[head_i + 1:]:
+                    for c in word.get("chars") or []:
+                        c["begin_ms"] = int(c["begin_ms"]) + shift
+                        c["end_ms"] = int(c["end_ms"]) + shift
+                    word["begin_ms"] = int(word.get("begin_ms", 0)) + shift
+                    word["end_ms"] = int(word.get("end_ms", 0)) + shift
+            else:
+                end = max(begin + 1, nxt_begin)
+    new_word = {
+        "text": text, "begin_ms": begin, "end_ms": end,
+        "estimated": True, "punctuation": "",
+        "chars": [{"text": text, "begin_ms": begin, "end_ms": end}],
+    }
+    # ⚠️ 加喺行尾：原本最後一個字嘅**句末標點要跟住新字**。唔搬嘅話
+    # display_text 會當「行中標點」補一個空格 → 用戶見到「記 住」（2026-11-11 回報）。
+    if was_last:
+        tail_punct = words[head_i].get("punctuation") or ""
+        if tail_punct:
+            words[head_i]["punctuation"] = ""
+            new_word["punctuation"] = tail_punct
+    words.insert(head_i + 1, new_word)
+    line["end_ms"] = max(int(line.get("end_ms") or 0),
+                         int(words[-1].get("end_ms") or 0))
+    return new_word
+
+
+def insert_char_before(line: dict, word_i: int, char_i: int, text: str,
+                       duration_ms: int = 100, ripple: bool = False) -> dict | None:
+    """喺某個字**之前**插入一個字（逐字微調「＋字前」）。
+
+    2026-11-11 用戶回報：選「去」（「逝去」係**一個**兩字詞）按「＋字前」，
+    新字變咗插喺「逝」之前 —— 舊版 ``insert_word()`` 只收 ``word_i``，永遠插喺
+    整個詞之前。正解：先喺目標字之前切詞（時間無損），再插喺兩段之間。
+
+    新字時間：貼住目標字開始（``end = 目標字 begin``），長 ``duration_ms``；
+    前面唔夠位就縮短；``ripple=True`` 就整段順延。
+
+    Args:
+        line: 目標行（原地修改）。
+        word_i: 目標詞索引。
+        char_i: 由 0 起算，插喺呢個字之前。
+        text: 新字。
+        duration_ms: 新字時長（ms），預設 100。
+        ripple: 前面唔夠位時是否把目標字及之後整段順延。
+
+    Returns:
+        新 WordGroup；參數唔合法回傳 ``None``。
+    """
+    words = line.get("words") or []
+    if not (0 <= word_i < len(words)):
+        return None
+    chars = words[word_i].get("chars") or []
+    if not chars:
+        return None
+    char_i = max(0, min(char_i, len(chars) - 1))
+    if char_i > 0:
+        head_i = split_word_at_char(line, word_i, char_i - 1)
+        if head_i is None:
+            return None
+        target_i = head_i + 1
+    else:
+        target_i = word_i
+    target_chars = words[target_i].get("chars") or []
+    end = int(target_chars[0].get("begin_ms", 0)) if target_chars else 0
+    prev_end = int(line.get("start_ms", 0))
+    if target_i > 0:
+        prev_chars = words[target_i - 1].get("chars") or []
+        if prev_chars:
+            prev_end = int(prev_chars[-1].get("end_ms", prev_end))
+    dur = max(1, int(duration_ms))
+    if ripple and end - prev_end < dur:
+        shift = dur - max(0, end - prev_end)
+        for word in words[target_i:]:
+            for c in word.get("chars") or []:
+                c["begin_ms"] = int(c["begin_ms"]) + shift
+                c["end_ms"] = int(c["end_ms"]) + shift
+            word["begin_ms"] = int(word.get("begin_ms", 0)) + shift
+            word["end_ms"] = int(word.get("end_ms", 0)) + shift
+        end += shift
+    length = min(dur, max(1, end - prev_end))
+    begin = max(0, end - length)
+    new_word = {
+        "text": text, "begin_ms": begin, "end_ms": end,
+        "estimated": True, "punctuation": "",
+        "chars": [{"text": text, "begin_ms": begin, "end_ms": end}],
+    }
+    words.insert(target_i, new_word)
+    line["start_ms"] = min(int(line.get("start_ms") or begin), begin)
+    return new_word
+
+
+def set_char_text(line: dict, word_i: int, char_i: int, text: str) -> bool:
+    """改**一個字**的文字（逐字微調「✏ 修改」）。
+
+    用戶 2026-11-11 明確要求：**只可以輸入一個字**，多過一個字一律拒絕
+    （要加字請用「+字前／+字後」，要改整句用歌詞樹「✏ 修改」）。
+
+    空白字元（半形空格 ``" "``、全形空格 ``"　"``）**算合法**——用戶要用佢
+    做可見的間隔。所以呢度唔可以 ``strip()`` 或者用 regex 清空白。
+
+    Returns:
+        ``True`` = 已改；``False`` = 參數唔合法／輸入唔係剛好一個字元。
+    """
+    words = line.get("words") or []
+    if not (0 <= word_i < len(words)):
+        return False
+    chars = words[word_i].get("chars") or []
+    if not (0 <= char_i < len(chars)):
+        return False
+    if text is None or len(text) != 1:
+        return False
+    char = chars[char_i]
+    char["text"] = text
+    word = words[word_i]
+    word["chars"] = chars
+    word["text"] = "".join(c.get("text", "") for c in chars)
+    word["begin_ms"] = int(chars[0].get("begin_ms", word.get("begin_ms", 0)))
+    word["end_ms"] = int(chars[-1].get("end_ms", word.get("end_ms", 0)))
+    return True
+
+
+def delete_char(line: dict, word_i: int, char_i: int) -> bool:
+    """刪除一個字（逐字微調「✕ 刪字」，2026-11-11 用戶需求 #3）。
+
+    - 詞內仲有其他字 → 只刪該 char，重算詞／行邊界
+    - 詞變空 → 連個 WordGroup 一齊移除
+    - 行只剩一個字 → **拒絕**（回傳 ``False``，請用「🗑 刪行」）
+
+    Returns:
+        ``True`` = 已刪；``False`` = 唔可以刪（參數錯／剩最後一個字）。
+    """
+    words = line.get("words") or []
+    if not (0 <= word_i < len(words)):
+        return False
+    word = words[word_i]
+    chars = word.get("chars") or []
+    if not (0 <= char_i < len(chars)):
+        return False
+    total = sum(len(w.get("chars") or []) for w in words)
+    if total <= 1:
+        return False
+
+    del chars[char_i]
+    if chars:
+        word["chars"] = chars
+        word["begin_ms"] = int(chars[0].get("begin_ms", word.get("begin_ms", 0)))
+        word["end_ms"] = int(chars[-1].get("end_ms", word.get("end_ms", 0)))
+        word["text"] = "".join(c.get("text", "") for c in chars)
+    else:
+        punct = word.get("punctuation") or ""
+        words.pop(word_i)
+        # 標點永遠屬最後一個字：被刪嘅係尾詞就搬去新尾詞
+        if punct and words:
+            words[-1]["punctuation"] = (words[-1].get("punctuation") or "") + punct
+    if words:
+        line["start_ms"] = int(words[0].get("begin_ms", line.get("start_ms", 0)))
+        line["end_ms"] = int(words[-1].get("end_ms", line.get("end_ms", 0)))
+    return True
 
 
 def add_line(doc: dict, start_ms: int, end_ms: int, text: str, at_line_i: int | None = None) -> dict:
@@ -533,6 +856,7 @@ def repair_line(line: dict) -> dict[str, Any]:
 
 def normalize(doc: dict) -> None:
     """N1–N7（in-place）。重疊 clip、倒轉夾返、text 重建、end_ms + hold_ms。"""
+    materialize_punct_spaces(doc)      # 標點空格實體化（idempotent）
     hold_ms = int((doc.get("source") or {}).get("hold_ms") or 300)
     lines = doc.get("lines") or []
 

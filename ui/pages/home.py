@@ -24,6 +24,7 @@ import ttkbootstrap as ttkb
 from .. import settings, theme
 from ..widgets.progress import QueueLogHandler, StageProgress
 from ..widgets.style_preview import StylePreviewCanvas
+from ..widgets.tooltip import Tooltip
 
 LOGGER = logging.getLogger("karaoke.ui.home")
 
@@ -387,6 +388,46 @@ class HomePage(ttkb.Frame):
         self._model_var = tk.StringVar(value="qwen-audio-3.1-asr-flash-filetrans")
         ttkb.Combobox(row, textvariable=self._model_var, width=36,
                       values=["qwen-audio-3.1-asr-flash-filetrans"]).pack(side="left", padx=4)
+
+        # 編輯器偏好（2026-11-11 用戶需求 #2）：逐字微調「＋ 字」新字時長。
+        # 唔屬於「生成參數」，所以存 settings.json 而唔係寫入 source。
+        saved = settings.load()
+        edit_row = ttkb.Frame(self._adv_box, bootstyle="light")
+        edit_row.pack(fill="x", padx=theme.SPACE, pady=(0, theme.SPACE))
+        ttkb.Label(edit_row, text="編輯器", bootstyle="secondary").pack(side="left")
+        self._char_ms_var = tk.StringVar(value=str(int(saved.get("char_insert_ms") or 100)))
+        ttkb.Label(edit_row, text="插字時長 (ms)", bootstyle="secondary") \
+            .pack(side="left", padx=(10, 2))
+        spin_char = ttkb.Spinbox(edit_row, textvariable=self._char_ms_var,
+                                 from_=10, to=2000, width=6,
+                                 command=self._save_editor_prefs)
+        spin_char.pack(side="left")
+        spin_char.bind("<FocusOut>", lambda _e: self._save_editor_prefs())
+        spin_char.bind("<Return>", lambda _e: self._save_editor_prefs())
+        Tooltip(spin_char, "逐字微調「+字前／+字後」新字的預設長度，預設 100ms（= 0.1 秒）")
+
+        self._new_line_ms_var = tk.StringVar(value=str(int(saved.get("new_line_ms") or 3000)))
+        ttkb.Label(edit_row, text="新增行長度 (ms)", bootstyle="secondary") \
+            .pack(side="left", padx=(10, 2))
+        spin_line = ttkb.Spinbox(edit_row, textvariable=self._new_line_ms_var,
+                                 from_=200, to=30000, increment=100, width=7,
+                                 command=self._save_editor_prefs)
+        spin_line.pack(side="left")
+        spin_line.bind("<FocusOut>", lambda _e: self._save_editor_prefs())
+        spin_line.bind("<Return>", lambda _e: self._save_editor_prefs())
+        Tooltip(spin_line, "新增歌詞行（無字幕區段／游標位置）的預設句子長度，預設 3000ms")
+
+    def _save_editor_prefs(self) -> None:
+        """把「插字時長／新增行長度」寫入 settings.json（壞值靜靜忽略）。"""
+        try:
+            char_ms = max(10, min(2000, int(float(self._char_ms_var.get()))))
+            line_ms = max(200, min(30_000, int(float(self._new_line_ms_var.get()))))
+        except (tk.TclError, ValueError):
+            return
+        data = settings.load()
+        data["char_insert_ms"] = char_ms
+        data["new_line_ms"] = line_ms
+        settings.save(data)
 
     def _toggle_advanced(self) -> None:
         self._adv_open = not self._adv_open

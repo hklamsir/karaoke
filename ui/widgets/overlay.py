@@ -3,6 +3,9 @@
 
 tkinter.Canvas 直接畫字（唔用 libass）：
 - 字級縮放 = font_size × (畫布高 / play_res_y) —— 跟原片比例唔走位
+- ⚠️ 字級單位：Tk 的**正數 size 係「點」**（96pt → 128px @96dpi），libass 的
+  ``Fontsize`` 係**像素**。所以一律用 :func:`pixel_font`（負 size）渲染，
+  否則預覽會比燒錄大 4/3（2026-11-11 用戶回報 #3，實測 96pt→128px vs 96px）
 - 底部置中（ASS Alignment=2）；margin_v 同樣按比例
 - 游標之前嘅字 = primary（唱過）；之後 = secondary（未唱）
 - Canvas 無原生描邊 → 8 向疊同色文字模擬
@@ -18,9 +21,37 @@ ADR-031：顯示窗同倒數圓點**一律呼叫 ``main.compute_display_windows`
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 from typing import Any
 
 from .. import theme
+
+#: 像素字級快取（root, family, px）→ tkfont.Font。
+#: ⚠️ Tk 字級**正數 = 點**（96 → 128px @96dpi），**負數 = 像素**；libass 的
+#: ``Fontsize`` 係 PlayRes 像素。用正數會令預覽字大 4/3（用戶回報 #3）。
+_FONT_CACHE: dict[tuple[int, str, int], tkfont.Font] = {}
+
+
+def pixel_font(family: str, px: int) -> tkfont.Font:
+    """取一個「像素」單位的 Tk 字型（負 size），同 libass 對齊。
+
+    Cache key 包埋 default root 的 id —— 測試 / 重開視窗會 destroy 舊 root，
+    舊 Font 物件會即刻失效（TclError: font doesn't exist）。
+    """
+    px = max(1, int(px))
+    root = tk._default_root
+    key = (id(root), family, px)
+    font = _FONT_CACHE.get(key)
+    if font is None:
+        if len(_FONT_CACHE) > 64:      # 換片 / 縮放拉動會累積，設上限防漏
+            _FONT_CACHE.clear()
+        try:
+            font = tkfont.Font(root=root, family=family, size=-px)
+        except tk.TclError:            # 舊 root 已 destroy → 清 cache 再做一次
+            _FONT_CACHE.clear()
+            font = tkfont.Font(family=family, size=-px)
+        _FONT_CACHE[key] = font
+    return font
 
 
 def resolved_margin_v(style: dict) -> int:
@@ -72,8 +103,8 @@ def _draw_line(canvas: tk.Canvas, center_x: float, top_y: float, line: dict,
     if not chars:
         return center_x
     family = style.get("font_name") or theme.ui_font_family()
-    font = (family, size)
-    char_w = [canvas.tk.call("font", "measure", font, ch) for ch, _ in chars]
+    font = pixel_font(family, size)
+    char_w = [font.measure(ch) for ch, _ in chars]
     total_w = sum(char_w)
     x = center_x - total_w / 2
     left = x
@@ -140,7 +171,7 @@ def _draw_dots(canvas: tk.Canvas, left_x: float, dot_top: float, count: int,
     size = max(6, round(layout["size"] / 3))
     color = _style_value("primary_color", style.get("primary_color"), theme.SUB_PRIMARY)
     outline_color = _style_value("outline_color", style.get("outline_color"), "#000000")
-    font = (style.get("font_name") or theme.ui_font_family(), size)
+    font = pixel_font(style.get("font_name") or theme.ui_font_family(), size)
     advance = size + max(0, round(layout["size"] * 0.05))
     x = left_x
     for _ in range(count):
@@ -211,7 +242,7 @@ def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
 
 
 def _draw_outlined(canvas: tk.Canvas, x: float, y: float, ch: str,
-                   font: tuple, color: str, outline_color: str, outline: int) -> None:
+                   font: tkfont.Font, color: str, outline_color: str, outline: int) -> None:
     """8 方向疊字模擬描邊。"""
     for dx in (-outline, 0, outline):
         for dy in (-outline, 0, outline):

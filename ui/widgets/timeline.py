@@ -158,6 +158,8 @@ class TimelineCanvas(tk.Canvas):
         self._redraw_pending = False
         self._peaks = None            # np.ndarray（commit 6 波形）
         self._peaks_duration_ms = 0
+        #: 空白處拖曳出嘅時間範圍 ``(begin_ms, end_ms)``；新增歌詞行用（2026-11-11）
+        self._range: tuple[int, int] | None = None
 
         state.add_observer(self._on_state_change)
         self.bind("<Configure>", lambda _e: self._request_redraw())
@@ -174,6 +176,8 @@ class TimelineCanvas(tk.Canvas):
     # ------------------------------------------------------------------
 
     def _on_state_change(self, reason: str) -> None:
+        if reason == "load":
+            self._range = None          # 換片／重載：舊範圍冇意義
         if reason == "follow":
             # 播放跟播：播放頭出畫（近右邊界）就翻頁——播放頭移去畫面左 20%
             # （DAW 式 page-flip；用戶需求 #1：去到第 18 句要自動捲向右）
@@ -211,6 +215,21 @@ class TimelineCanvas(tk.Canvas):
         """音訊載入完成後畀時間軸畫波形背景（§6.6）。"""
         self._peaks = peaks
         self._peaks_duration_ms = duration_ms
+        self._request_redraw()
+
+    # ------------------------------------------------------------------
+    # 空白處拖曳時間範圍（新增歌詞行用）
+    # ------------------------------------------------------------------
+
+    def range_ms(self) -> tuple[int, int] | None:
+        """目前拖曳出嘅範圍 ``(begin_ms, end_ms)``；冇就 ``None``。"""
+        return self._range
+
+    def clear_range(self) -> None:
+        """清走範圍選取（新增行之後、換片、按 Esc）。"""
+        if self._range is None:
+            return
+        self._range = None
         self._request_redraw()
 
     def _wave_h_for(self, canvas_h: int) -> int:
@@ -345,6 +364,23 @@ class TimelineCanvas(tk.Canvas):
         lane_bottom = y_top + n_lanes * LANE_H
         self._draw_gaps(view, ppm, w, y_top, lane_bottom)
 
+        # --- 拖曳範圍（新增歌詞行用）：半透明帶 + 頭尾虛線 ---
+        if self._range is not None:
+            r0, r1 = self._range
+            rx0 = max(0, (r0 - view) * ppm)
+            rx1 = min(w, (r1 - view) * ppm)
+            if rx1 > rx0:
+                self.create_rectangle(rx0, y_top, rx1, lane_bottom,
+                                      fill=theme.ACCENT_DIM, outline=theme.ACCENT,
+                                      width=1, stipple="gray25")
+                for rx in (rx0, rx1):
+                    self.create_line(rx, y_top, rx, lane_bottom,
+                                     fill=theme.ACCENT, width=2)
+                dur_txt = f"{(r1 - r0) / 1000:.2f}s"
+                self.create_text((rx0 + rx1) / 2, y_top + 8, text=dur_txt,
+                                 fill=theme.FG_MAIN,
+                                 font=(theme.mono_font_family(), 8))
+
         # --- 播放頭 ---
         cx = (st.cursor_ms - view) * ppm
         if 0 <= cx <= w:
@@ -420,8 +456,10 @@ class TimelineCanvas(tk.Canvas):
             st.set_cursor(ms)
             if self._on_seek:
                 self._on_seek(ms)
-            self._drag = {"mode": "scrub", "x": event.x}
+            # 記住起點：橫向拖 >4px 就由「scrub」升級成「拖範圍」
+            self._drag = {"mode": "scrub", "x": event.x, "x0": event.x}
             return
+        self.clear_range()          # 撳字塊 = 取消範圍選取
         line_i, word_i, char_i = ref
         st.set_selection(ref)
         line = st.lines[line_i]
@@ -453,13 +491,18 @@ class TimelineCanvas(tk.Canvas):
             self._center_view_at(event.x)
             return
         if drag["mode"] == "scrub":
+            # 橫向拖 >4px → 轉做「拖範圍」（新增歌詞行用）；否則照舊 scrub
+            if abs(event.x - drag["x0"]) > 4:
+                drag["mode"] = "range"
+                self._set_range(drag["x0"], event.x)
+                return
             ms = ms_at_x(event.x, ppm, st.view_start_ms)
             st.set_cursor(ms)
             if self._on_seek:
                 self._on_seek(ms)
             return
         if drag["mode"] == "range":
-            st.set_cursor(ms_at_x(event.x, ppm, st.view_start_ms))
+            self._set_range(drag["x0"], event.x)
             return
         delta_ms = int((event.x - drag["x"]) / ppm)
         line_i, word_i, char_i = drag["ref"]
@@ -482,12 +525,30 @@ class TimelineCanvas(tk.Canvas):
         word["estimated"] = False
         self._request_redraw()
 
+    def _set_range(self, x0: float, x1: float) -> None:
+        """由兩個畫布 x 算出時間範圍（自動排序、至少 100ms）。"""
+        st = self._state
+        a = ms_at_x(min(x0, x1), st.px_per_ms, st.view_start_ms)
+        b = ms_at_x(max(x0, x1), st.px_per_ms, st.view_start_ms)
+        a, b = max(0, a), max(0, b)
+        self._range = (a, b) if b - a >= 100 else None
+        self._request_redraw()
+        if self._range is not None and self._on_range_select is not None:
+            self._on_range_select(*self._range)
+
     def _on_release(self, event) -> None:
         drag = self._drag
         self._drag = None
         if not drag:
             return
         st = self._state
+        if drag["mode"] == "range":
+            if self._range is None:       # 拖太短 → 當冇拖過
+                self._request_redraw()
+            return
+        if drag["mode"] == "scrub":
+            self.clear_range()            # 普通點擊 = 取消範圍
+            return
         if drag["mode"] in ("body", "left", "right"):
             line_i, word_i, char_i = drag["ref"]
             char = st.lines[line_i]["words"][word_i]["chars"][char_i]

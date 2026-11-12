@@ -42,10 +42,11 @@ class PreviewPane(ttkb.Frame):
     """大 preview 窗：影片畫面 + 當前字幕卡 + scrub strip。"""
 
     def __init__(self, master, state, *,
-                 on_seek=None, on_reshow=None) -> None:
+                 on_seek=None, on_reshow=None, on_video_changed=None) -> None:
         super().__init__(master, bootstyle="light")
         self._state = state
         self._on_seek = on_seek
+        self._on_video_changed = on_video_changed
         self._thumbs = None
         # §2.3：正在抽取中的 ThumbCache（同已完成的 _thumbs 分開存）——
         # 換片時要能夠叫停舊的抽取 thread，而 _thumbs 只會在完成後才賦值。
@@ -124,6 +125,10 @@ class PreviewPane(ttkb.Frame):
                    font=(theme.mono_font_family(), 8)).pack(side="left")
         ttkb.Button(row, text="高清單幀", bootstyle="secondary", takefocus=False,
                     command=self._extract_hd_frame).pack(side="right", padx=2)
+        # 2026-11-11：換「最終要燒錄」原片（預覽／波形／燒錄一齊換；timings 不變）
+        self._src_video_btn = ttkb.Button(row, text="換原片…", bootstyle="secondary",
+                                          takefocus=False, command=self._pick_source_video)
+        self._src_video_btn.pack(side="right", padx=2)
         ttkb.Button(row, text="外部播放器", bootstyle="secondary", takefocus=False,
                     command=self._open_external_player).pack(side="right")
 
@@ -145,6 +150,42 @@ class PreviewPane(ttkb.Frame):
     def set_overlay_visible(self, on: bool) -> None:
         self._overlay_on = on
         self._redraw_video()
+
+    def _ui_call(self, fn) -> None:
+        """由 worker thread 排 callback 落主線程（冇 mainloop／已關窗就放棄）。"""
+        try:
+            self.after(0, fn)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def _pick_source_video(self) -> None:
+        """換「最終要燒錄」原片（寫入 timings.json 的 ``source.video``）。"""
+        from tkinter import filedialog
+        current = self._state.video_path
+        path = filedialog.askopenfilename(
+            title="揀最終要燒錄嘅原片",
+            initialdir=str(current.parent) if current is not None else None,
+            filetypes=[("影片檔", "*.mp4 *.mkv *.mov *.webm *.avi"), ("全部檔案", "*.*")])
+        if not path:
+            return
+        self._state.reassign_video(path)      # 會 notify("edit") → 重繪
+        self.reload_source()
+        if self._on_video_changed is not None:
+            self._on_video_changed()          # 叫 editor 重載音訊／波形
+
+    def _start_thumbs_for(self, video: Path | None) -> None:
+        """用指定影片重抽縮圖（換原片用）。"""
+        from .. import settings as ui_settings
+        if video is None or not Path(video).is_file():
+            self.start_thumbs(None, "", "")
+            return
+        data = self.master.settings_data if hasattr(self.master, "settings_data") else None
+        self.start_thumbs(Path(video), ui_settings.detect_ffmpeg(data),
+                          ui_settings.detect_ffprobe(data))
+
+    def reload_source(self) -> None:
+        """開檔／換片後重載縮圖（editor 的入口）。"""
+        self._start_thumbs_for(self._state.video_path)
 
     # ------------------------------------------------------------------
     # ADR-032：預覽解析度 / 縮放
@@ -244,11 +285,11 @@ class PreviewPane(ttkb.Frame):
         self._thumbs_task = cache
 
         def on_progress(done: int, total: int) -> None:
-            self.after(0, lambda d=done, t=total: self._thumb_progress_var.set(
-                f"抽縮圖中… {d}/{t}"))
+            self._ui_call(lambda: self._thumb_progress_var.set(
+                f"抽縮圖中… {done}/{total}"))
 
         def on_done(ok: bool) -> None:
-            self.after(0, lambda: self._on_thumbs_ready(cache, ok))
+            self._ui_call(lambda: self._on_thumbs_ready(cache, ok))
 
         def worker() -> None:
             ok = cache.prepare(on_progress)

@@ -43,6 +43,10 @@ _DEFAULTS: dict[str, Any] = {
     "preview_zoom": "fit",
     #: 自訂解析度 [闊, 高]（只用於 preview_res="custom"）
     "preview_res_custom": [1920, 1080],
+    #: 逐字微調「＋ 字」新字預設時長（ms）——用戶 2026-11-11：「時間可以是 0.1 秒」
+    "char_insert_ms": 100,
+    #: 新增歌詞行時，若果冇拖曳範圍／冇游標，預設的句子長度（ms）
+    "new_line_ms": 3000,
 }
 
 

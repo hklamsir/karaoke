@@ -12,7 +12,7 @@ from typing import Callable
 
 import ttkbootstrap as ttkb
 
-from .. import theme
+from .. import theme, timefmt
 
 
 class LyricTree(ttkb.Frame):
@@ -23,12 +23,18 @@ class LyricTree(ttkb.Frame):
     def __init__(self, master, state, *,
                  on_select_line: Callable[[int], None] | None = None,
                  on_play_line: Callable[[int], None] | None = None,
-                 on_add_line: Callable[[], None] | None = None) -> None:
+                 on_add_line: Callable[[], None] | None = None,
+                 on_insert_line_at: Callable[[int], None] | None = None,
+                 on_delete_line: Callable[[int], None] | None = None,
+                 on_edit_line: Callable[[int], None] | None = None) -> None:
         super().__init__(master, bootstyle="light")
         self._state = state
         self._on_select_line = on_select_line
         self._on_play_line = on_play_line
         self._on_add_line = on_add_line
+        self._on_insert_line_at = on_insert_line_at
+        self._on_delete_line = on_delete_line
+        self._on_edit_line = on_edit_line
         self._building = False
 
         mono = theme.mono_font_family()
@@ -37,9 +43,10 @@ class LyricTree(ttkb.Frame):
             bootstyle="light")
         # 用戶需求：5 欄總寬 = 370px（32+174+66+66+32）。start/end 收到 66 —
         # 5 位數時間碼用等寬 10pt 只需 ~46px；估算 32。慳返嘅位全部畀「歌詞」。
-        heads = {"num": ("#", 32, "e"), "text": ("歌詞", 174, "w"),
-                 "start": ("start", 66, "e"), "end": ("end", 66, "e"),
-                 "est": ("估算", 32, "center")}
+        # 2026-11-11 用戶需求 #3：start/end 改中文標題，值顯示時間碼（1:08.765）
+        heads = {"num": ("#", 32, "e"), "text": ("歌詞", 164, "w"),
+                 "start": ("開始", 72, "e"), "end": ("結束", 72, "e"),
+                 "est": ("估算", 30, "center")}
         for key, (label, width, anchor) in heads.items():
             # 標題跟欄位 anchor（同逐字微調面板一致）：右對齊數字欄如果標題置中，
             # 標題會浮喺數字左邊，睇落唔知屬邊欄
@@ -54,9 +61,12 @@ class LyricTree(ttkb.Frame):
 
         self._tree.bind("<<TreeviewSelect>>", self._on_tree_select)
         self._tree.bind("<Double-1>", self._on_double_click)
+        # 右鍵選單（2026-11-11 用戶需求 #3）：無字幕區段插句／任意刪句都要有路徑
+        self._tree.bind("<Button-3>", self._on_right_click)
+        self._menu = tk.Menu(self, tearoff=False)
 
         # ＋ 新增歌詞行（虛線框效果用 outline bootstyle）
-        ttkb.Button(self, text="＋ 新增歌詞行（喺時間軸拖曳範圍，或按此加喺結尾）",
+        ttkb.Button(self, text="+ 新增歌詞行（時間軸拖曳範圍／游標位置）",
                     bootstyle="secondary-outline", takefocus=False,
                     command=self._add_line_tail).pack(fill="x", pady=(2, 0))
 
@@ -96,7 +106,9 @@ class LyricTree(ttkb.Frame):
             if i == self._state.current_line_i:
                 tags.append("current")
             self._tree.insert("", "end", iid=str(i), values=(
-                i + 1, text, line.get("start_ms", 0), line.get("end_ms", 0),
+                i + 1, text,
+                timefmt.fmt_ms(int(line.get("start_ms", 0))),
+                timefmt.fmt_ms(int(line.get("end_ms", 0))),
                 f"●{est_count}" if est_count else ""), tags=tags)
         self._building = False
         self._highlight_current()
@@ -142,6 +154,47 @@ class LyricTree(ttkb.Frame):
         self._state.set_current_line(line_i)
         if self._on_play_line:
             self._on_play_line(line_i)
+
+    def _on_right_click(self, event) -> None:
+        """右鍵：先選中該行，再彈選單（修改／前後插行／刪行）。"""
+        iid = self._tree.identify_row(event.y)
+        if not iid:
+            return
+        line_i = int(iid)
+        self._building = True
+        try:
+            self._tree.selection_set(iid)
+        finally:
+            self._building = False
+        self._state.set_current_line(line_i)
+
+        lines = self._state.lines
+        text = (lines[line_i].get("text") or "") if line_i < len(lines) else ""
+        self._menu.delete(0, "end")
+        self._menu.add_command(
+            label=f"✏ 修改第 {line_i + 1} 行歌詞",
+            command=lambda: self._call(self._on_edit_line, line_i))
+        self._menu.add_separator()
+        self._menu.add_command(
+            label="+ 喺此行之前插入新行",
+            command=lambda: self._call(self._on_insert_line_at, line_i))
+        self._menu.add_command(
+            label="+ 喺此行之後插入新行",
+            command=lambda: self._call(self._on_insert_line_at, line_i + 1))
+        self._menu.add_separator()
+        self._menu.add_command(
+            label=f"🗑 刪除此行（{text[:12]}{'…' if len(text) > 12 else ''}）",
+            command=lambda: self._call(self._on_delete_line, line_i))
+        try:
+            self._menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self._menu.grab_release()
+
+    @staticmethod
+    def _call(fn, arg) -> None:
+        """叫 callback（未接線就靜靜唔做，唔會爆）。"""
+        if fn is not None:
+            fn(arg)
 
     def _add_line_tail(self) -> None:
         # 用戶回報 _ask_text 彈窗冇生效 → 由 editor page 提供 inline 輸入列

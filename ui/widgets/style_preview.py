@@ -8,8 +8,10 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.font as tkfont
 
 from .. import theme
+from .overlay import pixel_font
 
 #: 預覽畫布設計尺寸（§4.5.4：344×180）
 PREVIEW_W = 344
@@ -94,7 +96,9 @@ class StylePreviewCanvas(tk.Canvas):
         sung = max(0, min(s["sung_chars"], len(text)))
 
         # ADR-030：垂直位置跟「對齊」（2 底 / 8 頂 / 5 中）
-        font = (family, size)
+        # ⚠️ 字級用「像素」單位（pixel_font → 負 size）：libass Fontsize 係像素，
+        #    Tk 正數係點，用正數會令預覽大 4/3（用戶回報 #3）
+        font = pixel_font(family, size)
         an = int(s.get("alignment") or 2)
         if an == 8:
             y = fy + margin_v
@@ -130,10 +134,10 @@ class StylePreviewCanvas(tk.Canvas):
         else:
             draw_line(text, y, sung)
 
-    def _char_w(self, ch: str, font: tuple) -> int:
-        return self.tk.call("font", "measure", font, ch) + 1
+    def _char_w(self, ch: str, font: tkfont.Font) -> int:
+        return font.measure(ch) + 1
 
-    def _draw_char(self, x: float, y: float, ch: str, font: tuple,
+    def _draw_char(self, x: float, y: float, ch: str, font: tkfont.Font,
                    color: str, outline_color: str, outline: float) -> None:
         """tkinter Canvas 無原生描邊 → 8 方向疊同色文字模擬（§6.7.5）。"""
         steps = max(1, int(outline))

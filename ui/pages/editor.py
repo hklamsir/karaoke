@@ -20,8 +20,10 @@ from pathlib import Path
 import ttkbootstrap as ttkb
 
 from .. import models, settings, state, theme, timefmt
-from ..commands import (DeleteLine, InsertWord, MergeLines, NudgeChars, RedistributeSpan,
-                        RepairLine, SetCharTiming, SetCharTimingRipple, SetLineText, SplitLine)
+from ..commands import (DeleteChar, DeleteLine, InsertCharAfter, InsertCharBefore,
+                        InsertWord, MergeLines, NudgeChars, RedistributeSpan, RepairLine,
+                        SetCharText, SetCharTiming, SetCharTimingRipple, SetLineText,
+                        SplitLine)
 from ..widgets.lyric_tree import LyricTree
 from ..widgets.progress import QueueLogHandler
 from ..widgets.timeline import TimelineCanvas
@@ -80,15 +82,27 @@ class EditorPage(ttkb.Frame):
         tree_box.pack(fill="both", expand=True)
         self._tree = LyricTree(tree_box, self._state,
                                on_play_line=self._play_line,
-                               on_add_line=self._show_add_line_bar)
+                               on_add_line=self._show_add_line_bar,
+                               on_insert_line_at=self._insert_line_at,
+                               on_delete_line=self._delete_line,
+                               on_edit_line=self._edit_selected_line)
         self._tree.pack(fill="both", expand=True, padx=2, pady=2)
 
         row = ttkb.Frame(left, bootstyle="light")
         row.pack(fill="x", pady=(2, 0))
         ttkb.Button(row, text="✏ 修改", bootstyle="secondary", takefocus=False,
                     command=self._edit_selected_line).pack(side="left", padx=(0, 2))
-        ttkb.Button(row, text="✂ 斷句", bootstyle="secondary", takefocus=False,
-                    command=self._split_at_word).pack(side="left", padx=2)
+        # 2026-11-11：歌詞樹「斷句」同逐字微調「斷句」重複 → 移除，改為前後插新行
+        b_before_line = ttkb.Button(row, text="+ 此行前", bootstyle="secondary",
+                                    takefocus=False,
+                                    command=lambda: self._new_line_relative(-1))
+        b_before_line.pack(side="left", padx=2)
+        Tooltip(b_before_line, "喺目前句子**之前**插入新歌詞行（時間自動塞入前面空隙）")
+        b_after_line = ttkb.Button(row, text="+ 此行後", bootstyle="secondary",
+                                   takefocus=False,
+                                   command=lambda: self._new_line_relative(+1))
+        b_after_line.pack(side="left", padx=2)
+        Tooltip(b_after_line, "喺目前句子**之後**插入新歌詞行（時間自動塞入後面空隙）")
         ttkb.Button(row, text="🔗 合併", bootstyle="secondary", takefocus=False,
                     command=self._merge_selected).pack(side="left", padx=2)
         ttkb.Button(row, text="🗑 刪行", bootstyle="secondary", takefocus=False,
@@ -128,8 +142,10 @@ class EditorPage(ttkb.Frame):
 
         # --- inline 插字 / 新增歌詞行列（用戶回報 _ask_text 彈窗冇生效 →
         #     同「修改歌詞」一樣改 inline，徹底鏟走 Toplevel 焦點陷阱）---
-        self._ask_mode: str | None = None      # "char" | "line" | None
+        self._ask_mode: str | None = None      # "char" | "char_after" | "line" | None
         self._ask_ref: tuple[int, int, int] | None = None
+        #: 新增行用嘅 (start_ms, end_ms, at_line_i)；由 _show_add_line_bar 計算
+        self._ask_span: tuple[int, int, int | None] | None = None
         self._ask_frame = ttkb.LabelFrame(left, text="插入", bootstyle="light")
         arow = ttkb.Frame(self._ask_frame, bootstyle="light")
         arow.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
@@ -156,7 +172,8 @@ class EditorPage(ttkb.Frame):
 
         self._preview_slot = ttkb.LabelFrame(self._right, text="影片預覽", bootstyle="light")
         from ..widgets.preview import PreviewPane
-        self._preview = PreviewPane(self._preview_slot, self._state, on_seek=self._on_seek)
+        self._preview = PreviewPane(self._preview_slot, self._state, on_seek=self._on_seek,
+                                    on_video_changed=self._on_video_changed)
         self._preview.pack(fill="both", expand=True, padx=2, pady=2)
 
         # 可拖曳分隔條（§6.7.2：預覽 30%–75%；V17）
@@ -416,15 +433,36 @@ class EditorPage(ttkb.Frame):
                             takefocus=False, command=self._repair_line)
         b_fix.pack(side="left", padx=2)
         Tooltip(b_fix, "自動偵測本行時長崩壞（一堆短字 + 一個超長字）並重攤")
+        b_resp = ttkb.Button(row2, text="↻ 重劃", bootstyle="secondary",
+                             takefocus=False,
+                             command=self._respawn_selected_word)
+        b_resp.pack(side="left", padx=2)
+        Tooltip(b_resp, "選中詞內部逐字時間按字數重新平均（清 estimated 旗標）")
 
         row3 = ttkb.Frame(box, bootstyle="light")
         row3.pack(fill="x", padx=2, pady=(0, 2))
-        ttkb.Button(row3, text="✂ 斷句", bootstyle="secondary", takefocus=False,
-                    command=self._split_at_word).pack(side="left", padx=(0, 2))
-        ttkb.Button(row3, text="＋ 插字", bootstyle="secondary", takefocus=False,
-                    command=self._insert_char).pack(side="left", padx=2)
-        ttkb.Button(row3, text="↻ 重劃本詞", bootstyle="secondary", takefocus=False,
-                    command=self._respawn_selected_word).pack(side="left", padx=2)
+        b_split3 = ttkb.Button(row3, text="✂ 斷句", bootstyle="secondary", takefocus=False,
+                               command=self._split_at_word)
+        b_split3.pack(side="left", padx=(0, 2))
+        Tooltip(b_split3, "喺選中字之後斷成新一行（可以切穿一個詞）")
+        b_edit3 = ttkb.Button(row3, text="✏ 修改", bootstyle="secondary", takefocus=False,
+                              command=self._edit_char)
+        b_edit3.pack(side="left", padx=2)
+        Tooltip(b_edit3, "修改**選中嗰一個字**的文字（唔係改整句；要改整句用歌詞樹「✏ 修改」）")
+        b_del3 = ttkb.Button(row3, text="✕ 刪字", bootstyle="secondary", takefocus=False,
+                             command=self._delete_char)
+        b_del3.pack(side="left", padx=2)
+        Tooltip(b_del3, "刪除選中的**一個字**；行只剩一個字時請用歌詞樹「🗑 刪行」")
+        b_before = ttkb.Button(row3, text="+字前", bootstyle="secondary",
+                               takefocus=False, command=self._insert_char)
+        b_before.pack(side="left", padx=2)
+        Tooltip(b_before, "新字插喺選中字**前面**（長度 = 主頁「插字時長」，預設 100ms）")
+        b_after = ttkb.Button(row3, text="+字後", bootstyle="secondary",
+                              takefocus=False, command=self._append_char)
+        b_after.pack(side="left", padx=2)
+        Tooltip(b_after,
+                "新字插喺選中字**後面**；冇選中就加喺當前行尾"
+                "（行尾加字：選最後一個字最穩）")
 
         # 最後一次操作的人話回饋（「已均分 6 字：3:42.958 → 3:53.158」）——
         # 純改表格數字的話，用戶唔知究竟改咗幾多個字、攤咗幾長。
@@ -492,7 +530,10 @@ class EditorPage(ttkb.Frame):
         self._state.notify("style")
 
     def _load_thumbs(self) -> None:
-        """縮圖抽取（§6.7.4）：背景 thread + 快取；冇原片就顯示提示。"""
+        """縮圖抽取（§6.7.4）：背景 thread + 快取；冇原片就顯示提示。
+
+        2026-11-11：按預覽「來源」決定載邊條片（原片／燒錄成品）。
+        """
         from .. import settings as ui_settings
         video = self._state.video_path
         data = self.master.settings_data
@@ -501,7 +542,7 @@ class EditorPage(ttkb.Frame):
         if video is None or not video.is_file() or not ffmpeg or not ffprobe:
             self._preview.start_thumbs(None, "", "")
             return
-        self._preview.start_thumbs(video, ffmpeg, ffprobe)
+        self._preview.reload_source()
 
     def _load_audio(self) -> None:
         """背景解碼音訊 + 波形（§6.6）；失敗靜音降級，其他功能照用。"""
@@ -524,14 +565,26 @@ class EditorPage(ttkb.Frame):
 
         def on_done(engine) -> None:
             if engine is None or engine.peaks is None:
-                self.after(0, lambda: self._audio_status("音訊解碼失敗（其他功能照用）"))
+                self._ui_call(lambda: self._audio_status("音訊解碼失敗（其他功能照用）"))
                 return
-            self.after(0, self._on_audio_ready)
+            self._ui_call(self._on_audio_ready)
 
         engine = self._audio
         engine.load_video_async(
             ffmpeg, video, on_done,
-            on_progress=lambda msg: self.after(0, lambda m=msg: self._audio_status(m)))
+            on_progress=lambda msg: self._ui_call(lambda m=msg: self._audio_status(m)))
+
+    def _ui_call(self, fn) -> None:
+        """由 worker thread 排 callback 落主線程（視窗已關就靜靜放棄）。
+
+        ⚠️ 冇 mainloop（或者正在關窗）時 ``after()`` 會拋
+        ``RuntimeError: main thread is not in main loop`` —— 唔好等 uncaught
+        例外喺背景 thread 度爆（實測：探測腳本／關窗瞬間）。
+        """
+        try:
+            self.after(0, fn)
+        except (RuntimeError, tk.TclError):
+            pass
 
     def _on_audio_ready(self) -> None:
         engine = self._audio
@@ -844,6 +897,10 @@ class EditorPage(ttkb.Frame):
         "SplitLine": "斷句",
         "MergeLines": "合併句子",
         "InsertWord": "插入字詞",
+        "InsertCharAfter": "加字（後）",
+        "InsertCharBefore": "加字（前）",
+        "SetCharText": "改字",
+        "DeleteChar": "刪字",
         "RespreadWord": "重新分配時間",
         "AddLine": "新增歌詞行",
         "DeleteLine": "刪除歌詞行",
@@ -888,6 +945,12 @@ class EditorPage(ttkb.Frame):
         if self._audio is not None:
             self._audio.seek(ms)
 
+    def _on_video_changed(self) -> None:
+        """預覽窗格換咗「最終燒錄原片」→ 重載音訊波形（縮圖由 preview 自己處理）。"""
+        self._load_audio()
+        self._refresh_status()
+
+
     def _play_line(self, line_i: int) -> None:
         """雙擊歌詞樹句子：跳到該句開始時間並播放（預覽 + 時間軸同步）。"""
         lines = self._state.lines
@@ -901,17 +964,20 @@ class EditorPage(ttkb.Frame):
         if engine is not None and engine.available and not engine.playing:
             engine.play(ms)
 
-    def _edit_selected_line(self) -> None:
+    def _edit_selected_line(self, line_i: int | None = None) -> None:
         """✏ 修改（inline 版）：點選句子 → 撳掣 → 歌詞樹下面出現編輯列。
 
         彈窗版（_ask_text）兩輪修 grab/focus 之後用戶實機仍然回報冇生效，
-        改 inline 徹底鏟走 Toplevel 焦點問題。
+        改 inline 徹底鏟走 Toplevel 焦點問題。``line_i`` 由右鍵選單直接指定。
         """
-        sel = self._tree.selected_lines()
-        if not sel:
-            messagebox.showinfo("修改歌詞", "先喺歌詞樹點選一行。")
+        if line_i is None:
+            sel = self._tree.selected_lines()
+            if not sel:
+                messagebox.showinfo("修改歌詞", "先喺歌詞樹點選一行。")
+                return
+            line_i = sel[0]
+        if not (0 <= line_i < len(self._state.lines)):
             return
-        line_i = sel[0]
         self._edit_target_i = line_i
         self._edit_line_label.configure(text=f"第 {line_i + 1} 行")
         self._edit_line_var.set(self._state.lines[line_i].get("text") or "")
@@ -937,19 +1003,36 @@ class EditorPage(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _split_at_word(self) -> None:
+        """斷句：斷喺「選中字」之後（可以切穿一個詞，C5b）。
+
+        2026-11-11 修訂：以前只可以喺 WordGroup 邊界斷，所以「逝去」呢類
+        兩字詞永遠切唔開（用戶回報 #1）。而家選中邊個字就斷喺嗰個字之後；
+        如果個字唔係詞尾，會先拆詞再斷行 —— 每個 char 本身已有 begin/end，
+        所以時間軸完全無損。
+        """
+        sel = self._state.selected
         ref = self._state.selected_word
-        if ref is None:
-            messagebox.showinfo("斷句", "先喺歌詞樹 / 時間軸選中一個字（喺佢所屬詞之後斷開）。")
+        if sel is None and ref is None:
+            messagebox.showinfo("斷句", "先喺歌詞樹 / 時間軸選中一個字（喺佢之後斷開）。")
             return
-        line_i, word_i = ref
+        if sel is not None:
+            line_i, word_i, char_i = sel
+        else:
+            line_i, word_i = ref          # type: ignore[misc]
+            char_i = -1                   # 冇逐字選取 → 當「詞尾」
         line = self._state.lines[line_i]
         words = line.get("words") or []
-        # 喺「選中字所屬詞」之後斷：如果選中字唔係詞尾，斷喺詞尾
-        target_word_i = word_i
-        if 0 <= word_i < len(words) and word_i >= len(words) - 1:
-            messagebox.showinfo("斷句", "選中嘅係最後一個詞，後面冇嘢可以斷。")
+        if not (0 <= word_i < len(words)):
             return
-        self._state.push(SplitLine(line_i, target_word_i + 1))
+        chars = words[word_i].get("chars") or []
+        at_word_end = char_i < 0 or char_i >= len(chars) - 1
+        if at_word_end and word_i >= len(words) - 1:
+            messagebox.showinfo("斷句", "選中嘅係最後一個字，後面冇嘢可以斷。")
+            return
+        if at_word_end:
+            self._state.push(SplitLine(line_i, word_i + 1))
+        else:
+            self._state.push(SplitLine(line_i, word_i, char_i))
 
     def _merge_selected(self) -> None:
         sel = self._tree.selected_lines()
@@ -958,21 +1041,36 @@ class EditorPage(ttkb.Frame):
             return
         self._state.push(MergeLines(sel[0], 2))
 
-    def _delete_line(self) -> None:
-        sel = self._tree.selected_lines()
-        if not sel:
-            messagebox.showinfo("刪行", "先揀一行。")
-            return
-        for line_i in reversed(sel):
-            self._state.push(DeleteLine(line_i))
-    def _insert_char(self) -> None:
-        """＋ 插字（inline 版）：新字插喺選中字前面，原字時間軸不變。
+    def _delete_line(self, line_i: int | None = None) -> None:
+        """🗑 刪行：有選取就刪選取；冇選取就刪**當前行**（唔再靜靜失敗）。
 
-        用戶回報 _ask_text 彈窗冇生效 → 改 inline 列（同「修改歌詞」同款）。
+        ``line_i`` 由右鍵選單指定（用戶需求 #3：任意刪除一句錯誤歌詞）。
+        """
+        st = self._state
+        if st.path is None or not st.lines:
+            return
+        targets = [line_i] if line_i is not None else self._tree.selected_lines()
+        if not targets:
+            targets = [st.clamp_line_i(st.current_line_i)]
+        targets = sorted({i for i in targets if 0 <= i < len(st.lines)})
+        if not targets:
+            return
+        texts = [(st.lines[i].get("text") or "").strip() for i in targets]
+        for i in reversed(targets):
+            st.push(DeleteLine(i))
+        preview = " / ".join(t for t in texts if t)[:38]
+        self._ft_hint_var.set(
+            f"🗑 已刪 {len(targets)} 行{f'：{preview}' if preview else ''}（Ctrl+Z 可還原）")
+    def _insert_char(self) -> None:
+        """＋字前（inline 版）：新字插喺**選中字**之前，原字時間軸不變。
+
+        2026-11-11 用戶回報：選「去」（屬於「逝去」一個兩字詞）時，新字會插咗
+        喺「逝」之前 —— 舊版只插喺整個詞之前。而家用 `InsertCharBefore`：
+        先切詞再插，位置精確到字。
         """
         ref = self._state.selected
         if ref is None:
-            messagebox.showinfo("插入字", "先喺時間軸 / 逐字微調選中一個字（新字會插喺佢前面）。")
+            messagebox.showinfo("加字", "先喺時間軸 / 逐字微調選中一個字（新字會插喺佢前面）。")
             return
         line_i, word_i, char_i = ref
         # 插入後舊 ref 可能過期（words/chars 已變）→ 過期就要求重新選（用戶實測 IndexError）
@@ -980,23 +1078,196 @@ class EditorPage(ttkb.Frame):
             char = self._state.lines[line_i]["words"][word_i]["chars"][char_i]
         except IndexError:
             self._state.set_selection(None)
-            messagebox.showinfo("插入字", "之前選嘅字已經變咗（可能啱啱插過字），請重新選一次。")
+            messagebox.showinfo("加字", "之前選嘅字已經變咗（可能啱啱插過字），請重新選一次。")
             return
+        dur = self._setting_int("char_insert_ms", 100)
         self._show_ask_bar(
-            "char", ref,
-            f"新字會插喺「{char.get('text', '')}」前面（原字時間軸不變）：")
+            "char_before", ref,
+            f"新字會插喺「{char.get('text', '')}」前面（預設長 {dur}ms，主頁可改）：")
 
-    def _show_add_line_bar(self) -> None:
-        """＋ 新增歌詞行（inline 版）：由歌詞樹掣觸發，時間 = 尾行後 +3 秒。"""
-        self._show_ask_bar("line", None, "新行歌詞（時間：尾行後 +3 秒，之後喺時間軸校）：")
+    def _edit_char(self) -> None:
+        """✏ 修改（逐字微調）：改**選中嗰一個字**的文字，唔係改整句。"""
+        ref = self._state.selected
+        if ref is None:
+            messagebox.showinfo("改字", "先喺時間軸 / 逐字微調選中一個字。")
+            return
+        line_i, word_i, char_i = ref
+        try:
+            char = self._state.lines[line_i]["words"][word_i]["chars"][char_i]
+        except IndexError:
+            self._state.set_selection(None)
+            messagebox.showinfo("改字", "之前選嘅字已經變咗，請重新選一次。")
+            return
+        text = char.get("text", "")
+        self._show_ask_bar(
+            "char_edit", ref,
+            f"將「{text}」改為（只可輸入一個字；空格可用全形）：",
+            preset=text, select_all=True)
 
-    def _show_ask_bar(self, mode: str, ref, prompt: str) -> None:
+    def _show_add_line_bar(self, at_line_i: int | None = None) -> None:
+        """＋ 新增歌詞行（inline 版）。
+
+        時間優先序（2026-11-11 用戶需求 #3）：時間軸拖曳範圍 → 游標所在空白段 →
+        片尾。舊版永遠寫喺「尾行 +3 秒」，所以**無字幕區段**（例如第 3、4 行之間）
+        完全加唔到 AI 認漏嘅一句。
+        """
+        st = self._state
+        if st.path is None:
+            messagebox.showinfo("新增歌詞行", "先開一個 timings.json（或先完成一次辨識）。")
+            return
+        rng = self._timeline.range_ms() if hasattr(self._timeline, "range_ms") else None
+        if rng is not None and rng[1] - rng[0] >= 100:
+            start, end = rng
+            where = "時間軸拖曳範圍"
+        elif at_line_i is not None:
+            start, end = self._span_before_line(at_line_i)
+            where = "該行前面的空隙"
+        else:
+            start, end = self._free_span(int(st.cursor_ms))
+            where = "游標位置"
+        if at_line_i is not None:
+            where += f"，插喺第 {at_line_i + 1} 行之前"
+        self._ask_span = (start, end, at_line_i)
+        self._show_ask_bar(
+            "line", None,
+            f"新歌詞（{where} · {timefmt.fmt_ms(start)} → {timefmt.fmt_ms(end)}，"
+            f"之後可喺時間軸拖）：")
+
+    def _insert_line_at(self, at_line_i: int) -> None:
+        """右鍵選單：喺第 ``at_line_i`` 行**之前**插入新行（時間自動搵空位）。"""
+        self._show_add_line_bar(at_line_i=at_line_i)
+
+    def _new_line_relative(self, delta: int) -> None:
+        """工具列「＋ 此行前／後」：喺目前句子前後插入新行（用戶需求 #2）。"""
+        st = self._state
+        if st.path is None or not st.lines:
+            messagebox.showinfo("新增歌詞行", "先開一個 timings.json（或先完成一次辨識）。")
+            return
+        i = st.clamp_line_i(st.current_line_i)
+        self._show_add_line_bar(at_line_i=max(0, i + (1 if delta > 0 else 0)))
+
+    def _span_before_line(self, at_line_i: int) -> tuple[int, int]:
+        """「喺第 i 行之前插入」用嘅時間：塞入該行與前一行之間的空隙。
+
+        空隙夠長就用預設長度（置中偏後），唔夠就照出預設長度（之後喺時間軸拖）。
+        """
+        dur = self._setting_int("new_line_ms", 3000)
+        lines = self._state.lines
+        if not (0 <= at_line_i < len(lines)):
+            return self._free_span(int(self._state.cursor_ms))
+        nxt = int(lines[at_line_i].get("start_ms", 0))
+        prev_end = max((int(l.get("end_ms", 0)) for l in lines[:at_line_i]), default=0)
+        room = nxt - prev_end - 100
+        length = min(dur, room) if room >= 300 else dur
+        start = max(prev_end + 50, nxt - length - 50) if at_line_i else max(0, nxt - length)
+        start = max(0, start)
+        return start, start + length
+
+    def _free_span(self, at_ms: int) -> tuple[int, int]:
+        """喺 ``at_ms`` 附近搵一段免費時間做新行（避開已有歌詞）。
+
+        Returns:
+            ``(start_ms, end_ms)``；長度 = settings 的 ``new_line_ms``（預設 3000）。
+        """
+        dur = self._setting_int("new_line_ms", 3000)
+        cursor = max(0, int(at_ms))
+        spans = sorted((int(l.get("start_ms", 0)), int(l.get("end_ms", 0)))
+                       for l in self._state.lines)
+        tail_end = 0
+        for s, e in spans:
+            if cursor < s:                       # 游標喺呢行之前 → 前面就係空位
+                return cursor, max(cursor + 100, min(cursor + dur, s))
+            if s <= cursor <= e:                 # 游標喺行內 → 讓去呢行後面
+                cursor = e + 100
+                continue
+            tail_end = max(tail_end, e)
+        start = max(cursor, tail_end + 300 if spans else 0)
+        return start, start + dur
+
+    @staticmethod
+    def _setting_int(key: str, default: int) -> int:
+        """由 settings.json 讀一個正整數設定（壞值／缺欄位用 default）。"""
+        from .. import settings as ui_settings
+        try:
+            return max(1, int(ui_settings.load().get(key) or default))
+        except (TypeError, ValueError):
+            return default
+
+    def _append_char(self) -> None:
+        """＋ 字（後）：喺選中字之後加一個字；冇選取就加喺當前行尾。
+
+        用戶 2026-11-11：「想在最後加一個字（如在「記」字後），時間可以是 0.1 秒」。
+        新字時長讀 settings 的 ``char_insert_ms``（主頁可設）。
+        """
+        st = self._state
+        if st.path is None or not st.lines:
+            messagebox.showinfo("加字", "先開一個 timings.json。")
+            return
+        sel = st.selected
+        if sel is not None:
+            line_i, word_i, char_i = sel
+        else:
+            line_i = st.clamp_line_i(st.current_line_i)
+            words = st.lines[line_i].get("words") or []
+            if not words:
+                messagebox.showinfo("加字", "呢一行未有字，請先按「✏ 修改」寫入歌詞。")
+                return
+            word_i = len(words) - 1
+            char_i = max(0, len(words[-1].get("chars") or []) - 1)
+        try:
+            chars = st.lines[line_i]["words"][word_i].get("chars") or []
+            anchor = chars[char_i].get("text", "")
+        except IndexError:
+            st.set_selection(None)
+            messagebox.showinfo("加字", "之前選嘅字已經變咗，請重新選一次。")
+            return
+        dur = self._setting_int("char_insert_ms", 100)
+        self._show_ask_bar(
+            "char_after", (line_i, word_i, char_i),
+            f"新字會插喺「{anchor}」之後（預設長 {dur}ms，主頁可改）：")
+
+    def _delete_char(self) -> None:
+        """✕ 刪字（逐字微調，用戶需求 #3）：刪除選中的一個字。
+
+        行只剩一個字時拒絕（避免出現零字行）→ 提示改用歌詞樹「🗑 刪行」。
+        """
+        st = self._state
+        if st.path is None or not st.lines:
+            return
+        sel = st.selected
+        if sel is None:
+            messagebox.showinfo("刪字", "先喺時間軸 / 逐字微調選中一個字。")
+            return
+        line_i, word_i, char_i = sel
+        try:
+            line = st.lines[line_i]
+            char = line["words"][word_i]["chars"][char_i]
+        except (IndexError, KeyError):
+            st.set_selection(None)
+            messagebox.showinfo("刪字", "之前選嘅字已經變咗，請重新選一次。")
+            return
+        total = sum(len(w.get("chars") or []) for w in line.get("words") or [])
+        if total <= 1:
+            messagebox.showinfo(
+                "刪字", "呢行只剩一個字。\n\n要刪埋整句，請用歌詞樹工具列「🗑 刪行」。")
+            return
+        text = char.get("text", "")
+        self._state.push(DeleteChar(line_i, word_i, char_i))
+        self._state.set_selection(None)
+        self._ft_hint_var.set(f"✕ 已刪字「{text}」（Ctrl+Z 可還原）")
+
+    def _show_ask_bar(self, mode: str, ref, prompt: str, preset: str = "",
+                      select_all: bool = False) -> None:
         self._ask_mode = mode
         self._ask_ref = ref
         self._ask_label.configure(text=prompt, bootstyle="secondary")
-        self._ask_var.set("")
+        self._ask_var.set(preset)
         self._ask_frame.pack(side="bottom", fill="x", pady=(2, 0), after=self._ft_box)
         self._ask_entry.focus_force()
+        if select_all:
+            self._ask_entry.select_range(0, "end")   # 打字即取代原本個字
+        else:
+            self._ask_entry.icursor("end")
 
     def _hide_ask(self) -> None:
         self._ask_mode = None
@@ -1004,25 +1275,59 @@ class EditorPage(ttkb.Frame):
         self._ask_frame.pack_forget()
 
     def _apply_ask(self) -> None:
-        text = self._ask_var.get().strip()
-        if self._ask_mode == "char":
-            # 之前 len != 1 會靜默唔做（用戶以為冇生效）→ 而家 inline 提示
-            if len(text) != 1:
+        raw = self._ask_var.get()
+        # ⚠️ 單字模式**唔可以**直接 strip：全形空格「　」同半形空格 strip 完會變空，
+        # 但用戶正正要用空格做可見間隔（2026-11-11 回報「唔接受全形空格」）。
+        # 有實字就照 strip；全部係空白就保留原字元（再由 len()==1 判斷）。
+        one = raw.strip() or raw
+        text = raw.strip()
+        mode = self._ask_mode
+        if mode == "char_edit":
+            # 用戶明確要求：只可以改**一個字**，多過一個字一律拒絕
+            if len(one) != 1:
                 self._ask_label.configure(
-                    text="請輸入**一個**字（淨係收一個字；要加多字請逐個插）",
+                    text="只可以輸入**一個**字（要加字用「+字前／+字後」，"
+                         "要改整句用歌詞樹「✏ 修改」）",
                     bootstyle="danger")
                 return
-            line_i, word_i, _char_i = self._ask_ref
-            self._state.push(InsertWord(line_i, word_i, text))
-        elif self._ask_mode == "line":
+            line_i, word_i, char_i = self._ask_ref
+            self._state.push(SetCharText(line_i, word_i, char_i, one))
+            self._hide_ask()
+            return
+        if mode in ("char", "char_after", "char_before"):
+            # 之前 len != 1 會靜默唔做（用戶以為冇生效）→ 而家 inline 提示
+            if len(one) != 1:
+                self._ask_label.configure(
+                    text="請輸入**一個**字（空格可以用半形／全形，超過一個字請逐個加）",
+                    bootstyle="danger")
+                return
+            dur = self._setting_int("char_insert_ms", 100)
+            line_i, word_i, char_i = self._ask_ref
+            if mode == "char_before":
+                self._state.push(InsertCharBefore(
+                    line_i, word_i, char_i, one, duration_ms=dur,
+                    ripple=bool(self._ripple_var.get())))
+                self._hide_ask()
+                return
+            if mode == "char":
+                self._state.push(InsertWord(line_i, word_i, one, duration_ms=dur))
+            else:
+                self._state.push(InsertCharAfter(
+                    line_i, word_i, char_i, one, duration_ms=dur,
+                    ripple=bool(self._ripple_var.get())))
+        elif mode == "line":
             if not text:
                 self._ask_label.configure(text="請輸入歌詞", bootstyle="danger")
                 return
             from ..commands import AddLine
-            last_end = 0
-            if self._state.lines:
-                last_end = int(self._state.lines[-1].get("end_ms", 0))
-            self._state.push(AddLine(last_end + 500, last_end + 3500, text))
+            start, end, at_line_i = self._ask_span or (None, None, None)
+            if start is None:                      # 保險：冇 span 就照舊尾行 +3 秒
+                last_end = int(self._state.lines[-1].get("end_ms", 0)) if self._state.lines else 0
+                start, end = last_end + 500, last_end + 3500
+            self._state.push(AddLine(start, end, text, at_line_i=at_line_i))
+            if hasattr(self._timeline, "clear_range"):
+                self._timeline.clear_range()
+            self._ask_span = None
         else:
             return
         self._hide_ask()

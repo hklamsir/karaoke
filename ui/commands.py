@@ -130,14 +130,22 @@ class SetLineText(_LineSnapshotMixin):
 
 
 class SplitLine(_LineSnapshotMixin):
-    """斷句（C5）：喺 word 邊界插入新行。"""
+    """斷句（C5 / C5b）：喺 word 邊界或**字**邊界插入新行。
 
-    def __init__(self, line_i: int, word_i: int) -> None:
-        self.line_i, self.word_i = line_i, word_i
+    - ``char_i is None`` → 喺第 ``word_i`` 個詞**之前**斷（舊語意，向後兼容）
+    - 指定 ``char_i`` → 喺該詞第 ``char_i`` 個字**之後**斷；如果嗰個字唔係詞尾，
+      會先將個詞拆成兩個（時間軸原封不動），再切行
+    """
+
+    def __init__(self, line_i: int, word_i: int, char_i: int | None = None) -> None:
+        self.line_i, self.word_i, self.char_i = line_i, word_i, char_i
 
     def apply(self, state: Any) -> None:
         self._snapshot(state, [self.line_i])
-        new_line = models.split_line_at_word(state.doc["lines"][self.line_i], self.word_i)
+        line = state.doc["lines"][self.line_i]
+        new_line = (models.split_line_at_word(line, self.word_i)
+                    if self.char_i is None
+                    else models.split_line_at_char(line, self.word_i, self.char_i))
         if new_line is not None:
             state.doc["lines"].insert(self.line_i + 1, new_line)
             self._inserted = True
@@ -177,12 +185,41 @@ class MergeLines(_LineSnapshotMixin):
 class InsertWord(_LineSnapshotMixin):
     """行中插入一個字（C6 場景 B）：新單字 WordGroup，原 char 時間軸不變。"""
 
-    def __init__(self, line_i: int, word_i: int, text: str) -> None:
+    def __init__(self, line_i: int, word_i: int, text: str,
+                 duration_ms: int = 100) -> None:
         self.line_i, self.word_i, self.text = line_i, word_i, text
+        self.duration_ms = duration_ms
 
     def apply(self, state: Any) -> None:
         self._snapshot(state, [self.line_i])
-        models.insert_word(state.doc["lines"][self.line_i], self.word_i, self.text)
+        models.insert_word(state.doc["lines"][self.line_i], self.word_i, self.text,
+                           duration_ms=self.duration_ms)
+
+    def revert(self, state: Any) -> None:
+        self._restore(state)
+
+
+class InsertCharAfter(_LineSnapshotMixin):
+    """喺某個字**之後**加字（C6 場景 B'：行尾加字）。
+
+    用戶 2026-11-11：「想喺最後加一個字，時間可以是 0.1 秒」——舊版只有
+    「插喺選中字前面」，冇行尾路徑。``char_i`` 唔係詞尾時會先切詞（時間無損）。
+    """
+
+    def __init__(self, line_i: int, word_i: int, char_i: int, text: str,
+                 duration_ms: int = 100, ripple: bool = False) -> None:
+        self.line_i, self.word_i, self.char_i = line_i, word_i, char_i
+        self.text, self.duration_ms, self.ripple = text, duration_ms, ripple
+        self.ok = False
+
+    def apply(self, state: Any) -> None:
+        self._snapshot(state, [self.line_i])
+        self.ok = models.insert_char_after(
+            state.doc["lines"][self.line_i], self.word_i, self.char_i, self.text,
+            duration_ms=self.duration_ms, ripple=self.ripple) is not None
+        if not self.ok:
+            self._restore(state)
+            self.noop = True
 
     def revert(self, state: Any) -> None:
         self._restore(state)
@@ -338,16 +375,88 @@ class RepairLine(_LineSnapshotMixin):
         self._restore(state)
 
 
-class AddLine(_LineSnapshotMixin):
-    """新增整行（C6 場景 A）：拖時間範圍 → 文字按字數均分 → 全部 estimated。"""
+class InsertCharBefore(_LineSnapshotMixin):
+    """喺某個字**之前**加字（「＋字前」）。
 
-    def __init__(self, start_ms: int, end_ms: int, text: str) -> None:
+    2026-11-11 用戶回報：選「去」（屬於「逝去」一個詞）按「＋字前」會插咗喺
+    「逝」之前 —— 舊版只插喺整個詞之前。而家先切詞再插。
+    """
+
+    def __init__(self, line_i: int, word_i: int, char_i: int, text: str,
+                 duration_ms: int = 100, ripple: bool = False) -> None:
+        self.line_i, self.word_i, self.char_i = line_i, word_i, char_i
+        self.text, self.duration_ms, self.ripple = text, duration_ms, ripple
+        self.ok = False
+
+    def apply(self, state: Any) -> None:
+        self._snapshot(state, [self.line_i])
+        self.ok = models.insert_char_before(
+            state.doc["lines"][self.line_i], self.word_i, self.char_i, self.text,
+            duration_ms=self.duration_ms, ripple=self.ripple) is not None
+        if not self.ok:
+            self._restore(state)
+            self.noop = True
+
+    def revert(self, state: Any) -> None:
+        self._restore(state)
+
+
+class SetCharText(_LineSnapshotMixin):
+    """改一個字的文字（逐字微調「✏ 修改」）。"""
+
+    def __init__(self, line_i: int, word_i: int, char_i: int, text: str) -> None:
+        self.line_i, self.word_i, self.char_i, self.text = line_i, word_i, char_i, text
+
+    def apply(self, state: Any) -> None:
+        self._snapshot(state, [self.line_i])
+        ok = models.set_char_text(state.doc["lines"][self.line_i],
+                                  self.word_i, self.char_i, self.text)
+        if not ok:
+            self._restore(state)
+            self.noop = True
+
+    def revert(self, state: Any) -> None:
+        self._restore(state)
+
+
+class DeleteChar(_LineSnapshotMixin):
+    """刪除一個字（逐字微調「✕ 刪字」）。行只剩一個字時 noop（要用「刪行」）。"""
+
+    def __init__(self, line_i: int, word_i: int, char_i: int) -> None:
+        self.line_i, self.word_i, self.char_i = line_i, word_i, char_i
+        self.ok = False
+
+    def apply(self, state: Any) -> None:
+        self._snapshot(state, [self.line_i])
+        self.ok = models.delete_char(state.doc["lines"][self.line_i],
+                                     self.word_i, self.char_i)
+        if not self.ok:
+            self._restore(state)
+            self.noop = True
+
+    def revert(self, state: Any) -> None:
+        self._restore(state)
+
+
+class AddLine(_LineSnapshotMixin):
+    """新增整行（C6 場景 A）：拖時間範圍／游標位置 → 文字按字數均分 → 全部 estimated。
+
+    ``at_line_i`` 指定「插喺第幾行之前」（歌詞樹右鍵用）；``None`` 就按時間排序插入
+    —— 咁樣先可以喺**無字幕區段**（例如第 3 行同第 4 行之間）補返 AI 認漏嘅一句。
+    """
+
+    def __init__(self, start_ms: int, end_ms: int, text: str,
+                 at_line_i: int | None = None) -> None:
         self.start_ms, self.end_ms, self.text = start_ms, end_ms, text
+        self.at_line_i = at_line_i
         self.inserted_i: int | None = None
 
     def apply(self, state: Any) -> None:
-        line = models.add_line(state.doc, self.start_ms, self.end_ms, self.text)
-        self.inserted_i = state.doc["lines"].index(line)
+        line = models.add_line(state.doc, self.start_ms, self.end_ms, self.text,
+                               at_line_i=self.at_line_i)
+        # ⚠️ 用 identity 搵索引：dict.index() 比對內容，兩行文字／時間一樣就會刪錯
+        self.inserted_i = next(
+            (i for i, l in enumerate(state.doc["lines"]) if l is line), None)
 
     def revert(self, state: Any) -> None:
         if self.inserted_i is not None:
