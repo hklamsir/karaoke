@@ -646,13 +646,50 @@ def flat_index_map(line: dict) -> dict[tuple[int, int], int]:
     return {(wi, ci): k for k, (wi, ci, _c) in enumerate(iter_flat_chars(line))}
 
 
+def _edge_word(line: dict, *, first: bool) -> dict | None:
+    """本行第一個／最後一個**有 char** 的 word；冇 → ``None``。"""
+    order = line.get("words") or []
+    if not first:
+        order = list(reversed(order))
+    for word in order:
+        if word.get("chars"):
+            return word
+    return None
+
+
 def sync_word_bounds(line: dict) -> None:
-    """word 的 ``[begin_ms, end_ms]`` 一律由首尾 char 推導（避免兩份真相）。"""
+    """word 的 ``[begin_ms, end_ms]`` 由首尾 char 推導，並連動行邊界（ADR-040）。
+
+    行邊界以**差量**跟隨首／尾字移動，而唔係重推 —— 因為 ``line["end_ms"]``
+    通常含句尾 hold（``normalize()`` 的 N3 把 ``hold_ms`` 加在最後一個字之後），
+    直接重推會靜靜吞走那幾百毫秒的停留。
+
+    差量的比較基準是**舊的 word 邊界**：呼叫者（``NudgeChars`` 等）一定係先改
+    char 再叫呢個函式，所以 char 已是新值、word 仍是舊值 —— 這個差就是本次
+    改動量。只改中間字時首尾 word 的差為 0，行邊界原封不動。
+
+    Args:
+        line: 一行歌詞 dict（in-place 修改）。
+    """
+    first_word = _edge_word(line, first=True)
+    last_word = _edge_word(line, first=False)
+    old_first_begin = (first_word.get("begin_ms") if first_word else None)
+    old_last_end = (last_word.get("end_ms") if last_word else None)
+
     for word in line.get("words") or []:
         chars = word.get("chars") or []
         if chars:
             word["begin_ms"] = int(chars[0]["begin_ms"])
             word["end_ms"] = int(chars[-1]["end_ms"])
+
+    if first_word is not None and old_first_begin is not None:
+        delta = int(first_word["begin_ms"]) - int(old_first_begin)
+        if delta:
+            line["start_ms"] = max(0, int(line.get("start_ms") or 0) + delta)
+    if last_word is not None and old_last_end is not None:
+        delta = int(last_word["end_ms"]) - int(old_last_end)
+        if delta:
+            line["end_ms"] = max(0, int(line.get("end_ms") or 0) + delta)
 
 
 def span_plan(line: dict, i_from: int, i_to: int, *,
