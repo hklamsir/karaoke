@@ -64,11 +64,21 @@ def resolved_margin_v(style: dict) -> int:
 
 
 def resolved_line_gap(style: dict) -> int:
-    """雙行行距（PlayRes 座標）；同 ``StyleConfig.resolved`` 一致。"""
+    """雙行行距（PlayRes 座標）；同 ``StyleConfig.resolved`` 一致。
+
+    優先序（ADR-039）：``line_gap``（px）> ``line_gap_ratio``（倍數）> 1.45 舊公式。
+    """
     gap = int(style.get("line_gap") or 0)
     if gap:
         return gap
-    return max(24, round(int(style.get("font_size") or 48) * 1.45))
+    font_size = int(style.get("font_size") or 48)
+    try:
+        ratio = float(style.get("line_gap_ratio") or 0)
+    except (TypeError, ValueError):
+        ratio = 0.0
+    if ratio > 0:
+        return max(1, round(font_size * ratio))
+    return max(24, round(font_size * 1.45))
 
 
 def _metrics(style: dict, h: float) -> tuple[int, int, int, int]:

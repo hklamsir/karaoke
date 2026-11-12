@@ -219,7 +219,8 @@ def test_build_options_returns_none_without_video(tmp_path: Path, monkeypatch) -
     page._video_var = _Var(str(tmp_path / "missing.mp4"))
 
     assert HomePage._build_options(page) is None
-    assert warned == ["未選擇影片"]
+    # ADR-039：來源可以是影片或音檔，所以標題由「未選擇影片」改為「未選擇來源」
+    assert warned == ["未選擇來源"]
 
 
 def test_build_options_parses_style_snapshot(tmp_path: Path) -> None:

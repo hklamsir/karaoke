@@ -165,7 +165,9 @@ class PreviewPane(ttkb.Frame):
         path = filedialog.askopenfilename(
             title="揀最終要燒錄嘅原片",
             initialdir=str(current.parent) if current is not None else None,
-            filetypes=[("影片檔", "*.mp4 *.mkv *.mov *.webm *.avi"), ("全部檔案", "*.*")])
+            filetypes=[("影片 / 音檔", "*.mp4 *.mkv *.mov *.webm *.avi "
+                                       "*.m4v *.ts *.mp3 *.wav *.m4a *.flac"),
+                       ("全部檔案", "*.*")])
         if not path:
             return
         self._state.reassign_video(path)      # 會 notify("edit") → 重繪

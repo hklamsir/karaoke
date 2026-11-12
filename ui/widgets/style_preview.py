@@ -54,14 +54,19 @@ class StylePreviewCanvas(tk.Canvas):
                   secondary_color: str = theme.SUB_SECONDARY,
                   outline_color: str = "#000000", outline_width: float = 0.0,
                   margin_v: int = 0, sung_chars: int = 3,
-                  dual_line: bool = False, alignment: int = 2,
+                  dual_line: bool = False, line_gap_ratio: float = 0.0,
+                  alignment: int = 2,
                   up_offset_pct: int = 0, down_offset_pct: int = 0) -> None:
-        """更新樣式並即時重繪。``sung_chars`` = 由頭數起幾多隻字算「唱過」。"""
+        """更新樣式並即時重繪。``sung_chars`` = 由頭數起幾多隻字算「唱過」。
+
+        ``line_gap_ratio``（ADR-039）= 行距倍數；0 = 用 1.45 舊公式。
+        """
         self._style = dict(text=text, font_name=font_name or theme.ui_font_family(),
                            font_size=font_size, primary_color=primary_color,
                            secondary_color=secondary_color, outline_color=outline_color,
                            outline_width=outline_width, margin_v=margin_v,
                            sung_chars=sung_chars, dual_line=dual_line,
+                           line_gap_ratio=line_gap_ratio,
                            alignment=alignment, up_offset_pct=up_offset_pct,
                            down_offset_pct=down_offset_pct)
         self._redraw()
@@ -121,7 +126,16 @@ class StylePreviewCanvas(tk.Canvas):
         up_pct = float(s.get("up_offset_pct") or 0)
         down_pct = float(s.get("down_offset_pct") or 0)
         if s.get("dual_line"):
-            gap = round(max(24, s["font_size"] * 1.45) * scale)
+            # ADR-039：行距倍數（同 main.StyleConfig.resolved 同一條優先序）
+            gap_raw = int(s.get("line_gap") or 0)
+            if not gap_raw:
+                try:
+                    ratio = float(s.get("line_gap_ratio") or 0)
+                except (TypeError, ValueError):
+                    ratio = 0.0
+                gap_raw = (max(1, round(s["font_size"] * ratio)) if ratio > 0
+                           else max(24, round(s["font_size"] * 1.45)))
+            gap = round(gap_raw * scale)
             if an == 8:
                 up_y, down_y = y, y + gap
             elif an == 5:

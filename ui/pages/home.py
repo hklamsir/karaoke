@@ -28,7 +28,16 @@ from ..widgets.tooltip import Tooltip
 
 LOGGER = logging.getLogger("karaoke.ui.home")
 
-VIDEO_PATTERNS = [("影片檔", "*.mp4 *.mkv *.mov *.webm *.avi"), ("全部檔案", "*.*")]
+#: 主頁「MV 影片」可接受的來源（ADR-039）：影片（有畫面）+ 音檔（只有聲，
+#: 燒錄時用純色／圖片背景合成）。
+#: ⚠️ 影片與音檔**放在同一個 filter**：分成兩個 filter 的話，Windows 開檔對話框
+#: 預設只顯示第一個（影片），用戶要自己拉下拉選單才見到 mp3 —— 實測會以為
+#: 「呢個程式唔支援音檔」。
+VIDEO_PATTERNS = [
+    ("影片及音檔", "*.mp4 *.mkv *.mov *.webm *.avi *.m4v *.ts "
+                   "*.mp3 *.wav *.m4a *.flac *.aac *.ogg"),
+    ("全部檔案", "*.*"),
+]
 
 _ALIGNMENTS = [("底部置中", 2), ("中下", 3), ("頂部置中", 8), ("中部置中", 5)]
 _OUTLINE_WIDTHS = [("自動", 0.0), ("幼 2", 2.0), ("中 3", 3.0), ("粗 4", 4.0)]
@@ -119,7 +128,7 @@ class HomePage(ttkb.Frame):
 
         row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(theme.SPACE, 2))
-        ttkb.Label(row, text="MV 影片", width=10, bootstyle="secondary").pack(side="left")
+        ttkb.Label(row, text="MV／音檔", width=10, bootstyle="secondary").pack(side="left")
         self._video_var = tk.StringVar()
         ttkb.Entry(row, textvariable=self._video_var, width=52).pack(
             side="left", fill="x", expand=True, padx=theme.SPACE)
@@ -128,7 +137,7 @@ class HomePage(ttkb.Frame):
         ttkb.Button(row, text="清除", bootstyle="secondary", takefocus=False,
                     command=self._clear_video).pack(side="left")
 
-        self._video_info_var = tk.StringVar(value="未選擇影片")
+        self._video_info_var = tk.StringVar(value="未選擇影片／音檔")
         ttkb.Label(box, textvariable=self._video_info_var, bootstyle="info",
                    font=(theme.mono_font_family(), 9)) \
             .pack(anchor="w", padx=theme.SPACE + 76, pady=2)
@@ -304,6 +313,25 @@ class HomePage(ttkb.Frame):
         delay_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
         ttkb.Label(row, text="ms（句尾多留）", bootstyle="secondary",
                    font=(theme.ui_font_family(), 8)).pack(side="left", padx=(2, theme.SPACE))
+
+        # ADR-039：雙行行距倍數（1.00–2.50）。用倍數而唔用 px，係因為換字級時
+        # 行距會自動跟隨 —— px 模式一改字級就會「明明冇郁行距，睇落卻變鬆」。
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
+        ttkb.Label(row, text="雙行行距", width=8, bootstyle="secondary").pack(side="left")
+        self._gap_var = tk.DoubleVar(value=self._ratio_saved())
+        gap_spin = ttkb.Spinbox(row, textvariable=self._gap_var, from_=1.0, to=2.5,
+                                increment=0.05, width=6, format="%.2f",
+                                command=self._refresh_preview)
+        gap_spin.pack(side="left")
+        gap_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="× 字級", bootstyle="secondary").pack(side="left", padx=(2, 4))
+        gap_scale = ttkb.Scale(row, from_=1.0, to=2.5, variable=self._gap_var,
+                               command=self._on_gap_scale, length=130)
+        gap_scale.pack(side="left", padx=4)
+        self._gap_label = ttkb.Label(row, text="", bootstyle="secondary",
+                                     font=(theme.mono_font_family(), 9))
+        self._gap_label.pack(side="left")
 
         # ADR-030：上下行水平錯位（原片效果 = 上偏左、下偏右）
         row = ttkb.Frame(box, bootstyle="light")
@@ -559,6 +587,48 @@ class HomePage(ttkb.Frame):
         except (TypeError, ValueError):
             return default
 
+    def _ratio_saved(self) -> float:
+        """讀上次「雙行行距倍數」（ADR-039）。
+
+        舊 settings.json 只可能有 px 版 ``line_gap`` → 用 ``line_gap / font_size``
+        反推倍數，令升級後的行距睇落一模一樣。結果一律夾在 1.00–2.50。
+
+        Returns:
+            倍數（1.00–2.50）；冇任何紀錄 = 1.45。
+        """
+        try:
+            ratio = float(self._saved_style.get("line_gap_ratio") or 0)
+        except (TypeError, ValueError):
+            ratio = 0.0
+        if ratio > 0:
+            return min(2.5, max(1.0, round(ratio, 2)))
+        try:
+            gap = float(self._saved_style.get("line_gap") or 0)
+            size = float(self._saved_style.get("font_size") or 48)
+        except (TypeError, ValueError):
+            return 1.45
+        if gap > 0 and size > 0:
+            return min(2.5, max(1.0, round(gap / size, 2)))
+        return 1.45
+
+    def _gap_ratio_value(self) -> float:
+        """目前輸入框的倍數（壞值 / 超範圍一律夾回 1.00–2.50）。"""
+        try:
+            value = float(self._gap_var.get())
+        except (tk.TclError, ValueError):
+            return 1.45
+        return min(2.5, max(1.0, round(value, 2)))
+
+    def _on_gap_scale(self, value: str) -> None:
+        """滑桿拖動 → 吸附到 0.05 級距（ttk.Scale 冇 resolution，要自己 snap）。"""
+        try:
+            snapped = min(2.5, max(1.0, round(round(float(value) / 0.05) * 0.05, 2)))
+        except ValueError:
+            return
+        if abs(snapped - self._gap_ratio_value()) > 1e-9:
+            self._gap_var.set(snapped)
+        self._refresh_preview()
+
     def style_snapshot(self) -> dict[str, Any]:
         """主頁樣式面板當前值（dict；燒錄 / 生成 / 持久化共用）。
 
@@ -602,6 +672,11 @@ class HomePage(ttkb.Frame):
             "outline_width": self._outline_width_value(),
             # ADR-027：雙行歌詞（舊 settings.json 冇呢兩個 key → 自動單行）
             "dual_line": bool(self._dual_var.get()),
+            # ADR-039：行距倍數（px 由 render 時按字級換算，唔存死值）
+            "line_gap_ratio": self._gap_ratio_value(),
+            # 同時寫 0 落 px 欄位：舊 timings.json 可能帶住一個 px 值，
+            # 而 px 優先於倍數 → 唔清 0 就會「UI 改極都冇反應」
+            "line_gap": 0,
             "switch_delay_ms": delay_ms,
             # ADR-031：提前顯示 / 倒數圓點
             "lead_in_ms": lead_in_ms,
@@ -653,6 +728,22 @@ class HomePage(ttkb.Frame):
         # ADR-027：舊檔冇呢兩個 key → 保持單行、延遲沿用預設
         if "dual_line" in style:
             self._dual_var.set(bool(style.get("dual_line")))
+        # ADR-039：行距倍數；只寫 px 的舊檔 → 用 px / 字級反推倍數
+        if "line_gap_ratio" in style:
+            try:
+                ratio = float(style.get("line_gap_ratio") or 0)
+            except (TypeError, ValueError):
+                ratio = 0.0
+            if ratio > 0:
+                self._gap_var.set(min(2.5, max(1.0, round(ratio, 2))))
+        elif style.get("line_gap"):
+            try:
+                size = float(style.get("font_size") or 48)
+                px = float(style.get("line_gap") or 0)
+                if size > 0 and px > 0:
+                    self._gap_var.set(min(2.5, max(1.0, round(px / size, 2))))
+            except (TypeError, ValueError):
+                pass
         if style.get("switch_delay_ms") is not None:
             self._delay_var.set(int(style.get("switch_delay_ms") or 1000))
         # ADR-031：舊檔冇呢兩個 key → 用預設（3 秒 / 開圓點）
@@ -698,7 +789,7 @@ class HomePage(ttkb.Frame):
 
     def _pick_video(self) -> None:
         start = self.master.settings_data.get("default_input_dir") or ""
-        path = filedialog.askopenfilename(title="揀 MV 影片", initialdir=start or None,
+        path = filedialog.askopenfilename(title="揀 MV 影片或音檔", initialdir=start or None,
                                           filetypes=VIDEO_PATTERNS)
         if not path:
             return
@@ -707,7 +798,7 @@ class HomePage(ttkb.Frame):
 
     def _clear_video(self) -> None:
         self._video_var.set("")
-        self._video_info_var.set("未選擇影片")
+        self._video_info_var.set("未選擇影片／音檔")
         self._video_path = None
         self._video_info = {}
 
@@ -765,7 +856,11 @@ class HomePage(ttkb.Frame):
         self._refresh_preview()
 
     def _probe_video(self, video: Path) -> None:
-        """背景 ffprobe 讀解像度 / 時長（計劃書 §5.2 步驟 1）。"""
+        """背景 ffprobe 讀解像度 / 時長（計劃書 §5.2 步驟 1）。
+
+        ADR-039：mp3/wav 冇視訊軌 → ``probe_video_size`` 會退回 1920×1080，
+        唔可以就此報「1920×1080」，要明確講「音檔（無畫面）」。
+        """
         self._video_info_var.set("讀取影片資訊中…")
         def worker() -> None:
             import main
@@ -773,7 +868,8 @@ class HomePage(ttkb.Frame):
             if not ffprobe:
                 self.after(0, lambda: self._video_info_var.set("⚠ 搵唔到 ffprobe（設定頁填路徑）"))
                 return
-            w, h = main.probe_video_size(ffprobe, video)
+            has_video = main.probe_has_video(ffprobe, video)
+            w, h = main.probe_video_size(ffprobe, video) if has_video else (0, 0)
             try:
                 proc = subprocess.run(
                     [ffprobe, "-v", "error", "-show_entries", "format=duration",
@@ -783,7 +879,8 @@ class HomePage(ttkb.Frame):
             except ValueError:
                 duration = 0.0
             codec = main.probe_audio_codec(ffprobe, video)
-            info = {"w": w, "h": h, "duration": duration, "codec": codec}
+            info = {"w": w, "h": h, "duration": duration, "codec": codec,
+                    "has_video": has_video}
             self.after(0, lambda: self._show_video_info(video, info))
         threading.Thread(target=worker, daemon=True).start()
 
@@ -791,9 +888,14 @@ class HomePage(ttkb.Frame):
         self._video_path = video
         self._video_info = info
         minutes, seconds = divmod(info["duration"], 60)
-        self._video_info_var.set(
-            f"● {info['w']}×{info['h']} · {int(minutes):02d}:{seconds:05.2f}"
-            f" · 音軌 {info['codec'] or '冇'}")
+        clock = f"{int(minutes):02d}:{seconds:05.2f}"
+        if info.get("has_video", True):
+            self._video_info_var.set(
+                f"● {info['w']}×{info['h']} · {clock} · 音軌 {info['codec'] or '冇'}")
+        else:
+            self._video_info_var.set(
+                f"● 音檔（無畫面）· {clock} · {info['codec'] or '—'}"
+                f" · 燒錄時用背景合成")
         if not self._output_var.get():
             self._output_var.set(str(video.parent))
 
@@ -815,6 +917,17 @@ class HomePage(ttkb.Frame):
             margin = 0
         self._margin_label.configure(
             text=f"{margin} = 自動（1080p ≈ 59px）" if margin == 0 else f"{margin}px")
+        # ADR-039：行距倍數 → 即時換算 px，< 1.10 出警告（用戶要「密一點」時
+        # 好容易拖過頭，直接講清楚幾時會疊字）
+        ratio = self._gap_ratio_value()
+        gap_px = max(1, round(size * ratio))
+        gap_label = getattr(self, "_gap_label", None)
+        if gap_label is not None:
+            if ratio < 1.10:
+                gap_label.configure(text=f"= {gap_px}px ⚠ 貼近，可能疊字",
+                                    bootstyle="warning")
+            else:
+                gap_label.configure(text=f"= {gap_px}px", bootstyle="secondary")
         self._preview.set_style(
             font_name=self._font_var.get(), font_size=size,
             primary_color=self._color_vars["primary"].get(),
@@ -823,6 +936,7 @@ class HomePage(ttkb.Frame):
             outline_width=self._outline_width_value(),
             margin_v=margin,
             dual_line=bool(self._dual_var.get()),
+            line_gap_ratio=ratio,
             alignment=dict(_ALIGNMENTS).get(self._align_var.get(), 2),
             up_offset_pct=dict(_POSITIONS).get(self._up_pos_var.get(), 0),
             down_offset_pct=dict(_POSITIONS).get(self._down_pos_var.get(), 0))
@@ -847,7 +961,8 @@ class HomePage(ttkb.Frame):
         import main
         video = Path(self._video_var.get().strip())
         if not video.is_file():
-            messagebox.showwarning("未選擇影片", "請先揀一條 MV 影片。", parent=self)
+            messagebox.showwarning("未選擇來源",
+                                   "請先揀一條 MV 影片，或者一首 mp3／wav。", parent=self)
             return None
         try:
             snap = self.style_snapshot()
@@ -863,6 +978,8 @@ class HomePage(ttkb.Frame):
                 margin_v=snap["margin_v"],
                 # ADR-027：雙行歌詞開關
                 dual_line=bool(snap.get("dual_line", False)),
+                # ADR-039：行距倍數（1.00–2.50；0 = 核心預設 1.45）
+                line_gap_ratio=float(snap.get("line_gap_ratio") or 0.0),
                 switch_delay_ms=int(snap.get("switch_delay_ms") or 1000),
                 # ADR-029：整體平移
                 shift_ms=int(snap.get("shift_ms") or 0),
@@ -1018,6 +1135,9 @@ class HomePage(ttkb.Frame):
         values["lead_in_ms"] = snap["lead_in_ms"]
         values["countdown_dots"] = snap["countdown_dots"]
         values["dot_min_gap_ms"] = snap["dot_min_gap_ms"]
+        # ADR-027 / ADR-039：雙行 + 行距倍數（預設值唔會出現喺指令度）
+        values["dual_line"] = snap["dual_line"]
+        values["line_gap_ratio"] = snap["line_gap_ratio"]
         if self._output_var.get().strip():
             values["output_dir"] = self._output_var.get().strip()
         cmd = generate_cli_command("generate", values)

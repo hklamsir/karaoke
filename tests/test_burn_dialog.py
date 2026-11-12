@@ -34,12 +34,13 @@ def test_same_length_same_aspect_has_no_warning(media: dict[str, Path], ffprobe:
     assert warnings == []
 
 
-def test_audio_only_file_is_not_usable(media: dict[str, Path], ffprobe: str) -> None:
-    """揀到純音檔（無視訊軌）→ 不可用，且訊息要講清楚原因。"""
+def test_audio_only_file_is_usable_with_warning(media: dict[str, Path], ffprobe: str) -> None:
+    """揀到純音檔（無視訊軌）→ ADR-039 起可用，但必須有「會用背景合成」警告。"""
     warnings, usable = burn_dialog.compare_sources(ffprobe, media["wav"], media["orig"])
-    assert usable is False
-    assert warnings, "唔可用就必須有解釋，唔可以靜默 disable"
-    assert "冇視訊軌" in warnings[0]
+    assert usable is True
+    assert warnings, "音檔可燒就更加要講清楚會用背景合成"
+    assert any("冇視訊軌" in w for w in warnings), f"實得：{warnings}"
+    assert any("背景" in w for w in warnings), f"要講明會用背景合成，實得：{warnings}"
 
 
 def test_short_clip_warns_but_stays_usable(media: dict[str, Path], ffprobe: str) -> None:

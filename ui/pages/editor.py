@@ -492,7 +492,9 @@ class EditorPage(ttkb.Frame):
                                    f"原片搵唔到：\n{video}\n\n重新指定原片？（燒錄要用）"):
                 new = filedialog.askopenfilename(
                     title="重新指定原片",
-                    filetypes=[("影片檔", "*.mp4 *.mkv *.mov *.webm *.avi"), ("全部檔案", "*.*")])
+                    filetypes=[("影片 / 音檔", "*.mp4 *.mkv *.mov *.webm *.avi "
+                                               "*.m4v *.ts *.mp3 *.wav *.m4a *.flac"),
+                               ("全部檔案", "*.*")])
                 if new:
                     self._state.reassign_video(new)
         self._load_audio()
@@ -702,15 +704,24 @@ class EditorPage(ttkb.Frame):
         from ..widgets.burn_dialog import ask_burn_source
 
         last_dir = Path(self.master.settings_data.get("last_burn_dir") or video.parent)
-        source = ask_burn_source(
+        plan = ask_burn_source(
             self,
             default_video=video,
             style_text=_describe_style(home_style),
             ffprobe=ffprobe,
             last_dir=last_dir,
         )
-        if source is None:
+        if plan is None:
             return
+        source: Path = plan["source"]
+        # ADR-039：來源係純音檔（mp3/wav）時的背景（純色／圖片）；
+        # 有視訊軌時 burn_video 會自動忽略
+        background = {
+            "mode": plan.get("bg_mode", "color"),
+            "color": plan.get("bg_color", "#000000"),
+            "image": plan.get("bg_image"),
+            "fit": plan.get("bg_fit", "cover"),
+        }
         # 記住揀檔資料夾（同「已儲存的值」比較，唔係同預設值比較 ——
         # 否則第一次揀同一個資料夾就永遠唔會寫入）
         stored_dir = str(self.master.settings_data.get("last_burn_dir") or "")
@@ -763,7 +774,7 @@ class EditorPage(ttkb.Frame):
         # 原子寫入（§2.8）：燒錄中途斷電唔應該留下一份半截 .ass 覆蓋舊的
         _main.atomic_write_text(ass_path, ass_text)
         LOGGER.info("燒錄樣式：%s", _describe_style(home_style))
-        LOGGER.info("燒錄音源：%s（字幕時間軸基準：%s）", source.name, video.name)
+        LOGGER.info("燒錄來源：%s（字幕時間軸基準：%s）", source.name, video.name)
 
         # 3) 進度窗（置中 + log 預設展開；用戶回報 dialog 冇置中、睇唔到 log）
         from ..widgets.dialogs import center_window
@@ -803,7 +814,8 @@ class EditorPage(ttkb.Frame):
 
         def worker() -> None:
             try:
-                _main.burn_video(source, ass_path, output, progress_cb=prog.report,
+                _main.burn_video(source, ass_path, output, background=background,
+                                 progress_cb=prog.report,
                                  percent_cb=prog.set_fraction,
                                  cancel_event=cancel_event)
             except _main.TaskCancelled:

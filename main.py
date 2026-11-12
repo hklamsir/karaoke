@@ -504,8 +504,13 @@ class StyleConfig:
     #: 圓點出現門檻（ms，ADR-031 補記）：上一句結束後，同下一句開唱至少隔幾耐
     #: 才值得出倒數圓點。0 = 只要有一段完整空白就出。預設 5000（5 秒）。
     dot_min_gap_ms: int = 5000
-    #: 雙行行距（px，上行底部同下行底部的距離）；0 = 按 font_size × 1.45 推算
+    #: 雙行行距（px，上行底部同下行底部的距離）；0 = 按 ``line_gap_ratio`` 或
+    #: 1.45 推算。**非 0 時優先於** ``line_gap_ratio``（舊 timings.json 相容）。
     line_gap: int = 0
+    #: 雙行行距倍數（× 字級，ADR-039）：UI 以倍數輸入，換字級時比例自動跟隨，
+    #: 唔會出現「字級一改、行距就變鬆」。0 = 沿用 1.45 舊公式。
+    #: 有效範圍 1.00–2.50（< 1.00 上下行會疊字），由 UI 限制，核心唔強制。
+    line_gap_ratio: float = 0.0
     #: 整體時間平移（ms，ADR-029）：正值 = 字幕整體延後。用於換了另一版剪輯的 MV
     #: （前奏長度唔同）。**唔會改 timings 的原始時間**，只喺 render 時偏移。
     shift_ms: int = 0
@@ -514,10 +519,19 @@ class StyleConfig:
     down_offset_pct: int = 0
 
     def resolved(self) -> "StyleConfig":
-        """把 0 值換算成相對 PlayResY 的預設值。"""
+        """把 0 值換算成相對 PlayResY 的預設值。
+
+        行距優先序（ADR-039）：``line_gap``（px）> ``line_gap_ratio``（倍數）
+        > 1.45 舊公式。px 優先係為咗舊 timings.json（只寫 px）行為不變。
+        """
         margin_v = self.margin_v or max(24, round(self.play_res_y * 0.055))
         outline = self.outline_width or max(2.0, round(self.play_res_y / 360, 1))
-        gap = self.line_gap or max(24, round(self.font_size * 1.45))
+        if self.line_gap:
+            gap = self.line_gap
+        elif self.line_gap_ratio > 0:
+            gap = max(1, round(self.font_size * self.line_gap_ratio))
+        else:
+            gap = max(24, round(self.font_size * 1.45))
         return replace(self, margin_v=margin_v, outline_width=outline, line_gap=gap)
 
 
@@ -1333,6 +1347,9 @@ def lines_to_timings_doc(
             **({"dual_line": True,
                 "switch_delay_ms": style.switch_delay_ms,
                 "line_gap": style.line_gap,
+                # ADR-039：倍數只在非 0 時寫 → 舊檔（只有 px 或乜都冇）保持原樣
+                **({"line_gap_ratio": round(style.line_gap_ratio, 3)}
+                   if style.line_gap_ratio else {}),
                 # ADR-030：上下行水平錯位
                 "up_offset_pct": style.up_offset_pct,
                 "down_offset_pct": style.down_offset_pct} if style.dual_line else
@@ -1371,6 +1388,18 @@ def lines_to_timings_doc(
             for line in lines
         ],
     }
+
+
+def _safe_float(value: Any, default: float) -> float:
+    """寬鬆讀取浮點欄位（``None`` / 壞字串 → ``default``，負數歸 0）。
+
+    timings.json 係 canonical 檔，用戶會手改；一個 ``"abc"`` 唔應該令開檔失敗，
+    但亦唔可以靜靜變 0 之後輸出「行距 1px」的垃圾字幕 —— 所以負數一律夾回 0。
+    """
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleConfig]:
@@ -1414,6 +1443,9 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
         dual_line=bool(raw_style.get("dual_line", False)),
         switch_delay_ms=int(raw_style.get("switch_delay_ms") or defaults.switch_delay_ms),
         line_gap=int(raw_style.get("line_gap") or 0),
+        # ADR-039：倍數（0 = 用 line_gap px 或 1.45 預設）；壞值靜靜當 0，
+        # 人手改 JSON 唔應該令開檔失敗
+        line_gap_ratio=_safe_float(raw_style.get("line_gap_ratio"), 0.0),
         shift_ms=int(raw_style.get("shift_ms") or 0),
         up_offset_pct=int(raw_style.get("up_offset_pct") or 0),
         down_offset_pct=int(raw_style.get("down_offset_pct") or 0),
@@ -1987,6 +2019,98 @@ def _run_ffmpeg(cmd: list[str], *, cwd: str,
                     pass
 
 
+def _burn_base(
+    ffmpeg: str,
+    video: Path,
+    ass_name: str,
+    play_res_x: int,
+    play_res_y: int,
+    background: dict[str, Any] | None,
+    workdir: Path,
+    total_ms: int,
+) -> list[str]:
+    """組燒錄命令的「輸入 + 濾鏡 + 視訊編碼」部分（唔包音軌同輸出檔）。
+
+    ADR-039：``background`` 決定畫面來源 —— 純色（lavfi ``color``）或圖片
+    （``-loop 1``），令只有 mp3/wav 的用戶都出得片。
+
+    ⚠️ ``ass=`` **一定放喺 filter chain 最後**：反過來寫（先 ass 後 scale）的話
+    字幕會跟住被縮細／裁走，而且 ``original_size`` 會同實際輸入尺寸對唔上。
+
+    Args:
+        ffmpeg: 執行檔路徑。
+        video: 來源（影片，或冇視訊軌的 mp3/wav）。
+        ass_name: ASS **檔名**（同 ``workdir`` 同層；ADR-006 唔准寫絕對路徑）。
+        play_res_x: ASS 座標系闊（= 背景解析度）。
+        play_res_y: ASS 座標系高。
+        background: ``None`` = 來源本身有視訊軌。dict 格式：
+            ``{"mode": "color"|"image", "color": "#RRGGBB",
+            "image": Path, "fit": "cover"|"contain"}``。
+        workdir: ffmpeg 的 cwd，所有路徑都相對它。
+        total_ms: 來源時長（ms）。>0 時用 ``-t`` 封頂，否則用 ``-shortest``
+            （``-loop 1`` 的圖片同 lavfi 純色都係無限長，冇封頂就永遠唔停）。
+
+    Returns:
+        subprocess 參數（未含音軌編碼與輸出檔）。
+
+    Raises:
+        BurnError: 指定了圖片背景但檔案唔存在。
+    """
+    ass_filter = f"ass={ass_name}:original_size={play_res_x}x{play_res_y}"
+    mode = "none"
+    color = "0x000000"
+    image: Path | None = None
+    fit = "cover"
+    if background:
+        mode = str(background.get("mode") or "color")
+        raw = str(background.get("color") or "#000000").lstrip("#") or "000000"
+        color = "0x" + raw.upper()
+        if mode == "image":
+            raw_image = background.get("image")
+            if not raw_image:
+                mode = "color"          # 揀了圖片模式但未揀檔 → 靜靜退回純色
+            else:
+                image = Path(str(raw_image))
+                if not image.is_file():
+                    raise BurnError(f"背景圖片唔存在：{image}")
+                fit = str(background.get("fit") or "cover")
+
+    if image is not None:
+        inputs = ["-loop", "1", "-framerate", "25",
+                  "-i", _rel_or_abs(image, workdir),
+                  "-i", _rel_or_abs(video, workdir)]
+        if fit == "contain":
+            # 完整顯示：不足部分用背景色補邊（唔硬綁黑色）
+            bgf = (f"scale={play_res_x}:{play_res_y}"
+                   f":force_original_aspect_ratio=decrease,"
+                   f"pad={play_res_x}:{play_res_y}:(ow-iw)/2:(oh-ih)/2:color={color}")
+        else:
+            bgf = (f"scale={play_res_x}:{play_res_y}"
+                   f":force_original_aspect_ratio=increase,"
+                   f"crop={play_res_x}:{play_res_y}")
+        vf = f"{bgf},{ass_filter}"
+        mapping = ["-map", "0:v:0", "-map", "1:a:0"]
+    elif mode == "color":
+        inputs = ["-f", "lavfi", "-i",
+                  f"color=c={color}:s={play_res_x}x{play_res_y}:r=25",
+                  "-i", _rel_or_abs(video, workdir)]
+        vf = ass_filter
+        mapping = ["-map", "0:v:0", "-map", "1:a:0"]
+    else:
+        inputs = ["-i", _rel_or_abs(video, workdir)]
+        vf = ass_filter
+        mapping = []
+
+    base = [ffmpeg, "-y", "-v", "error", *inputs, "-vf", vf, *mapping,
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"]
+    if image is not None or mode == "color":
+        if total_ms > 0:
+            base += ["-t", f"{total_ms / 1000:.3f}"]
+        else:
+            base += ["-shortest"]
+    return base
+
+
 def burn_subtitles(
     ffmpeg: str,
     video: Path,
@@ -1996,6 +2120,7 @@ def burn_subtitles(
     play_res_y: int,
     audio_codec: str | None,
     *,
+    background: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
     total_ms: int = 0,
     progress_cb: Callable[[int, int], None] | None = None,
@@ -2007,6 +2132,8 @@ def burn_subtitles(
          （Windows 嘅 ``C:`` 冒號會畀 ffmpeg 當 filter option 分隔符）。
          改為 ``cwd=<ass 所在目錄>`` + filter 只用**檔名**。
       2. ffmpeg 命令**必須**帶 ``original_size=WxH``。
+
+    ADR-039：``background`` 非空 = 來源冇視訊軌（mp3/wav），用純色或圖片當畫面。
 
     Args:
         ffmpeg: ffmpeg 執行檔路徑。
@@ -2034,12 +2161,8 @@ def burn_subtitles(
         LOGGER.info("檔名含 ffmpeg filter 特殊字元，已改用臨時檔名燒錄：%s", safe_name)
 
     try:
-        base = [
-            ffmpeg, "-y", "-v", "error",
-            "-i", _rel_or_abs(video, workdir),
-            "-vf", f"ass={ass_name}:original_size={play_res_x}x{play_res_y}",
-            "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p",
-        ]
+        base = _burn_base(ffmpeg, video, ass_name, play_res_x, play_res_y,
+                          background, workdir, total_ms)
         # ADR-009：音軌優先用 copy，唔相容就降級 aac 192k
         if audio_codec in {"aac", "mp3", "ac3", "eac3", "alac"}:
             audio_args = ["-c:a", "copy"]
@@ -2190,8 +2313,18 @@ def generate_timings(opts: GenerateOptions, *,
 
     ffmpeg = find_ffmpeg()
     ffprobe = find_ffprobe()
-    width, height = probe_video_size(ffprobe, video)
-    LOGGER.info("影片 %dx%d", width, height)
+    # ADR-039：純音檔（mp3/wav）冇視訊軌 → PlayRes 固定 1920×1080。
+    # 用固定值而唔係「讀唔到就猜」：燒錄時的背景（純色／圖片）同字幕座標系
+    # 必須一致，否則每次匯入同一首歌都可能出唔同字級比例。
+    has_video = probe_has_video(ffprobe, video)
+    if has_video:
+        width, height = probe_video_size(ffprobe, video)
+        LOGGER.info("影片 %dx%d", width, height)
+    else:
+        width, height = 1920, 1080
+        LOGGER.warning(
+            "輸入冇視訊軌（純音檔）→ PlayRes 固定 %dx%d；"
+            "燒錄時會用背景（純色／圖片）合成畫面", width, height)
 
     json_path = output_dir / f"{video.stem}_timings.json"
     ass_path = output_dir / f"{video.stem}_karaoke.ass"
@@ -2281,6 +2414,8 @@ def generate_timings(opts: GenerateOptions, *,
             "video": str(video),
             "video_width": width,
             "video_height": height,
+            # ADR-039：False = 來源係純音檔（燒錄要配背景）
+            "source_has_video": has_video,
             "model": opts.model,
             "language_hints": hints,
             "asr_content_duration_ms": transcripts.get("content_duration_in_milliseconds"),
@@ -2362,6 +2497,9 @@ def cmd_generate(args: argparse.Namespace) -> int:
             lead_in_ms=getattr(args, "lead_in_ms", 3000),
             countdown_dots=getattr(args, "countdown_dots", True),
             dot_min_gap_ms=getattr(args, "dot_min_gap_ms", 5000),
+            # ADR-027 / ADR-039：雙行 + 行距倍數
+            dual_line=bool(getattr(args, "dual_line", False)),
+            line_gap_ratio=float(getattr(args, "line_gap_ratio", 0.0) or 0.0),
         ),
     ))
     return 0
@@ -2407,6 +2545,9 @@ def cmd_render(args: argparse.Namespace) -> int:
         ("lead_in_ms", getattr(args, "lead_in_ms", None)),
         ("countdown_dots", getattr(args, "countdown_dots", None)),
         ("dot_min_gap_ms", getattr(args, "dot_min_gap_ms", None)),
+        # ADR-027 / ADR-039：雙行 + 行距倍數
+        ("dual_line", getattr(args, "dual_line", None)),
+        ("line_gap_ratio", getattr(args, "line_gap_ratio", None)),
     ) if v is not None}
     if overrides:
         # 顏色先驗：--sync-style 會把覆寫寫回 JSON，壞色碼唔可以入檔
@@ -2445,17 +2586,22 @@ def cmd_render(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 def burn_video(video: Path, ass_path: Path, output_path: Path, *,
+               background: dict[str, Any] | None = None,
                progress_cb: ProgressCB | None = None,
                percent_cb: Callable[[float], None] | None = None,
                cancel_event: threading.Event | None = None) -> Path:
     """影片 + .ass → 燒錄 mp4（UI 入口；CLI 見 cmd_burn）。
 
     ADR-012：座標系由 .ass 自己讀出，唔使依賴 timings.json。
+    ADR-039：``video`` 冇視訊軌（mp3/wav）時，用 ``background`` 合成畫面
+    （純色或圖片），令「只有音檔」都出得片。
 
     Args:
-        video: 原始 MV 影片。
+        video: 原始 MV 影片，或純音檔（mp3/wav）。
         ass_path: 要燒錄嘅 .ass 檔。
         output_path: 輸出 mp4 路徑。
+        background: 無視訊軌時的畫面來源，``None`` = 純黑 1920×1080。
+            dict 格式見 :func:`_burn_base`。來源本身有視訊軌時**一律忽略**。
         progress_cb: 階段回呼（stage = "燒錄"）。
         percent_cb: 編碼百分比回呼（0–100），供進度條用（ADR-028）。
         cancel_event: 取消旗標（ADR-025）；命中時 ffmpeg 會被終止，
@@ -2466,7 +2612,7 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
 
     Raises:
         ToolMissingError: 缺 ffmpeg / ffprobe。
-        BurnError: ffmpeg 燒錄失敗（退出碼 5，ADR-024）。
+        BurnError: ffmpeg 燒錄失敗（退出碼 5，ADR-024）或背景圖片唔存在。
         TaskCancelled: 用戶取消。
     """
     ffmpeg = find_ffmpeg()
@@ -2483,6 +2629,12 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
 
     audio_codec = probe_audio_codec(ffprobe, video)
     total_ms = probe_duration_ms(ffprobe, video) or 0
+    # ADR-039：來源冇視訊軌 → 一定要有背景；有視訊軌就唔應該再疊背景
+    if probe_has_video(ffprobe, video):
+        background = None
+    elif background is None:
+        background = {"mode": "color", "color": "#000000", "fit": "cover"}
+        LOGGER.info("來源冇視訊軌（音檔）→ 用純黑背景合成（ADR-039）")
     if progress_cb:
         progress_cb("燒錄", "開始燒錄字幕（libx264 crf18 medium）…")
 
@@ -2496,6 +2648,7 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
 
     burn_subtitles(ffmpeg=ffmpeg, video=video, ass_path=ass_path, output_path=output_path,
                    play_res_x=width, play_res_y=height, audio_codec=audio_codec,
+                   background=background,
                    cancel_event=cancel_event, total_ms=total_ms,
                    progress_cb=_tick if (progress_cb or percent_cb) else None)
     if progress_cb:
@@ -2516,7 +2669,14 @@ def cmd_burn(args: argparse.Namespace) -> int:
     output = Path(args.output).expanduser() if args.output else video.with_name(
         f"{video.stem}_karaoke.mp4")
 
-    burn_video(video, ass_path, output)
+    # ADR-039：只有純音檔（-i song.mp3）才需要背景；有視訊軌時 burn_video 會忽略
+    background = {
+        "mode": "image" if getattr(args, "bg_image", None) else "color",
+        "color": getattr(args, "bg_color", "#000000") or "#000000",
+        "image": getattr(args, "bg_image", None),
+        "fit": getattr(args, "bg_fit", "cover") or "cover",
+    }
+    burn_video(video, ass_path, output, background=background)
     LOGGER.info("完成 ✅  影片：%s", output)
     return 0
 
@@ -2593,6 +2753,16 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
         "--dot-min-gap-ms", type=int, default=None if overrides else 5000,
         help="圓點門檻：上一句結束後至少隔幾多 ms 才出倒數圓點（預設 5000；"
              "0 = 只要有一段空白就出）" + suffix)
+    # ADR-027 / ADR-039：雙行歌詞（原本只有 UI 控制，CLI 冇入口）
+    group.add_argument(
+        "--dual-line", action=argparse.BooleanOptionalAction,
+        default=None if overrides else False,
+        help="雙行交替歌詞（奇數句上行、偶數句下行，預設關閉；"
+             "--no-dual-line 可強制關閉）" + suffix)
+    group.add_argument(
+        "--line-gap-ratio", type=float, default=None if overrides else 0.0,
+        help="雙行行距倍數（× 字級，1.00–2.50，預設 0 = 1.45）。只在 --dual-line "
+             "生效；< 1.00 會令上下行疊字" + suffix)
 
 
 def _read_version() -> str:
@@ -2707,6 +2877,13 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("-s", "--subtitle", required=True, help="要燒錄的 .ass 字幕檔")
     b.add_argument("-o", "--output",
                    help="輸出 mp4 路徑（預設為 <原檔名>_karaoke.mp4）")
+    # ADR-039：-i 係 mp3/wav 時用背景合成畫面
+    b.add_argument("--bg-color", default="#000000",
+                   help="背景純色 #RRGGBB（預設 #000000 黑）；只在 -i 係純音檔時生效")
+    b.add_argument("--bg-image",
+                   help="背景圖片路徑（jpg/png）。提供時優先於 --bg-color")
+    b.add_argument("--bg-fit", choices=["cover", "contain"], default="cover",
+                   help="背景圖片填充：cover = 填滿裁切（預設）、contain = 完整顯示加邊")
     b.set_defaults(func=cmd_burn)
 
     return parser
