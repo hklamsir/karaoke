@@ -499,8 +499,46 @@ class EditorPage(ttkb.Frame):
                     self._state.reassign_video(new)
         self._load_audio()
         self._load_thumbs()
+        # ADR-044：原片換過（例如 480p → 1080p）而 timings 仍記住舊座標系時，
+        # 預覽同燒錄會用兩個唔同基準，字幕大小睇落唔一致 —— 開檔即對齊。
+        self._align_play_res()
         # ADR-015：開檔即把該片樣式反映去主頁面板（所見即所燒）
         self._sync_home_style()
+
+    def _align_play_res(self) -> None:
+        """把 timings 的 PlayRes 對齊原片真實解析度（ADR-044）。
+
+        換原片（480p → 1080p）之後 ``style.play_res_*`` 仍然停在舊片的值：
+        預覽按舊座標系縮字（96px 相對 480 = 20% 高），燒錄卻按新片解析度
+        套用主頁字級（96px 相對 1080 = 8.9%）—— 兩邊見到的字幕大小不同。
+
+        對齊時**唔改字級**：字級是使用者直接調的 px 值，換片後應以新片為基準；
+        純音檔（冇視訊軌）唔動座標系，因為它沿用固定的 1920×1080。
+        """
+        video = self._state.video_path
+        if video is None or not Path(video).is_file():
+            return
+        from .. import settings as ui_settings
+        ffprobe = ui_settings.detect_ffprobe(self.master.settings_data)
+        if not ffprobe:
+            return
+        import main as _main
+        try:
+            if not _main.probe_has_video(ffprobe, video):
+                return
+            w, h = _main.probe_video_size(ffprobe, video)
+        except Exception as exc:      # noqa: BLE001 — 讀唔到就沿用原座標系
+            LOGGER.warning("讀取原片解析度失敗（%s），沿用 timings 座標系", exc)
+            return
+        style = self._state.doc.setdefault("style", {})
+        old_w = int(style.get("play_res_x") or 0)
+        old_h = int(style.get("play_res_y") or 0)
+        if (old_w, old_h) == (w, h):
+            return
+        LOGGER.info("座標系對齊原片：%d×%d → %d×%d（字級不變）", old_w, old_h, w, h)
+        style["play_res_x"], style["play_res_y"] = w, h
+        self._state.dirty = True
+        self._state.notify("edit")
 
     def _sync_home_style(self) -> None:
         """``doc.style`` → 主頁樣式面板（燒錄以主頁為權威，兩者必須一致）。"""
@@ -669,6 +707,14 @@ class EditorPage(ttkb.Frame):
             # 暫停：記住而家位置做下次起點
             self._state.set_cursor(engine.position_ms())
         engine.toggle(self._state.cursor_ms)
+
+    def toggle_play(self) -> None:
+        """播放／暫停的公開入口（App 空白鍵用；實作見 :meth:`_toggle_play`）。
+
+        ⚠️ ``ui/app.py::_dispatch`` 以方法名查 ``hasattr(editor, method)``，
+        以前只有私有 ``_toggle_play``，所以空白鍵一直是「按了冇反應」。
+        """
+        self._toggle_play()
 
     def _replay_3s(self) -> None:
         """「重播 3 秒」跟唱：播 [游標−1s, 游標+2s]（§6.6）。"""
@@ -959,6 +1005,8 @@ class EditorPage(ttkb.Frame):
 
     def _on_video_changed(self) -> None:
         """預覽窗格換咗「最終燒錄原片」→ 重載音訊波形（縮圖由 preview 自己處理）。"""
+        # ADR-044：換片即刻把座標系對齊新片，否則預覽與燒錄用唔同基準
+        self._align_play_res()
         self._load_audio()
         self._refresh_status()
 
@@ -1877,11 +1925,21 @@ class EditorPage(ttkb.Frame):
         return self._confirm_discard()
 
     def on_show(self) -> None:
+        self._preview.redraw_now()
         self._refresh_status()
         self._refresh_finetune()
 
     def on_hide(self) -> None:
-        pass
+        """切走頁面 → 暫停播放（ADR-045）。
+
+        播放期間每 30ms 更新游標、重繪預覽與時間軸；頁面隱藏後仍然跑，
+        跳去主頁就會極慢。與其繼續燒 CPU，不如停播，游標停在當前位置，
+        切返編輯器可以由同一點再播。
+        """
+        engine = self._audio
+        if engine is not None and getattr(engine, "playing", False):
+            self._state.set_cursor(engine.position_ms())
+            engine.toggle(self._state.cursor_ms)
 
 
 def _fmt_ms(ms: int) -> str:

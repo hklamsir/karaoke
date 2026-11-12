@@ -377,7 +377,27 @@ class PreviewPane(ttkb.Frame):
     # 繪製
     # ------------------------------------------------------------------
 
+    def _page_visible(self) -> bool:
+        """所屬頁面是否在前景（``App.current_key == "editor"``）。
+
+        播放期間 ``notify("cursor")`` 每 30ms 一次，每次都重畫整個預覽 canvas
+        （逐字 8 向描邊 = 每個字 9 個 item）。頁面隱藏時照畫就係「跳去主頁極慢」
+        的主因 —— 隱藏時直接跳過，切返嚟由 :meth:`redraw_now` 補一次。
+        """
+        try:
+            key = getattr(self.winfo_toplevel(), "current_key", None)
+        except tk.TclError:      # 視窗已銷毀
+            return True
+        return key in (None, "editor")
+
+    def redraw_now(self) -> None:
+        """強制重畫（由 editor ``on_show`` 呼叫，補回隱藏期間漏掉的重繪）。"""
+        self._redraw_video()
+        self._redraw_strip_playhead()
+
     def _on_state_change(self, reason: str) -> None:
+        if not self._page_visible():
+            return
         # ⚠️ strip 重建只准喺 load —— "select"/"edit" 每次都重建會載入成百張
         # PNG 而 freeze UI（實測 542 張）；行編輯唔影響 strip 內容
         if reason == "load":
