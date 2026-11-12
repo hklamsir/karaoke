@@ -530,6 +530,8 @@ class EditorPage(ttkb.Frame):
         except Exception as exc:      # noqa: BLE001 — 讀唔到就沿用原座標系
             LOGGER.warning("讀取原片解析度失敗（%s），沿用 timings 座標系", exc)
             return
+        # 畫面比例用真實尺寸（ADR-046）；字幕基準見 style.play_res_*
+        self._preview.set_source_size(w, h)
         style = self._state.doc.setdefault("style", {})
         old_w = int(style.get("play_res_x") or 0)
         old_h = int(style.get("play_res_y") or 0)

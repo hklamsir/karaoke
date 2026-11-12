@@ -85,6 +85,8 @@ class PreviewPane(ttkb.Frame):
         # 換片時要能夠叫停舊的抽取 thread，而 _thumbs 只會在完成後才賦值。
         self._thumbs_task = None
         self._photo: tk.PhotoImage | None = None       # 防 GC（Tk image 唔自動回收）
+        #: 原片真實尺寸（畫面比例用；ADR-046）。``None`` = 未 probe，退回 PlayRes。
+        self._source_size: tuple[int, int] | None = None
         self._photo_cache: dict[int, tk.PhotoImage] = {}   # frame idx → PhotoImage（LRU 3）
         self._strip_photos: list[tk.PhotoImage] = []
         self._strip_items: list[int] = []
@@ -250,6 +252,21 @@ class PreviewPane(ttkb.Frame):
         except ValueError:
             return auto
 
+    def set_source_size(self, width: int, height: int) -> None:
+        """記錄原片真實尺寸（ADR-046）。
+
+        畫面**比例**用原片真實尺寸，字幕**基準**用 timings 的 PlayRes ——
+        兩者可以不同（例如原片 1080p、把 PlayRes 設成 720p 模擬低清輸出）。
+        以前畫面比例借用 PlayRes，改解析度就會連比例一齊變，所以分開。
+        """
+        if width <= 0 or height <= 0:
+            return
+        size = (int(width), int(height))
+        if size == self._source_size:
+            return
+        self._source_size = size
+        self._redraw_video()
+
     def _frame_geometry(self, w: float, h: float) -> tuple[float, float, float, float, float]:
         """回傳 ``(x0, y0, fw, fh, scale)``。
 
@@ -257,44 +274,51 @@ class PreviewPane(ttkb.Frame):
         窗格唔夠大時自動降到「適合視窗」並喺狀態列顯示**實際**百分比，
         唔會靜靜畫到爆框。
 
-        ⚠️ 畫面比例**一律跟 timings 的 PlayRes**（= 原片比例）：燒錄只會把字幕
-        疊在原片上，唔會改比例。以前用「解析度」設定的比例畫框，4:3 的 MV 揀
-        1920×1080 就會被拉闊／裁走上下，字幕亦因為分母不同而睇落「冇縮小」
-        （2026-11-12 用戶回報）。「解析度」改為只用嚟封頂放大倍率 —— 想睇
-        1080p 效果就揀大於原片的解析度，想模擬 480p 就揀細。
+        ⚠️ 畫面**比例**用原片真實尺寸（ADR-046），字幕**基準**用 timings 的
+        PlayRes —— 兩者刻意分開。燒錄只會把字幕疊在原片上，畫面比例永遠跟原片；
+        而「解析度」是模擬的輸出解析度，會改變字幕基準（字級 px 不變）。
+        以前畫面比例借用 PlayRes，改解析度就會連比例一齊變，4:3 的 MV 揀
+        1920×1080 便被拉闊／裁邊（2026-11-12 用戶回報）。
         """
         res_w, res_h = self._target_res()
         style = self._state.doc.get("style") or {}
-        base_w = int(style.get("play_res_x") or res_w) or res_w
-        base_h = int(style.get("play_res_y") or res_h) or res_h
+        if self._source_size:
+            base_w, base_h = self._source_size
+        else:
+            base_w = int(style.get("play_res_x") or res_w) or res_w
+            base_h = int(style.get("play_res_y") or res_h) or res_h
         zoom = dict(ZOOM_PRESETS).get(self._zoom_var.get(), "fit")
         fw, fh, scale = fit_frame(w, h, base_w, base_h, res_w, res_h,
                                   None if zoom == "fit" else float(zoom))
         return (w - fw) / 2, (h - fh) / 2, fw, fh, scale
 
     def _info_text(self, scale: float) -> str:
-        """狀態列：原片座標系 · 顯示比例（· 輸出模擬）· 字級警告。
+        """狀態列：原片尺寸 · 顯示比例（· 字幕基準）· 字級警告。
 
-        字級警告用「最長一行字數 × 字級 > 畫面闊度」判斷 —— 這正是使用者
-        見到「字幕爆框、預覽唔似成品」的真正原因：字級是相對 PlayRes 的，
-        640×480 的片用 96 字級，一行 10 字就需要 960px，畫面根本放唔落。
+        字級警告用「最長一行字數 × 字級 > PlayRes 闊度」判斷 —— 這正是使用者
+        見到「字幕爆框、預覽唔似成品」的原因：字級是相對 PlayRes 的。
         """
         style = self._state.doc.get("style") or {}
         res_w, res_h = self._target_res()
-        base_w = int(style.get("play_res_x") or res_w) or res_w
-        base_h = int(style.get("play_res_y") or res_h) or res_h
+        if self._source_size:
+            base_w, base_h = self._source_size
+        else:
+            base_w = int(style.get("play_res_x") or res_w) or res_w
+            base_h = int(style.get("play_res_y") or res_h) or res_h
+        play_w = int(style.get("play_res_x") or base_w) or base_w
+        play_h = int(style.get("play_res_y") or base_h) or base_h
         text = f"{base_w}×{base_h} · {scale * 100:.0f}%"
-        if (res_w, res_h) != (base_w, base_h):
-            text += f" · 模擬 {res_w}×{res_h}"
+        if (play_w, play_h) != (base_w, base_h):
+            text += f" · 字幕 {play_w}×{play_h}"
         font = int(style.get("font_size") or 48)
         longest = max((len(str(ln.get("text") or "")) for ln in self._state.lines),
                       default=0)
-        if longest and font * longest > base_w:
-            text += f" · ⚠ {longest}×{font}>{base_w}"
+        if longest and font * longest > play_w:
+            text += f" · ⚠ {longest}×{font}>{play_w}"
         return text
 
     def _on_view_setting(self) -> None:
-        """解析度／縮放變更 → 記入 settings.json 並重繪。"""
+        """解析度／縮放變更 → 記入 settings.json、對齊字幕基準、重繪。"""
         from .. import settings as ui_settings
         mode = self._res_mode()
         if mode == "custom" and not self._ask_custom_res():
@@ -304,8 +328,31 @@ class PreviewPane(ttkb.Frame):
         data["preview_res"] = mode
         data["preview_zoom"] = dict(ZOOM_PRESETS).get(self._zoom_var.get(), "fit")
         ui_settings.save(data)
+        self._sync_play_res(mode)
         self._photo_cache.clear()      # 舊尺寸的縮圖快取唔可以重用
         self._redraw_video()
+
+    def _sync_play_res(self, mode: str) -> None:
+        """把 timings 的 PlayRes 對齊「解析度」所選值（字級 px 不變，ADR-046）。
+
+        Args:
+            mode: ``_res_mode()`` 的結果；``"auto"`` = 跟原片真實尺寸。
+
+        為何要改 PlayRes 而唔止改畫面比例：字級與留白都是相對 PlayRes 的 px 值，
+        只改畫面比例的話，選 720p 模擬低清輸出時字幕仍然按舊基準縮放，
+        見到的字級同所選解析度完全脫節。
+        """
+        target = (self._source_size if mode == "auto" and self._source_size
+                  else self._target_res())
+        if not target:
+            return
+        style = self._state.doc.setdefault("style", {})
+        current = (int(style.get("play_res_x") or 0), int(style.get("play_res_y") or 0))
+        if current == target:
+            return
+        style["play_res_x"], style["play_res_y"] = target
+        self._state.dirty = True
+        self._state.notify("edit")
 
     def _ask_custom_res(self) -> bool:
         """問自訂闊×高；成功寫入 settings 並回傳 True。"""

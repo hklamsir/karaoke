@@ -23,8 +23,9 @@ pytest.importorskip("ttkbootstrap")
 def app():
     """建立完整 App；Tk 不可用（CI 無 display）就 skip。
 
-    ⚠️ ``scope="module"``：同一個 pytest session 內反覆 App() / destroy() 會
-    撞 Tk（``invalid command name "tcl_findLibrary"``），所以整組測試共用一個。
+    ⚠️ 整個測試 session 只能有一個 ``ttkb.Window``：反覆建立／銷毀會令
+    Tcl 解釋器殘留（``invalid command name "tcl_findLibrary"``），所以本檔
+    所有 UI 整合測試（含下面的解析度同步）共用這一個。
     """
     from ui.app import App
 
@@ -137,3 +138,81 @@ def test_on_show_redraws_once(app) -> None:
         assert len(calls) >= 1
     finally:
         preview._redraw_video = original
+
+
+# ---------------------------------------------------------------------------
+# 預覽「解析度」= 字幕基準（ADR-046）
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def preview(app, sample_doc, tmp_path):
+    """載入 fixture doc 的預覽面板（不經 load_timings，避免 probe 真實影片）。"""
+    import json
+
+    path = tmp_path / "sample_timings.json"
+    path.write_text(json.dumps(sample_doc, ensure_ascii=False), encoding="utf-8")
+
+    editor = app.page("editor")
+    editor._state.load(path)
+    pane = editor._preview
+    pane.set_source_size(1920, 1080)
+    yield pane
+    style = editor._state.doc["style"]
+    style["play_res_x"], style["play_res_y"] = 1920, 1080
+
+
+def _play_res(preview) -> tuple[int, int]:
+    style = preview._state.doc["style"]
+    return int(style["play_res_x"]), int(style["play_res_y"])
+
+
+def test_choosing_720p_rewrites_play_res(preview) -> None:
+    """選 1280×720 → PlayRes 跟着改（字級 px 不變）。"""
+    preview._res_var.set("1280×720")
+    preview._sync_play_res("1280x720")
+
+    assert _play_res(preview) == (1280, 720)
+    assert int(preview._state.doc["style"]["font_size"]) == 48, "字級唔應該被改"
+
+
+def test_back_to_source_restores_play_res(preview) -> None:
+    """再選「跟原片」→ 回到原片真實尺寸。"""
+    preview._res_var.set("1280×720")
+    preview._sync_play_res("1280x720")
+    assert _play_res(preview) == (1280, 720)
+
+    preview._res_var.set("跟原片")
+    preview._sync_play_res("auto")
+    assert _play_res(preview) == (1920, 1080)
+
+
+def test_same_resolution_is_noop(preview) -> None:
+    """已經同一組值 → 唔應該再標 dirty（避免每次開選單都改檔）。"""
+    preview._res_var.set("1920×1080")
+    preview._state.dirty = False
+    preview._sync_play_res("1920x1080")
+    assert _play_res(preview) == (1920, 1080)
+    assert preview._state.dirty is False
+
+
+def test_frame_aspect_ignores_resolution(preview) -> None:
+    """畫面比例永遠跟原片：選 720p 前後，fw/fh 比例不變。"""
+    preview.set_source_size(1920, 1080)
+    _x, _y, fw1, fh1, _s1 = preview._frame_geometry(1000, 500)
+
+    preview._res_var.set("1280×720")
+    preview._sync_play_res("1280x720")
+    _x, _y, fw2, fh2, _s2 = preview._frame_geometry(1000, 500)
+
+    assert fw1 / fh1 == pytest.approx(16 / 9)
+    assert fw2 / fh2 == pytest.approx(16 / 9)
+
+
+def test_43_source_stays_43_after_res_change(preview) -> None:
+    """4:3 原片即使選 1920×1080，畫面仍然 4:3（只改字幕基準）。"""
+    preview.set_source_size(640, 480)
+    preview._res_var.set("1920×1080")
+    preview._sync_play_res("1920x1080")
+    _x, _y, fw, fh, _s = preview._frame_geometry(1000, 1000)
+    assert fw / fh == pytest.approx(4 / 3)
+    assert _play_res(preview) == (1920, 1080)
