@@ -7,7 +7,8 @@ rem  Keep this file ASCII-only. cmd.exe reads it with the OEM codepage
 rem  (GBK / 950 on this machine) and any UTF-8 Chinese turns into garbage
 rem  that can break parsing. All messages are in English on purpose.
 rem
-rem  Flow:  Python -> FFmpeg -> .venv-ui -> dependencies -> UI
+rem  Flow:  Python 3.13 -> FFmpeg -> .venv-ui -> dependencies -> UI
+rem         3.13 is a hard requirement; see the [1/4] block and DEPLOY.md.
 rem  Full deployment guide: DEPLOY.md  (sections 1-3)
 rem =====================================================================
 
@@ -36,11 +37,21 @@ rem ---------------------------------------------------------------------
 rem [1/4] Python
 rem ---------------------------------------------------------------------
 echo.
-echo [1/4] Looking for Python 3 ...
+echo [1/4] Looking for Python 3.13 ...
+rem Hard lock to CPython 3.13 - the baseline of requirements.lock.txt.
+rem pygame 2.6.1 has no CPython 3.14 wheel, so on 3.14+ pip falls back
+rem to a source build that fails (distutils.msvccompiler is gone).
+rem Do NOT use py -3 / any unverified generic Python 3. FIRST_RUN is set
+rem only when .venv-ui\Scripts\python.exe is missing, so a 3.12 / 3.14
+rem venv would be reused as-is and keep failing. See ADR-047.
 set "PYEXE="
-for /f "delims=" %%I in ('py -3 -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%I"
+for /f "delims=" %%I in ('py -3.13 -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%I"
 if not defined PYEXE for /f "delims=" %%I in ('python -c "import sys;print(sys.executable)" 2^>nul') do set "PYEXE=%%I"
 if not defined PYEXE goto :no_python
+rem Double-check the resolved interpreter really is 3.13; this gates both
+rem sources above and catches a misregistered 3.13 tag.
+"%PYEXE%" -c "import sys;sys.exit(0 if sys.version_info[:2]==(3,13) else 1)" >nul 2>&1
+if errorlevel 1 goto :no_python
 
 rem tkinter must already exist in the BASE interpreter, otherwise every
 rem venv built from it will fail at UI start (Microsoft Store builds lack it).
@@ -100,6 +111,10 @@ goto :deps
 :venv_check
 "%PY%" -c "import sys" >nul 2>&1
 if errorlevel 1 goto :venv_broken
+rem FIRST_RUN is set only when python.exe is missing, so an existing venv
+rem built by 3.12 / 3.14 would be reused. Refuse it; never delete it here.
+"%PY%" -c "import sys;sys.exit(0 if sys.version_info[:2]==(3,13) else 1)" >nul 2>&1
+if errorlevel 1 goto :venv_wrong_version
 echo [3/4] Virtual environment OK
 
 rem ---------------------------------------------------------------------
@@ -160,9 +175,11 @@ rem ---------------------------------------------------------------------
 rem Errors
 rem ---------------------------------------------------------------------
 :no_python
-echo       ERROR: Python 3 not found.
+echo       ERROR: Python 3.13 is required but was not found.
 echo.
-echo   Install Python 3.13 first, then run this file again:
+echo   This release is locked to CPython 3.13 (requirements.lock.txt).
+echo   pygame 2.6.1 has no CPython 3.14 wheel, so 3.12 / 3.14 are not
+echo   supported. Install Python 3.13 first, then run this file again:
 echo.
 echo       winget install -e --id Python.Python.3.13
 echo.
@@ -170,7 +187,8 @@ echo   Or use the official installer from:
 echo       https://www.python.org/downloads/windows/
 echo   During setup keep "py launcher" enabled and tick "Add python.exe to PATH".
 echo.
-echo   Close this window after installing, then double-click run_ui.bat again.
+echo   Already installed 3.13? Run py -0 and check that -V:3.13 is listed;
+echo   then close this window and double-click run_ui.bat again.
 echo.
 pause
 exit /b 1
@@ -194,6 +212,21 @@ echo   breaks when copied from another computer or another folder.
 echo.
 echo   Fix: rename (or delete) the .venv-ui folder and run this file again;
 echo   it will be rebuilt in a few minutes.
+echo.
+pause
+exit /b 1
+
+:venv_wrong_version
+echo       ERROR: .venv-ui was built with a Python other than 3.13.
+echo.
+echo   This release is locked to CPython 3.13 (requirements.lock.txt).
+echo   An existing .venv-ui is reused as-is: FIRST_RUN is set only when
+echo   python.exe is missing, so a venv built by 3.12 / 3.14 keeps being
+echo   used and the locked dependencies cannot be installed correctly.
+echo.
+echo   Fix: rename (or delete) the .venv-ui folder by hand, then run this
+echo   file again; it will be rebuilt with Python 3.13 in a few minutes.
+echo   This script will NOT delete or rename it for you.
 echo.
 pause
 exit /b 1
