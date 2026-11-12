@@ -144,3 +144,54 @@ def test_sync_threads_word_bounds_as_before() -> None:
     models.sync_word_bounds(line)
     assert line["words"][1]["begin_ms"] == 2000
     assert line["words"][1]["end_ms"] == 3000
+
+
+# ---------------------------------------------------------------------------
+# 「✓ 確定」走 SetCharTiming —— 用戶回報改完首字時間，歌詞樹唔更新
+# ---------------------------------------------------------------------------
+
+def test_set_char_timing_head_updates_line_start() -> None:
+    """逐字面板「確定」改首字開始 → 行 start 要跟（唔可以只改 word）。"""
+    doc = _doc()
+    commands.SetCharTiming(0, 0, 0, old=(1000, 2000), new=(1200, 2000)).apply(_State(doc))
+    assert doc["lines"][0]["start_ms"] == 1200
+    assert doc["lines"][0]["end_ms"] == 4500
+
+
+def test_set_char_timing_tail_updates_line_end() -> None:
+    """改尾字結束 → 行 end 跟，句尾 hold 保留。"""
+    doc = _doc()
+    commands.SetCharTiming(0, 2, 0, old=(3000, 4000), new=(3000, 4200)).apply(_State(doc))
+    line = doc["lines"][0]
+    assert line["end_ms"] == 4700
+    assert line["end_ms"] - line["words"][-1]["end_ms"] == 500
+
+
+def test_set_char_timing_middle_keeps_line_bounds() -> None:
+    """改中間字 → 行邊界不動。"""
+    doc = _doc()
+    commands.SetCharTiming(0, 1, 0, old=(2000, 3000), new=(2100, 3000)).apply(_State(doc))
+    assert (doc["lines"][0]["start_ms"], doc["lines"][0]["end_ms"]) == (1000, 4500)
+
+
+def test_set_char_timing_undo_restores_everything() -> None:
+    """revert 要連行邊界一齊還原（連 estimated 旗標）。"""
+    doc = _doc()
+    doc["lines"][0]["words"][0]["estimated"] = True
+    original = copy.deepcopy(doc)
+    state = _State(doc)
+    cmd = commands.SetCharTiming(0, 0, 0, old=(1000, 2000), new=(1200, 2000))
+    cmd.apply(state)
+    cmd.revert(state)
+    assert doc == original
+
+
+def test_set_char_timing_reapply_is_not_cumulative() -> None:
+    """連續撳箭咀（原地 re-apply）唔會令行邊界累加偏移。"""
+    doc = _doc()
+    state = _State(doc)
+    cmd = commands.SetCharTiming(0, 0, 0, old=(1000, 2000), new=(1100, 2000))
+    cmd.apply(state)
+    cmd.new = (1300, 2000)               # 呼叫方更新目標值後再 apply
+    cmd.apply(state)
+    assert doc["lines"][0]["start_ms"] == 1300

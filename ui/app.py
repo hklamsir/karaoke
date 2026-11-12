@@ -44,6 +44,32 @@ _PAGES: list[tuple[str, str, int, str, str]] = [
 #: 交給 Tk 內部修飾鍵表比對最準，而且裸數字鍵永遠唔會誤中。
 
 
+#: 會自行處理 ←→ / 空格的文字輸入控件 class name
+#: （Tk 的 bindtags 次序是 widget → class → toplevel → all：Entry 的 class
+#: binding 先移動游標，之後才輪到 toplevel 的全域快捷鍵 —— 唔擋就會兩件事一齊發生）
+_TEXT_INPUT_CLASSES = frozenset({
+    "Entry", "TEntry", "Spinbox", "TSpinbox", "TCombobox", "Text",
+})
+
+
+def is_text_input(event: tk.Event | None) -> bool:
+    """按鍵是否落在文字輸入控件（游標移動／打字唔應該觸發全域快捷鍵）。
+
+    Args:
+        event: Tk 事件；``None``（程式化呼叫）→ ``False``。
+
+    Returns:
+        ``True`` = 交由控件自己處理，全域快捷鍵要讓路。
+    """
+    widget = getattr(event, "widget", None)
+    if widget is None:
+        return False
+    try:
+        return widget.winfo_class() in _TEXT_INPUT_CLASSES
+    except tk.TclError:      # 控件已銷毀
+        return False
+
+
 class App(ttkb.Window):
     """卡拉OK字幕工具主視窗（1180×760 設計基準，§4.5.2）。"""
 
@@ -396,7 +422,7 @@ class App(ttkb.Window):
         self.bind("<Control-y>", self._dispatch("redo"))
         self.bind("<Left>", self._dispatch_cursor(-FETCH_MS, -FINE_MS, -FRAME_MS))
         self.bind("<Right>", self._dispatch_cursor(+FETCH_MS, +FINE_MS, +FRAME_MS))
-        self.bind("<space>", self._dispatch("toggle_play"))
+        self.bind("<space>", self._dispatch("toggle_play", skip_text_input=True))
 
     def _nav_handler(self, key: str):
         """Alt+數字 切頁處理器。
@@ -412,9 +438,18 @@ class App(ttkb.Window):
             return "break"
         return handler
 
-    def _dispatch(self, method: str):
-        """轉發畀編輯器（save/undo/redo；淨係喺編輯器頁生效）。"""
+    def _dispatch(self, method: str, *, skip_text_input: bool = False):
+        """轉發畀編輯器（save/undo/redo、空白鍵播放；淨係喺編輯器頁生效）。
+
+        Args:
+            method: 編輯器的方法名。
+            skip_text_input: ``True`` 時，按鍵落在 Entry / Spinbox 等輸入框
+                就唔轉發 —— 否則喺時間框打空格會變成「播放／暫停」，
+                而游標位置亦會被搶走。
+        """
         def handler(_event=None) -> str:
+            if skip_text_input and is_text_input(_event):
+                return ""
             if self._current_key != "editor":
                 return "break"
             editor = self._pages.get("editor")
@@ -425,6 +460,10 @@ class App(ttkb.Window):
 
     def _dispatch_cursor(self, normal: int, fine: int, frame: int):
         def handler(event) -> str:
+            # 文字框內的 ←→ 係「移動游標」：唔好順便跳句。實測喺逐字面板
+            # 的時間框按右鍵，游標同句子一齊跳，根本改唔到時間。
+            if is_text_input(event):
+                return ""
             editor = self._pages.get("editor")
             if self._current_key != "editor" or editor is None:
                 return "break"

@@ -41,7 +41,9 @@ class SetCharTiming:
         if char is None or word is None:
             return
         char["begin_ms"], char["end_ms"] = self.new
-        word["begin_ms"], word["end_ms"] = word["chars"][0]["begin_ms"], word["chars"][-1]["end_ms"]
+        # ADR-040：word 與**行**邊界一齊由 char 推導 —— 以前只手算 word，
+        # 改完首字／尾字時間之後歌詞樹與時間軸仍然停在舊時間。
+        models.sync_word_bounds(line)
         # ⚠️ 只喺**第一次** apply 記低原本的 estimated：連續撳箭頭會原地 re-apply
         # 同一個 command（見 EditorState.reapply），每次都重讀就只會讀到已經清
         # 咗的 False，undo 之後旗標還原唔返（原本 2026-11 前 redo 亦有同樣問題）。
@@ -56,7 +58,7 @@ class SetCharTiming:
         if char is None or word is None:
             return
         char["begin_ms"], char["end_ms"] = self.old
-        word["begin_ms"], word["end_ms"] = word["chars"][0]["begin_ms"], word["chars"][-1]["end_ms"]
+        models.sync_word_bounds(line)
         if self._old_estimated is not None:
             word["estimated"] = self._old_estimated
 
