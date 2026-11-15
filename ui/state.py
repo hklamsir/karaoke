@@ -37,6 +37,9 @@ class EditorState:
         self.selected_word: tuple[int, int] | None = None
         #: 「只顯示估算字」篩選（§4.4）：歌詞樹 + 時間軸都只列有估算字嘅行
         self.filter_estimated = False
+        #: stats() 快取：播放期間每 30ms 叫一次，唔可以每次全量掃幾千個 char
+        #: （2026-11-12 審查報告 UI-S9）。任何改動 doc 的操作都要清快取。
+        self._stats_cache: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # observer
@@ -56,6 +59,7 @@ class EditorState:
     def load(self, path: str | Path) -> None:
         """讀 timings.json（§5.3）：v1/v2/v3 相容；原片唔存在時保留路徑畀 UI 提示。"""
         self.doc = models.load_doc(path)
+        self._invalidate_stats()
         self.path = Path(path)
         self.dirty = False
         self.undo_stack.clear()
@@ -76,6 +80,7 @@ class EditorState:
         models.normalize(self.doc)
         models.atomic_write_json(self.path, self.doc)
         self.dirty = False
+        self._invalidate_stats()     # normalize 可能 clip 時間
         self.notify("save")
 
     # ------------------------------------------------------------------
@@ -87,6 +92,7 @@ class EditorState:
         if not self.undo_stack.push(cmd, self):
             return
         self._refresh_texts()
+        self._invalidate_stats()
         self.dirty = True
         self.notify("edit")
 
@@ -98,12 +104,14 @@ class EditorState:
         """
         cmd.apply(self)
         self._refresh_texts()
+        self._invalidate_stats()
         self.dirty = True
         self.notify("edit")
 
     def undo(self) -> bool:
         if self.undo_stack.undo(self) is not None:
             self._refresh_texts()
+            self._invalidate_stats()
             self.dirty = True
             self.notify("edit")
             return True
@@ -112,6 +120,7 @@ class EditorState:
     def redo(self) -> bool:
         if self.undo_stack.redo(self) is not None:
             self._refresh_texts()
+            self._invalidate_stats()
             self.dirty = True
             self.notify("edit")
             return True
@@ -158,6 +167,10 @@ class EditorState:
         if sel is not None:
             self.current_line_i = self.clamp_line_i(sel[0])
             self.selected_word = (sel[0], sel[1])
+        else:
+            # 清選取時必須一併清 selected_word，否則「✂ 斷句」會用殘留位置
+            # 在用戶以為已取消的地方靜默斷句（2026-11-12 審查報告 UI-S4）。
+            self.selected_word = None
         self.notify("select")
 
     def line_at(self, ms: int) -> int | None:
@@ -230,7 +243,19 @@ class EditorState:
         self.notify("filter")
 
     def stats(self) -> dict[str, Any]:
-        return models.doc_stats(self.doc)
+        """文件統計（行數／字數／零時長／估算比例）；結果按需快取。
+
+        播放時 ``notify("cursor")`` 每 30ms 一次，``_refresh_status()`` 會叫
+        這裡 —— 全量掃幾千個 char 等於每秒 33 次無謂運算。快取由所有會改動
+        ``doc`` 的方法（load/push/reapply/undo/redo/save/reassign_video）清除。
+        """
+        if self._stats_cache is None:
+            self._stats_cache = models.doc_stats(self.doc)
+        return self._stats_cache
+
+    def _invalidate_stats(self) -> None:
+        """丟棄 stats 快取（任何改動 doc 內容的操作都要叫）。"""
+        self._stats_cache = None
 
     @property
     def video_path(self) -> Path | None:
@@ -241,5 +266,6 @@ class EditorState:
     def reassign_video(self, path: str | Path) -> None:
         """「重新指定原片」（R8）：改 source.video（燒錄要用）。"""
         self.doc.setdefault("source", {})["video"] = str(path)
+        self._invalidate_stats()
         self.dirty = True
         self.notify("edit")
