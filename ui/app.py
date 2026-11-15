@@ -401,10 +401,15 @@ class App(ttkb.Window):
         return self._pages.get(key)
 
     def open_editor_with(self, timings_path) -> None:
-        """帶一份 timings.json 跳入編輯器（主頁「新任務完成」/「開啟現有」共用）。"""
+        """帶一份 timings.json 跳入編輯器（主頁「新任務完成」/「開啟現有」共用）。
+
+        ``load_timings`` 回 ``False``（用戶取消丟棄未儲存修改／讀檔失敗）時
+        留在目前頁面，不要切去編輯器顯示舊文件（審查報告 UI-S7）。
+        """
         editor = self._pages["editor"]
         if hasattr(editor, "load_timings"):
-            editor.load_timings(timings_path)
+            if editor.load_timings(timings_path) is False:
+                return
         self.show_page("editor")
 
     def _bind_shortcuts(self) -> None:

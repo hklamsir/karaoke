@@ -210,17 +210,23 @@ FONT_MONO = "Cascadia Mono"             # 數值（ms / 時間碼）—— 等�
 #: 介面基準字級（pt）。用戶回報「字體很小」→ 9 統一升到 10
 UI_FONT_SIZE = 10
 
-_FONT_NAMES_CACHE: list[str] | None = None
+_FONT_NAMES_CACHE: set[str] | None = None
 
 
 def available_font(names: list[str]) -> str:
-    """喺 ``names`` 入面揀第一個系統有嘅字型，冇就返最尾一個（fallback）。"""
+    """喺 ``names`` 入面揀第一個系統有嘅字型，冇就返最尾一個（fallback）。
+
+    ⚠️ 唔可以用 ``tkfont._get_default_root()`` —— 這個私有函數在
+    ``tkinter.font`` 模組並不存在（本專案以前寫錯，例外被吞掉後整個級聯
+    永遠跌入 fallback，等寬防跳與 JhengHei 中文介面從未生效；見 2026-11-12
+    審查報告 UI-B1）。``tkfont.families()`` 不傳 root 會自動取 default root；
+    未建立 Tk（測試／CLI）時拋 ``RuntimeError``，照樣 fallback 而不崩潰。
+    """
     global _FONT_NAMES_CACHE
     if _FONT_NAMES_CACHE is None:
         try:
-            root = tkfont._get_default_root()   # noqa: SLF001
-            _FONT_NAMES_CACHE = set(tkfont.families(root))
-        except Exception:   # noqa: BLE001 — 冇 root 時（測試環境）直接用第一個
+            _FONT_NAMES_CACHE = set(tkfont.families())
+        except Exception:   # noqa: BLE001 — 冇 root（未建立 Tk／測試環境）
             return names[-1]
     lowered = {n.lower() for n in _FONT_NAMES_CACHE}
     for name in names:

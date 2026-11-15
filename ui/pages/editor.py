@@ -20,6 +20,7 @@ from pathlib import Path
 import ttkbootstrap as ttkb
 
 from .. import models, settings, state, theme, timefmt
+from ..uicall import ui_call
 from ..commands import (DeleteChar, DeleteLine, InsertCharAfter, InsertCharBefore,
                         InsertWord, MergeLines, NudgeChars, RedistributeSpan, RepairLine,
                         SetCharText, SetCharTiming, SetCharTimingRipple, SetLineText,
@@ -474,13 +475,23 @@ class EditorPage(ttkb.Frame):
     # 開檔 / 存檔（§5.3 / E2）
     # ------------------------------------------------------------------
 
-    def load_timings(self, path: str | Path) -> None:
-        """主頁 / 快捷鍵入口：讀 timings.json + 驗證原片存在（R8）+ 背景載入音訊。"""
+    def load_timings(self, path: str | Path) -> bool:
+        """主頁 / 快捷鍵入口：讀 timings.json + 驗證原片存在（R8）+ 背景載入音訊。
+
+        Returns:
+            ``True`` 表示已載入；``False`` 表示用戶取消（有未儲存修改）或
+            讀檔失敗 —— 呼叫方不應切換到編輯器。
+
+        ⚠️ 先問「未儲存修改」再 ``state.load()``：``EditorState.load`` 會重置
+        dirty 與 undo 棧，跳過此檢查等於靜默丟棄用戶的編輯（審查報告 UI-S7）。
+        """
+        if not self._confirm_discard():
+            return False
         try:
             self._state.load(path)
         except Exception as exc:   # noqa: BLE001
             messagebox.showerror("開檔失敗", f"{path}\n\n{exc}")
-            return
+            return False
         # 預設縮放：成條片啱啱好塞滿時間軸（0 至片尾，用戶需求 #3）。
         # ⚠️ 要等右欄 layout 完成先量到準確畫布闊度 → 用 _zoom_fit_pending
         # 喺 _relayout_right 落手；300ms fallback 防視窗已 layout 唔再觸發 Configure。
@@ -504,6 +515,7 @@ class EditorPage(ttkb.Frame):
         self._align_play_res()
         # ADR-015：開檔即把該片樣式反映去主頁面板（所見即所燒）
         self._sync_home_style()
+        return True
 
     def _align_play_res(self) -> None:
         """把 timings 的 PlayRes 對齊原片真實解析度（ADR-044）。
@@ -623,10 +635,7 @@ class EditorPage(ttkb.Frame):
         ``RuntimeError: main thread is not in main loop`` —— 唔好等 uncaught
         例外喺背景 thread 度爆（實測：探測腳本／關窗瞬間）。
         """
-        try:
-            self.after(0, fn)
-        except (RuntimeError, tk.TclError):
-            pass
+        ui_call(self, fn)
 
     def _on_audio_ready(self) -> None:
         engine = self._audio
@@ -869,28 +878,28 @@ class EditorPage(ttkb.Frame):
             except _main.TaskCancelled:
                 # 取消唔算失敗：唔彈 error dialog（半截輸出檔已由 burn_subtitles 刪除）
                 prog.fail("已取消（未產生輸出檔）")
-                self.after(0, lambda: self._safe_title(win, "燒錄已取消"))
-                self.after(0, lambda: self._finish_cancel_btn(cancel_btn, "已取消"))
+                self._ui_call(lambda: self._safe_title(win, "燒錄已取消"))
+                self._ui_call(lambda: self._finish_cancel_btn(cancel_btn, "已取消"))
             except SystemExit as exc:
                 # 保險層：ADR-024 起 burn_video 拋 BurnError（落到下面 Exception 分支，
                 # 顯示「ffmpeg 燒錄失敗（rc=…）」而不是光禿禿一個 exit code）。
                 # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
                 code = exc.code
-                self.after(0, lambda code=code: on_error(
+                self._ui_call(lambda code=code: on_error(
                     f"ffmpeg 失敗（exit {code}），詳見 log"))
             except Exception as exc:   # noqa: BLE001
                 err = str(exc)
-                self.after(0, lambda err=err: on_error(err))
+                self._ui_call(lambda err=err: on_error(err))
             else:
                 prog.succeed("完成 ✅")
                 # 唔自動關窗 —— log 預設打開，畀用戶自己睇完再關
-                self.after(0, lambda: self._safe_title(win, "燒錄完成 ✅"))
+                self._ui_call(lambda: self._safe_title(win, "燒錄完成 ✅"))
                 # 完成後「取消燒錄」已經冇意義 → 停用並改字（唔會閃走，用戶照睇到結果）
-                self.after(0, lambda: self._finish_cancel_btn(cancel_btn, "✔ 已完成"))
-                self.after(0, lambda: self._on_burn_done(output))
+                self._ui_call(lambda: self._finish_cancel_btn(cancel_btn, "✔ 已完成"))
+                self._ui_call(lambda: self._on_burn_done(output))
             finally:
                 logging.getLogger("karaoke").removeHandler(handler)
-                self.after(0, lambda: self._burn_btn.configure(state="normal"))
+                self._ui_call(lambda: self._burn_btn.configure(state="normal"))
 
         threading.Thread(target=worker, daemon=True).start()
 
