@@ -20,24 +20,9 @@ pytest.importorskip("ttkbootstrap")
 
 
 @pytest.fixture(scope="module")
-def app():
-    """建立完整 App；Tk 不可用（CI 無 display）就 skip。
-
-    ⚠️ 整個測試 session 只能有一個 ``ttkb.Window``：反覆建立／銷毀會令
-    Tcl 解釋器殘留（``invalid command name "tcl_findLibrary"``），所以本檔
-    所有 UI 整合測試（含下面的解析度同步）共用這一個。
-    """
-    from ui.app import App
-
-    try:
-        instance = App()
-    except Exception as exc:      # noqa: BLE001 — 無 X server 等
-        pytest.skip(f"Tk 不可用：{exc}")
-    yield instance
-    try:
-        instance.destroy()
-    except Exception:             # noqa: BLE001
-        pass
+def app(tk_app):
+    """共用 conftest 的 session 級 App（TL-N3：整個 process 只准一個 root）。"""
+    return tk_app
 
 
 class _FakeEngine:

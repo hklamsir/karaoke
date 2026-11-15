@@ -24,28 +24,22 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 tk = pytest.importorskip("tkinter")
-ttkb = pytest.importorskip("ttkbootstrap")
+pytest.importorskip("ttkbootstrap")
 
-from ui import models, theme  # noqa: E402
+from ui import models  # noqa: E402
 from ui.widgets.time_spinbox import TimeSpinbox  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def root():
-    """真 Tk root（withdraw）；CI 冇顯示器就 skip 而唔係 fail。
+def root(tk_app):
+    """共用 conftest 的 session 級 root（審查報告 TL-N3）。
 
-    ⚠️ 用 module scope：連續 destroy/create 多個 ``ttkb.Window`` 會令
-    ttkbootstrap 的 Style 單例狀態混亂，實測第 3 個窗口就拋 TclError，
-    令測試被靜靜 skip（假綠）。
+    唔再自己建 ``ttkb.Window``：同一個 process 建第二個 ttkbootstrap root
+    會偶發 ``TclError: invalid command name …``，舊版把它當成「冇顯示器」
+    skip，令本檔 13 條測試靜靜消失（假綠）。App 本身已套用主題，毋須再
+    ``apply_ttkbootstrap_theme``。
     """
-    try:
-        win = ttkb.Window(themename="litera")
-    except tk.TclError:                     # pragma: no cover - 無顯示環境
-        pytest.skip("環境冇可用顯示器，略過 GUI 測試")
-    theme.apply_ttkbootstrap_theme(win, "light")
-    win.withdraw()
-    yield win
-    win.destroy()
+    return tk_app
 
 
 # ---------------------------------------------------------------------------

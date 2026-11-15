@@ -28,6 +28,35 @@ for _p in (str(PROJECT_ROOT), str(TESTS_DIR)):
 
 
 @pytest.fixture(scope="session")
+def tk_app():
+    """整個測試 session 共用**唯一**一個 ttkbootstrap root（審查報告 TL-N3）。
+
+    為何要共用：ttkbootstrap 的 ``Style`` 是 process-wide 單例，綁定在第一個
+    root 上。先 destroy 一個 ``App`` 再建第二個 ``ttkb.Window``，會偶發
+    ``TclError: invalid command name …``（實測 6 次跑有 4 次中），以前被
+    ``pytest.skip`` 吞掉 → 13 條 GUI 測試靜靜消失（假綠）。
+    兩個 Tk 測試模組（test_editor_page_hooks / test_time_spinbox）改為
+    共用這一個 App 之後，同一個 process 永遠只建立一次 root。
+
+    Yields:
+        ``ui.app.App`` 實例；冇顯示器／冇 ttkbootstrap 就 skip 整個依賴它的測試。
+    """
+    pytest.importorskip("tkinter")
+    pytest.importorskip("ttkbootstrap")
+    from ui.app import App
+
+    try:
+        instance = App()
+    except Exception as exc:      # noqa: BLE001 — 無 X server 等
+        pytest.skip(f"Tk 不可用：{exc}")
+    yield instance
+    try:
+        instance.destroy()
+    except Exception:             # noqa: BLE001
+        pass
+
+
+@pytest.fixture(scope="session")
 def sample_doc() -> dict[str, Any]:
     """``tests/fixtures/sample_v3.json`` 的唯讀內容（session 級，避免重複讀檔）。"""
     return json.loads((FIXTURES_DIR / "sample_v3.json").read_text(encoding="utf-8"))
