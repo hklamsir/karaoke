@@ -253,54 +253,6 @@ def test_materialize_space_single_in_ass() -> None:
     check("#4: ASS 只有一個空格", body.count(" ") == 1)
 
 
-def test_materialize_punct_space() -> None:
-    """「詞尾標點 → 半形空格」要實體化成真 char，令樹／微調／預覽三邊一致。
-
-    用戶 2026-11-11 回報：歌詞樹「逝去種種 昨日經已死」有空格，但逐字微調同
-    預覽都冇 —— 因為個空格只係 display_text 即場推導，chars[] 冇呢個字。
-    """
-    line = {"words": [
-        _word("種種", 0, [("種", 0, 500), ("種", 500, 1000)], punctuation="，"),
-        _word("昨日", 1000, [("昨", 1000, 1500), ("日", 1500, 2000)]),
-    ]}
-    check("#4: 實體化前 chars 冇空格",
-          [c["text"] for c in line["words"][1]["chars"]] == ["昨", "日"])
-    check("#4: 實體化前 display_text 有空格", models.display_text(line) == "種種 昨日")
-
-    doc = {"lines": [line]}
-    inserted = models.materialize_punct_spaces(doc)
-    check("#4: 插入一個空格 char", inserted == 1)
-    check("#4: chars 有空格",
-          [c["text"] for c in line["words"][1]["chars"]] == [" ", "昨", "日"])
-    check("#4: display_text 唔會變兩個空格", models.display_text(line) == "種種 昨日")
-    check("#4: 再跑一次唔會再加", models.materialize_punct_spaces(doc) == 0)
-
-
-def test_materialize_space_single_in_ass() -> None:
-    """實體化之後，ASS 都只可以有一個空格（唔可以同標點規則疊加）。"""
-    import main
-
-    line = {"start_ms": 0, "end_ms": 3000, "text": "", "break_reason": "",
-            "words": [
-                _word("種種", 0, [("種", 0, 500), ("種", 500, 1000)], punctuation="，"),
-                _word("昨日", 1000, [("昨", 1000, 1500), ("日", 1500, 2000)]),
-            ]}
-    doc = {
-        "schema_version": 3, "source": {"hold_ms": 300},
-        "style": {"play_res_x": 1280, "play_res_y": 720, "font_name": "Microsoft JhengHei",
-                  "font_size": 48, "primary_color": "#FFFF00", "secondary_color": "#FFFFFF",
-                  "outline_color": "#000000", "alignment": 2, "margin_v": 40,
-                  "outline_width": 3.0, "lead_in_ms": 0, "countdown_dots": False},
-        "lines": [line],
-    }
-    models.materialize_punct_spaces(doc)
-    lines, style = main.timings_doc_to_lines(doc)
-    ass = main.build_karaoke_ass(lines, style)
-    dialogue = [ln for ln in ass.splitlines() if ln.startswith("Dialogue")][-1]
-    body = dialogue.split(",,", 1)[-1]
-    check("#4: ASS 只有一個空格", body.count(" ") == 1)
-
-
 # ---------------------------------------------------------------------------
 # #3 · 預覽字級 = 像素（同 libass Fontsize 對齊）
 # ---------------------------------------------------------------------------
