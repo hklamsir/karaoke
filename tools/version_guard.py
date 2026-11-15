@@ -185,6 +185,40 @@ def code_changes_since(root: Path, rev: str) -> list[str]:
     return [f for f in files if not _is_ignored(f)]
 
 
+def uncommitted_code_changes(root: Path = ROOT) -> list[str]:
+    """列出工作區**尚未提交**的程式碼改動（審查報告 TL-B1）。
+
+    為何需要：``build_release.py`` 打包的是磁碟上的檔案，而
+    :func:`commits_since` / :func:`code_changes_since` 只看 commit 歷史。
+    改了 ``main.py`` 但不 commit 時，舊版檢查會回「VERSION 對應最新 commit」，
+    zip 卻已帶著新代碼、舊版本號出廠 —— 正是本模組要防住的場景。
+
+    Args:
+        root: 專案根目錄。
+
+    Returns:
+        相對路徑清單（已套用 :func:`_is_ignored` 過濾）；乾淨或 git 不可用
+        時回傳空清單。未追蹤的新檔亦計入（它們同樣會被打包），但
+        ``.gitignore`` 內的檔案不會出現在 ``git status``，自然被排除。
+    """
+    # --untracked-files=normal：列出未追蹤但未被 ignore 的新檔（新 source 檔
+    # 一樣會改變交付內容，必須納入）；--porcelain=v1 每行格式為 "XY path"。
+    out = _git(["status", "--porcelain", "--untracked-files=normal"], root)
+    if not out:
+        return []
+    changed: list[str] = []
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        rel = line[3:].strip()          # 跳過 "XY " 兩個狀態碼 + 空格
+        if " -> " in rel:               # rename：舊 -> 新，以新路徑判斷
+            rel = rel.split(" -> ", 1)[1]
+        rel = rel.strip().strip('"')
+        if rel and not _is_ignored(rel):
+            changed.append(rel)
+    return changed
+
+
 def commits_with_code_changes(root: Path, rev: str) -> list[tuple[str, str]]:
     """列出 ``rev`` 之後**真正改過非文件檔**的 commit（最新在前）。
 
@@ -259,13 +293,30 @@ def check_version_bump(root: Path = ROOT, *, strict: bool = False, echo: bool = 
         return 0
 
     pending = commits_since(root, baseline)
-    if not pending:
-        say(f"[version] OK：VERSION {version} 對應最新 commit")
+    dirty = uncommitted_code_changes(root)
+
+    if not pending and not dirty:
+        say(f"[version] OK：VERSION {version} 對應最新 commit，工作區乾淨")
         return 0
+
+    # 未提交的改動同樣會被打包（build_release 讀磁碟），但不會出現在 git
+    # 歷史 —— 只看 commit 的檢查在此完全失效（審查報告 TL-B1）。
+    if dirty:
+        say(f"[version] ⚠ 工作區有 {len(dirty)} 個未提交的程式碼改動（打包時會一併帶走）：")
+        for path in dirty[:MAX_LISTED]:
+            say(f"           {path}")
+        if len(dirty) > MAX_LISTED:
+            say(f"           …另有 {len(dirty) - MAX_LISTED} 個")
 
     changes = code_changes_since(root, baseline)
     if not changes:
-        say(f"[version] OK：VERSION {version} 之後只有文件改動（{len(pending)} 個 commit），不需升版")
+        if not dirty:
+            say(f"[version] OK：VERSION {version} 之後只有文件改動（{len(pending)} 個 commit），不需升版")
+            return 0
+        say("           → 先 commit（或還原）這些改動，否則 zip 內容與 git 歷史／版本號對不上。")
+        if strict:
+            say("[version] ✕ --strict：請先處理工作區改動再打包")
+            return 1
         return 0
 
     # 只列真正動過程式碼的 commit（不是全部 pending）—— 見函式 docstring 的理由。
