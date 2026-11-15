@@ -22,6 +22,7 @@ from typing import Any
 import ttkbootstrap as ttkb
 
 from .. import settings, theme
+from ..uicall import ui_call
 from ..widgets.progress import QueueLogHandler, StageProgress
 from ..widgets.style_preview import StylePreviewCanvas
 from ..widgets.tooltip import Tooltip
@@ -855,6 +856,10 @@ class HomePage(ttkb.Frame):
         self._set_swatch(key, _normalise_hex(self._color_vars[key].get()))
         self._refresh_preview()
 
+    def _ui_call(self, fn) -> None:
+        """由 worker thread 排 callback 落主線程（關窗／無 mainloop 就放棄）。"""
+        ui_call(self, fn)
+
     def _probe_video(self, video: Path) -> None:
         """背景 ffprobe 讀解像度 / 時長（計劃書 §5.2 步驟 1）。
 
@@ -866,7 +871,7 @@ class HomePage(ttkb.Frame):
             import main
             ffprobe = settings.detect_ffprobe(self.master.settings_data)
             if not ffprobe:
-                self.after(0, lambda: self._video_info_var.set("⚠ 搵唔到 ffprobe（設定頁填路徑）"))
+                self._ui_call(lambda: self._video_info_var.set("⚠ 搵唔到 ffprobe（設定頁填路徑）"))
                 return
             has_video = main.probe_has_video(ffprobe, video)
             w, h = main.probe_video_size(ffprobe, video) if has_video else (0, 0)
@@ -881,7 +886,7 @@ class HomePage(ttkb.Frame):
             codec = main.probe_audio_codec(ffprobe, video)
             info = {"w": w, "h": h, "duration": duration, "codec": codec,
                     "has_video": has_video}
-            self.after(0, lambda: self._show_video_info(video, info))
+            self._ui_call(lambda: self._show_video_info(video, info))
         threading.Thread(target=worker, daemon=True).start()
 
     def _show_video_info(self, video: Path, info: dict[str, Any]) -> None:
@@ -1065,17 +1070,17 @@ class HomePage(ttkb.Frame):
                 # ⚠️ Python 3 喺 except block 結束時刪除 exc，lambda 延遲執行會 NameError
                 # → 必須即刻捕獲值（default arg 綁定）
                 code = exc.code
-                self.after(0, lambda code=code: on_error(
+                self._ui_call(lambda code=code: on_error(
                     RuntimeError(f"exit code {code}，詳見 log")))
             except Exception as exc:       # noqa: BLE001
                 err = exc
-                self.after(0, lambda err=err: on_error(err))
+                self._ui_call(lambda err=err: on_error(err))
             else:
                 self._progress.succeed("完成 ✅")
-                self.after(0, lambda: self._on_generate_done(result))
+                self._ui_call(lambda: self._on_generate_done(result))
             finally:
                 logging.getLogger("karaoke").removeHandler(handler)
-                self.after(0, self._reset_after_generate)
+                self._ui_call(self._reset_after_generate)
 
         threading.Thread(target=worker, daemon=True).start()
 

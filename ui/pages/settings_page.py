@@ -18,6 +18,7 @@ import tkinter.messagebox as messagebox
 import ttkbootstrap as ttkb
 
 from .. import settings, theme
+from ..uicall import ui_call
 
 #: 設定頁左右留白（大螢幕唔好貼邊；同時唔會似舊版縮成中間一條）
 PAGE_PAD_X = 48
@@ -177,6 +178,10 @@ class SettingsPage(ttkb.Frame):
         if path:
             var.set(path)
 
+    def _ui_call(self, fn) -> None:
+        """由 worker thread 排 callback 落主線程（關窗／無 mainloop 就放棄）。"""
+        ui_call(self, fn)
+
     def _test_connection(self) -> None:
         """驗 key：直接打 DashScope REST model list（唔依賴 dashscope SDK 內部 API，
         SDK 1.x/2.x 類名路徑唔同會爆 ImportError）。"""
@@ -198,7 +203,7 @@ class SettingsPage(ttkb.Frame):
                     "" if ok else f" {resp.text[:150]}")
             except Exception as exc:   # noqa: BLE001
                 msg = str(exc)[:200]
-            self.after(0, lambda: messagebox.showinfo(
+            self._ui_call(lambda: messagebox.showinfo(
                 "測試連線", "連線成功 ✅" if ok else f"連線失敗：{msg}", parent=self))
 
         import threading

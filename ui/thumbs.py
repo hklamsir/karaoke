@@ -81,7 +81,15 @@ class ThumbCache:
     # ------------------------------------------------------------------
 
     def prepare(self, on_progress=None) -> bool:
-        """整批抽取（背景 thread 呼叫）。已完整就即刻 True。"""
+        """整批抽取（背景 thread 呼叫）。已完整就即刻 True。
+
+        ⚠️ ``cancelled`` 必須**先於** ``is_complete()`` 檢查：換片時新任務可能
+        接手一個已快取完整的舊目錄，舊 worker 若先命中 ``is_complete()`` 就會
+        回 True，令已取消的任務把舊片縮圖重新設為目前預覽來源
+        （2026-11-12 審查報告 UI-S1）。
+        """
+        if self.cancelled:
+            return False
         if self.is_complete():
             return True
         self.cache_dir.mkdir(parents=True, exist_ok=True)

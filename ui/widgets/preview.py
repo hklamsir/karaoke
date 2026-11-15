@@ -16,6 +16,7 @@ from pathlib import Path
 import ttkbootstrap as ttkb
 
 from .. import theme
+from ..uicall import ui_call
 from .overlay import draw_overlay
 
 LOGGER = logging.getLogger("karaoke.ui.preview")
@@ -188,10 +189,7 @@ class PreviewPane(ttkb.Frame):
 
     def _ui_call(self, fn) -> None:
         """由 worker thread 排 callback 落主線程（冇 mainloop／已關窗就放棄）。"""
-        try:
-            self.after(0, fn)
-        except (RuntimeError, tk.TclError):
-            pass
+        ui_call(self, fn)
 
     def _pick_source_video(self) -> None:
         """換「最終要燒錄」原片（寫入 timings.json 的 ``source.video``）。"""
@@ -395,6 +393,9 @@ class PreviewPane(ttkb.Frame):
         self._thumbs_task = cache
 
         def on_progress(done: int, total: int) -> None:
+            # 換片後舊任務仍可能報進度 —— 只認目前這一條（UI-S1）
+            if cache is not self._thumbs_task:
+                return
             self._ui_call(lambda: self._thumb_progress_var.set(
                 f"抽縮圖中… {done}/{total}"))
 
@@ -410,6 +411,11 @@ class PreviewPane(ttkb.Frame):
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_thumbs_ready(self, cache, ok: bool) -> None:
+        # generation 守衛：換片時舊任務即使 prepare() 早已完成，callback 仍可能
+        # 排到隊尾。只認目前這一條任務，否則會把**舊片**縮圖設成目前預覽來源
+        # （2026-11-12 審查報告 UI-S1）。
+        if cache is not self._thumbs_task:
+            return
         if not ok:
             self._thumb_progress_var.set("無法抽取縮圖（其他功能全部照用）")
             return
@@ -452,17 +458,24 @@ class PreviewPane(ttkb.Frame):
         self._redraw_video()
         self._redraw_strip_playhead()
 
-    def _current_line(self) -> dict | None:
-        """游標所在行（start ≤ cursor < end），冇就最近嘅一行。"""
+    def _current_line(self) -> tuple[int, dict] | None:
+        """游標所在行 → ``(索引, 行)``；冇行就 ``None``，唔喺任何行內就最近嘅一行。
+
+        回傳索引而唔止 dict：``_update_card`` 以前用 ``lines.index(line)``
+        定位行號（dict 深比較 = O(n)），而播放時每 30ms 叫一次
+        （2026-11-12 審查報告 UI-S13）。
+        """
         lines = self._state.lines
         if not lines:
             return None
         cur = self._state.cursor_ms
-        for line in lines:
+        for i, line in enumerate(lines):
             if int(line.get("start_ms", 0)) <= cur < int(line.get("end_ms", 0)):
-                return line
-        return min(lines, key=lambda l: min(
-            abs(int(l.get("start_ms", 0)) - cur), abs(int(l.get("end_ms", 0)) - cur)))
+                return i, line
+        idx = min(range(len(lines)), key=lambda i: min(
+            abs(int(lines[i].get("start_ms", 0)) - cur),
+            abs(int(lines[i].get("end_ms", 0)) - cur)))
+        return idx, lines[idx]
 
     def _draw_overlay(self, canvas, x0: float, y0: float, fw: float, fh: float) -> None:
         """疊圖（單行／雙行／倒數圓點）—— 窗計算同燒錄共用 ``main`` 的純函數。"""
@@ -523,17 +536,17 @@ class PreviewPane(ttkb.Frame):
         self._update_card()
 
     def _update_card(self) -> None:
-        line = self._current_line()
-        if line is None:
+        cur = self._current_line()
+        if cur is None:
             self._card_title.set("當前字幕")
             self._card_text.set("—")
             self._card_stats.set("")
             self._card_chars.delete("all")
             return
+        idx, line = cur
         words = line.get("words") or []
         est = sum(1 for word in words if word.get("estimated"))
-        idx = self._state.lines.index(line) + 1
-        self._card_title.set(f"當前字幕 · 第 {idx} 行")
+        self._card_title.set(f"當前字幕 · 第 {idx + 1} 行")
         self._card_text.set(line.get("text") or "")
         dur = (int(line.get("end_ms", 0)) - int(line.get("start_ms", 0))) / 1000
         n_chars = sum(len(word.get("chars") or []) for word in words)
@@ -628,21 +641,39 @@ class PreviewPane(ttkb.Frame):
     # ------------------------------------------------------------------
 
     def _extract_hd_frame(self) -> None:
-        """L2：抽原分辨率單幀取代縮圖顯示。"""
-        if self._thumbs is None:
+        """L2：抽原分辨率單幀取代縮圖顯示（背景執行，唔阻塞 UI）。
+
+        舊版喺 UI 執行緒同步跑 ffmpeg（``-ss`` 精確 seek 長片可達秒級 → 整個
+        界面凍結），而且每個時間戳留一張全解析度 PNG 喺臨時目錄永不清理。
+        現在：背景 thread + 固定檔名（最壞情況只殘留一個檔）+ 載入後即刪
+        （2026-11-12 審查報告 UI-S11）。
+        """
+        thumbs = self._thumbs
+        if thumbs is None:
             return
         import tempfile
+        import threading
+
         ts = self._state.cursor_ms / 1000
-        out = Path(tempfile.gettempdir()) / f"karaoke_hd_{int(ts*1000)}.png"
-        proc = subprocess.run(
-            [self._thumbs.ffmpeg, "-y", "-v", "error", "-ss", f"{ts:.3f}",
-             "-i", str(self._thumbs.video), "-frames:v", "1", "-q:v", "2", str(out)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace")
-        if proc.returncode != 0 or not out.is_file():
-            self._thumb_progress_var.set("高清單幀抽取失敗")
-            return
+        out = Path(tempfile.gettempdir()) / "karaoke_hd_current.png"
+        self._thumb_progress_var.set(f"抽取高清單幀 @ {ts:.1f}s …")
+
+        def worker() -> None:
+            proc = subprocess.run(
+                [thumbs.ffmpeg, "-y", "-v", "error", "-ss", f"{ts:.3f}",
+                 "-i", str(thumbs.video), "-frames:v", "1", "-q:v", "2", str(out)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace")
+            if proc.returncode != 0 or not out.is_file():
+                self._ui_call(lambda: self._thumb_progress_var.set("高清單幀抽取失敗"))
+                return
+            self._ui_call(lambda: self._show_hd_frame(out, ts))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_hd_frame(self, path: Path, ts: float) -> None:
+        """主線程載入高清單幀並畫上畫布；載入後即刻刪臨時檔（UI-S11）。"""
         try:
-            photo = tk.PhotoImage(file=str(out))
+            photo = tk.PhotoImage(file=str(path))
             canvas = self._video_canvas
             w = max(canvas.winfo_width(), 100)
             h = max(canvas.winfo_height(), 60)
@@ -659,6 +690,11 @@ class PreviewPane(ttkb.Frame):
             self._thumb_progress_var.set(f"高清單幀 @ {ts:.1f}s")
         except Exception as exc:   # noqa: BLE001
             self._thumb_progress_var.set(f"高清單幀顯示失敗：{exc}")
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _open_external_player(self) -> None:
         """§6.7.8：ffplay 由當前時間開始播（~30 行零依賴對沖）。"""
