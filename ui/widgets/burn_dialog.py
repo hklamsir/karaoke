@@ -64,7 +64,34 @@ def _aspect(width: int, height: int) -> float:
     return width / height if height else 0.0
 
 
-def compare_sources(ffprobe: str, source: Path, original: Path) -> tuple[list[str], bool]:
+def probe_media(ffprobe: str, path: Path) -> dict[str, Any]:
+    """一次過讀取時長／有無視訊軌／解像度，供對話框重複使用。
+
+    為何要包成一個 dict：``_refresh`` 舊版對同一個檔案分別叫
+    ``probe_duration_ms`` ×2 / ``probe_has_video`` / ``probe_video_size``，
+    每次換檔要開 5–8 個 ffprobe 子進程（冷啟動每個 100–300ms），模態窗會
+    明顯凍結（2026-11-12 審查報告 UI-S12）。
+
+    Args:
+        ffprobe: ffprobe 路徑；空字串回傳中性值（呼叫方唔會用）。
+        path: 媒體檔。
+
+    Returns:
+        ``{"duration_ms": int|None, "has_video": bool, "size": (w, h)}``。
+    """
+    if not ffprobe:
+        return {"duration_ms": None, "has_video": True, "size": (0, 0)}
+    import main as _main
+
+    has_video = _main.probe_has_video(ffprobe, path)
+    size = _main.probe_video_size(ffprobe, path) if has_video else (0, 0)
+    return {"duration_ms": _main.probe_duration_ms(ffprobe, path),
+            "has_video": has_video, "size": size}
+
+
+def compare_sources(ffprobe: str, source: Path, original: Path, *,
+                    source_info: dict[str, Any] | None = None,
+                    original_info: dict[str, Any] | None = None) -> tuple[list[str], bool]:
     """比對「燒錄音源」同原片 → ``(警告清單, 是否可用)``。
 
     抽出嚟做純函數係為咗可以無 UI 直接測（probe 唔使開窗）。
@@ -73,18 +100,21 @@ def compare_sources(ffprobe: str, source: Path, original: Path) -> tuple[list[st
         ffprobe: ffprobe 路徑；空字串 = 跳過比對（唔阻塞燒錄）。
         source: 用戶揀的燒錄音源。
         original: timings.json 記錄的原片（字幕時間軸的基準）。
+        source_info: 已探測的 ``probe_media()`` 結果；唔傳就即場探測。
+        original_info: 同上（原片）。
 
     Returns:
         ``(warnings, usable)``；``usable=False`` 代表唔可以燒（例如冇視訊軌）。
     """
-    import main as _main
-
     if not ffprobe:
         return [], True
 
+    src_info = source_info if source_info is not None else probe_media(ffprobe, source)
+    org_info = original_info if original_info is not None else probe_media(ffprobe, original)
+
     warnings: list[str] = []
-    dur_src = _main.probe_duration_ms(ffprobe, source)
-    dur_org = _main.probe_duration_ms(ffprobe, original)
+    dur_src = src_info["duration_ms"]
+    dur_org = org_info["duration_ms"]
     if dur_src and dur_org and abs(dur_src - dur_org) > DURATION_WARN_MS:
         diff = (dur_src - dur_org) / 1000
         warnings.append(
@@ -92,18 +122,15 @@ def compare_sources(ffprobe: str, source: Path, original: Path) -> tuple[list[st
             "如果唔係同一個剪輯版本，字幕會愈唱愈唔對位。")
 
     # ADR-039：純音檔唔再落閘，改為提示「會用背景合成」
-    if not _main.probe_has_video(ffprobe, source):
+    if not src_info["has_video"]:
         warnings.insert(0, "呢個檔案冇視訊軌（音檔）→ 會用下面揀的背景合成畫面。")
         return warnings, True       # 音檔唔比畫面比例（無從比較，避免噪音警告）
 
-    try:
-        sw, sh = _main.probe_video_size(ffprobe, source)
-        ow, oh = _main.probe_video_size(ffprobe, original)
-        if abs(_aspect(sw, sh) - _aspect(ow, oh)) > 0.05 * max(_aspect(ow, oh), 0.1):
-            warnings.append(
-                f"畫面比例同原片唔同（{sw}×{sh} vs {ow}×{oh}），字幕位置可能要重新調整。")
-    except (TypeError, ValueError):
-        pass
+    sw, sh = src_info["size"]
+    ow, oh = org_info["size"]
+    if ow and oh and abs(_aspect(sw, sh) - _aspect(ow, oh)) > 0.05 * max(_aspect(ow, oh), 0.1):
+        warnings.append(
+            f"畫面比例同原片唔同（{sw}×{sh} vs {ow}×{oh}），字幕位置可能要重新調整。")
 
     return warnings, True
 
@@ -331,19 +358,21 @@ def build_burn_dialog(
     def _refresh() -> None:
         src: Path = state["source"]
         name_var.set(src.name)
-        warnings, usable = compare_sources(ffprobe, src, default_video)
+        # 每個檔案只探測一次，再分別餵畀 compare_sources（舊版重複 5–8 次）
+        if ffprobe:
+            src_info = probe_media(ffprobe, src)
+            org_info = probe_media(ffprobe, default_video)
+            warnings, usable = compare_sources(
+                ffprobe, src, default_video,
+                source_info=src_info, original_info=org_info)
+            info_var.set(f"時長 {_fmt_ms(src_info['duration_ms'])}"
+                         f"　·　原片 {_fmt_ms(org_info['duration_ms'])}")
+            has_video = bool(src_info["has_video"])
+        else:
+            warnings, usable, has_video = [], True, True
+            info_var.set("")
         state["warnings"] = warnings
         state["usable"] = usable
-
-        has_video = True
-        if ffprobe:
-            import main as _main
-            has_video = _main.probe_has_video(ffprobe, src)
-            info_var.set(
-                f"時長 {_fmt_ms(_main.probe_duration_ms(ffprobe, src))}"
-                f"　·　原片 {_fmt_ms(_main.probe_duration_ms(ffprobe, default_video))}")
-        else:
-            info_var.set("")
         state["has_video"] = has_video
 
         # ADR-039：先 pack 警告、再 pack 背景區 —— 讀者由上往下見到
@@ -360,7 +389,6 @@ def build_burn_dialog(
             bg_box.pack(fill="x", pady=(8, 0), before=style_label)
 
         # 開始鍵由 _sync_bg 統一決定（要額外考慮「圖片模式未揀檔」）
-        state["usable"] = usable
         _sync_bg()
 
     def _pick() -> None:
