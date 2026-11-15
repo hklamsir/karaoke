@@ -188,8 +188,25 @@ class TimelineCanvas(tk.Canvas):
             if px < 0 or px > w * 0.9:
                 st.view_start_ms = int(max(0, st.cursor_ms - view_span * 0.2))
                 st.notify("pan")
+        # 播放期間 notify("cursor") 每 30ms 一次：只移動播放頭，唔重建整個
+        # 畫布（波形 polygon + 全部字塊 = 每幀幾百個 item；審查報告 UI-S10）。
+        if reason == "cursor":
+            self._move_playhead()
+            return
         # 固定 lane 版：全部句子按時間 first-fit 分配入固定 lane，永遠全部同時可見
         self._request_redraw()
+
+    def _move_playhead(self) -> None:
+        """只移動播放頭（``cursor`` 專用快路徑）；出畫或未畫過就退回全量重繪。"""
+        st = self._state
+        w = max(self.winfo_width(), 400)
+        cx = (st.cursor_ms - st.view_start_ms) * st.px_per_ms
+        if not (0 <= cx <= w) or not self.find_withtag("playhead_line"):
+            self._request_redraw()
+            return
+        h = self.winfo_height() - OVERVIEW_H
+        self.coords("playhead_line", cx, 0, cx, h)
+        self.coords("playhead_head", cx - 4, 0, cx + 4, 0, cx, 6)
 
     def _scroll_to_line(self, line_i: int) -> None:
         """垂直捲動令當前行 lane 入鏡——**已經入鏡就唔捲**。
@@ -384,9 +401,11 @@ class TimelineCanvas(tk.Canvas):
         # --- 播放頭 ---
         cx = (st.cursor_ms - view) * ppm
         if 0 <= cx <= w:
+            # tag 化：cursor 更新時只 coords() 移動，唔重建整個畫布（UI-S10）
             self.create_line(cx, 0, cx, self.winfo_height() - OVERVIEW_H,
-                             fill=theme.ACCENT, width=2)
-            self.create_polygon(cx - 4, 0, cx + 4, 0, cx, 6, fill=theme.ACCENT, outline="")
+                             fill=theme.ACCENT, width=2, tags=("playhead_line",))
+            self.create_polygon(cx - 4, 0, cx + 4, 0, cx, 6, fill=theme.ACCENT,
+                                outline="", tags=("playhead_head",))
 
         # --- 全片概覽（§6.2：藍=視窗）---
         total = max(1, models_total_ms(st))
@@ -469,6 +488,9 @@ class TimelineCanvas(tk.Canvas):
             "mode": mode, "ref": ref, "x": event.x,
             "orig_char": (int(char["begin_ms"]), int(char["end_ms"])),
             "orig_word_chars": [(int(c["begin_ms"]), int(c["end_ms"])) for c in word["chars"]],
+            # 拖曳中 _on_motion 會直接清 estimated（繞過 command）；release 時
+            # 要先還原成這個原值，否則 undo 之後旗標永久消失（UI-S6）。
+            "orig_estimated": bool(word.get("estimated", False)),
         }
 
     def _center_view_at(self, x: float) -> None:
@@ -551,8 +573,13 @@ class TimelineCanvas(tk.Canvas):
             return
         if drag["mode"] in ("body", "left", "right"):
             line_i, word_i, char_i = drag["ref"]
-            char = st.lines[line_i]["words"][word_i]["chars"][char_i]
+            word = st.lines[line_i]["words"][word_i]
+            char = word["chars"][char_i]
             new = (int(char["begin_ms"]), int(char["end_ms"]))
+            # _on_motion 拖曳期間直接寫過 word["estimated"]=False（繞過
+            # command）；push 之前必須還原，否則 command 首次 apply 會把
+            # False 當成原值，undo 之後「估算字」旗標永久消失（UI-S6）。
+            word["estimated"] = drag.get("orig_estimated", False)
             if drag["mode"] == "body":
                 # command 記 word 級平移
                 from ..commands import SetWordShift

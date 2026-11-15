@@ -148,6 +148,11 @@ def doc_stats(doc: dict) -> dict[str, Any]:
             chars = word.get("chars") or []
             num_chars += len(chars)
             for c in chars:
+                # 標點實體化插入的 1ms 空格 char 係設計上的佔位，唔係「漏詞／
+                # 時長崩壞」。計入 zero_chars 會令每句正常標點都報假警告，
+                # 並被「✚ 修補」誤改（2026-11-12 審查報告 UI-S5）。
+                if not (c.get("text") or "").strip():
+                    continue
                 if int(c.get("end_ms", 0)) - int(c.get("begin_ms", 0)) <= 1:
                     zero_chars += 1
             est_total += 1
@@ -815,7 +820,13 @@ def repair_plan(line: dict) -> dict[str, Any]:
     chars = iter_flat_chars(line)
     if len(chars) < 3:
         return {"mode": "none", "count": 0}
-    durs = [int(c["end_ms"]) - int(c["begin_ms"]) for _w, _ci, c in chars]
+    # 標點實體化插入的 1ms 空格 char 唔係崩壞（同 doc_stats 一致，UI-S5）：
+    # 判斷一律只在「真字」上做，spans 再映射回原索引交給 redistribute_span。
+    real = [(idx, c) for idx, (_w, _ci, c) in enumerate(chars)
+            if (c.get("text") or "").strip()]
+    if len(real) < 3:
+        return {"mode": "none", "count": 0}
+    durs = [int(c["end_ms"]) - int(c["begin_ms"]) for _idx, c in real]
     median = float(statistics.median(durs))
     longest = max(durs)
     if longest > max(REPAIR_STRETCH_RATIO * median, REPAIR_STRETCH_FLOOR_MS):
@@ -826,17 +837,17 @@ def repair_plan(line: dict) -> dict[str, Any]:
                 "end": int(chars[-1][2]["end_ms"])}
     runs: list[tuple[int, int]] = []
     i = 0
-    while i < len(chars):
+    while i < len(real):
         if durs[i] <= 1:
             j = i
-            while j + 1 < len(chars) and durs[j + 1] <= 1:
+            while j + 1 < len(real) and durs[j + 1] <= 1:
                 j += 1
-            runs.append((i, j))
+            runs.append((real[i][0], real[j][0]))
             i = j + 1
         else:
             i += 1
     return {"mode": "spans" if runs else "none", "spans": runs,
-            "count": sum(j - i + 1 for i, j in runs),
+            "count": sum(1 for d in durs if d <= 1),
             "median_ms": round(median, 1), "longest_ms": longest}
 
 
