@@ -821,7 +821,10 @@ class EditorPage(ttkb.Frame):
                         doc_style, play_res_x=src_w, play_res_y=src_h,
                         font_size=max(8, round(doc_style.font_size * k)),
                         margin_v=round(doc_style.margin_v * k),
-                        outline_width=round(doc_style.outline_width * k, 1))
+                        outline_width=round(doc_style.outline_width * k, 1),
+                        # ADR-050：陰影同屬 PlayRes 座標系，唔按比例換算就會
+                        # 喺 720p 專案上粗一倍（4px → 視覺 6px）
+                        shadow_width=round(doc_style.shadow_width * k, 1))
             except Exception as exc:   # noqa: BLE001 — 讀唔到就沿用原座標系
                 LOGGER.warning("讀取燒錄片解析度失敗（%s），沿用 timings 座標系", exc)
         if home_style:
@@ -1965,6 +1968,10 @@ def _describe_style(style: dict) -> str:
     align_names = {2: "底部置中", 3: "中下", 5: "中部置中", 8: "頂部置中"}
     margin = int(style.get("margin_v") or 0)
     outline = float(style.get("outline_width") or 0.0)
+    shadow = float(style.get("shadow_width") or 0.0)
+    shadow_text = "陰影關" if not shadow else (
+        f"陰影 {shadow:g}px {style.get('shadow_color', '#000000')}"
+        f" {int(style.get('shadow_opacity', 50))}%")
     # ADR-031：提前顯示／倒數圓點也要顯示，否則用戶唔知燒錄會唔會出圓點
     lead = int(style.get("lead_in_ms", 3000))
     lead_text = "唔提前" if lead <= 0 else f"提前 {lead / 1000:.1f}s"
@@ -1976,5 +1983,6 @@ def _describe_style(style: dict) -> str:
         f"（{'自動' if not outline else f'{outline:g}px'}）· "
         f"{align_names.get(int(style.get('alignment') or 2), '底部置中')} · "
         f"留白 {'自動' if not margin else f'{margin}px'} · "
+        f"{shadow_text} · "
         f"{lead_text} · {dots_text}"
     )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import time
 import tkinter as tk
 
 import ttkbootstrap as ttkb
@@ -55,6 +56,12 @@ class StageProgress(ttkb.Frame):
         self._chips: dict[str, ttkb.Label] = {}
         #: 外部已用 set_fraction() 喂真實進度 → 唔好再被 report() 打回跑馬燈
         self._determinate = False
+        # ADR-048：沒有百分比資料源的階段（上傳 / ASR 輪詢）改顯示「已等 Ns」。
+        # 用 monotonic 而唔用 wall clock —— 用戶調系統時間唔應該令計時倒退或跳秒。
+        self._active_since: float | None = None
+        self._active_stage = ""
+        self._base_msg = ""
+        self._elapsed_shown = -1
 
         chips_row = ttkb.Frame(self, bootstyle="light")
         chips_row.pack(fill="x")
@@ -127,11 +134,35 @@ class StageProgress(ttkb.Frame):
                 self._apply(stage, message)
         except queue.Empty:
             pass
+        self._tick_elapsed()
         self.after(80, self._poll)
+
+    def _clear_timer(self) -> None:
+        """停止「已等 Ns」計時（階段完成／取消／切到確定模式都會叫）。"""
+        self._active_since = None
+        self._active_stage = ""
+        self._base_msg = ""
+        self._elapsed_shown = -1
+
+    def _tick_elapsed(self) -> None:
+        """每秒把當前階段的說明更新為「…（已等 Ns）」。
+
+        ADR-048：上傳與 ASR 輪詢沒有百分比資料源，跑馬燈只證明「有動」；
+        補上已等秒數，用戶才知大約要再等抑或已經卡死。
+        確定模式（set_fraction 餵過數）唔加，避免兩種進度語義打架。
+        """
+        if self._active_since is None or self._determinate or not self._base_msg:
+            return
+        elapsed = int(time.monotonic() - self._active_since)
+        if elapsed == self._elapsed_shown:
+            return
+        self._elapsed_shown = elapsed
+        self._msg_var.set(f"{self._active_stage}：{self._base_msg}（已等 {elapsed}s）")
 
     def _apply(self, stage: str, message: str) -> None:
         if stage == "__reset__":
             self._determinate = False
+            self._clear_timer()
             self._states = {s: "pending" for s in self._stages}
             self._refresh_chips()
             self._bar.stop()
@@ -145,6 +176,7 @@ class StageProgress(ttkb.Frame):
             except ValueError:
                 return
             self._determinate = True
+            self._clear_timer()      # 有真百分比就唔再顯示「已等 Ns」
             self._bar.stop()
             self._bar.configure(mode="determinate", maximum=100,
                                 value=max(0.0, min(100.0, pct)))
@@ -153,6 +185,7 @@ class StageProgress(ttkb.Frame):
             return
         if stage == "__fail__":
             self._determinate = False
+            self._clear_timer()
             if self._current_stage():
                 self._states[self._current_stage()] = "error"
             self._refresh_chips()
@@ -162,6 +195,7 @@ class StageProgress(ttkb.Frame):
             return
         if stage == "__done__":
             self._determinate = False
+            self._clear_timer()
             for s in self._states:
                 if self._states[s] in ("pending", "active"):
                     self._states[s] = "done"
@@ -181,11 +215,18 @@ class StageProgress(ttkb.Frame):
             # 上傳階段時長波動大（3 秒~3 分鐘）→ 未有真實百分比前用跑馬燈
             # （計劃書 §5.2）；set_fraction() 餵過數就一路保持確定模式。
             if message and self._states[stage] == "active":
+                # ADR-048：重新開始計時；同一階段換 message（例如 ASR 換輪詢次數）
+                # 亦重新計，避免「已等 200s」跟住新訊息走。
+                self._active_since = time.monotonic()
+                self._active_stage = stage
+                self._base_msg = message
+                self._elapsed_shown = -1
                 if not self._determinate:
                     self._bar.configure(mode="indeterminate")
                     self._bar.start(24)
             else:
                 self._determinate = False
+                self._clear_timer()
                 self._bar.stop()
                 self._bar.configure(mode="determinate")
                 self._advance_determinate(stage)

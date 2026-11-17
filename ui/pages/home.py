@@ -238,11 +238,19 @@ class HomePage(ttkb.Frame):
         self._outline_var = tk.StringVar(
             value=_OUTLINE_NAME.get(
                 self._float_saved("outline_width", 0.0), _OUTLINE_WIDTHS[0][0]))
+        # ADR-049：由 readonly 改為可編輯 —— 四個快捷值之外可以直接打 px（例如 6.5）。
+        # 打錯字唔可以靜靜變「自動」，所以旁邊有即時解析結果，非法值標紅。
         combo = ttkb.Combobox(row, textvariable=self._outline_var,
                               values=[n for n, _ in _OUTLINE_WIDTHS], width=8,
-                              state="readonly")
-        combo.pack(side="left", padx=(0, theme.SPACE))
+                              state="normal")
+        combo.pack(side="left", padx=(0, 4))
         combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
+        combo.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        combo.bind("<FocusOut>", lambda _e: self._refresh_preview())
+        self._outline_hint = ttkb.Label(
+            row, text="", bootstyle="secondary", width=12,
+            font=(theme.ui_font_family(), 8))
+        self._outline_hint.pack(side="left", padx=(0, theme.SPACE))
         ttkb.Label(row, text="對齊", bootstyle="secondary").pack(side="left")
         self._align_var = tk.StringVar(
             value=_ALIGN_NAME.get(self._int_saved("alignment", 2), _ALIGNMENTS[0][0]))
@@ -251,6 +259,44 @@ class HomePage(ttkb.Frame):
                               state="readonly")
         combo.pack(side="left")
         combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_preview())
+
+        # ADR-050：陰影 —— px = 0 即關閉（唔用 checkbox，避免「開關開了但 px 仍係
+        # 0」的自相矛盾狀態）。顏色與透明度放同一行，唔擠去上面三色行。
+        row = ttkb.Frame(box, bootstyle="light")
+        row.pack(fill="x", padx=theme.SPACE, pady=(0, 2))
+        ttkb.Label(row, text="陰影", width=10, bootstyle="secondary").pack(side="left")
+        self._shadow_var = tk.StringVar(
+            value=f"{self._float_saved('shadow_width', 0.0):g}")
+        shadow_spin = ttkb.Spinbox(row, textvariable=self._shadow_var, from_=0, to=30,
+                                   increment=0.5, width=6,
+                                   command=self._refresh_preview)
+        shadow_spin.pack(side="left")
+        shadow_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="px（0 = 關）", bootstyle="secondary",
+                   font=(theme.ui_font_family(), 8)).pack(side="left", padx=(2, 8))
+        shadow_cur = str(self._saved_style.get("shadow_color") or "#000000")
+        shadow_swatch = tk.Canvas(row, width=30, height=22, highlightthickness=1,
+                                  highlightbackground=theme.BORDER, cursor="hand2")
+        shadow_swatch.pack(side="left")
+        shadow_swatch.bind("<Button-1>", lambda _e: self._pick_color("shadow"))
+        self._swatches["shadow"] = shadow_swatch
+        shadow_color_var = tk.StringVar(value=shadow_cur)
+        shadow_color_var.trace_add("write", lambda *_a: self._on_hex_changed("shadow"))
+        self._color_vars["shadow"] = shadow_color_var
+        shadow_entry = ttkb.Entry(row, textvariable=shadow_color_var, width=9)
+        shadow_entry.pack(side="left", padx=(4, 8))
+        shadow_entry.bind("<FocusOut>", lambda _e: self._normalise_entry("shadow"))
+        shadow_entry.bind("<Return>", lambda _e: self._normalise_entry("shadow"))
+        self._set_swatch("shadow", _normalise_hex(shadow_cur) or "#000000")
+        ttkb.Label(row, text="不透明度", bootstyle="secondary").pack(side="left")
+        self._shadow_opacity_var = tk.IntVar(
+            value=self._int_saved("shadow_opacity", 50))
+        opacity_spin = ttkb.Spinbox(row, textvariable=self._shadow_opacity_var,
+                                    from_=0, to=100, increment=5, width=5,
+                                    command=self._refresh_preview)
+        opacity_spin.pack(side="left", padx=(2, 0))
+        opacity_spin.bind("<KeyRelease>", lambda _e: self._refresh_preview())
+        ttkb.Label(row, text="%", bootstyle="secondary").pack(side="left")
 
         row = ttkb.Frame(box, bootstyle="light")
         row.pack(fill="x", padx=theme.SPACE, pady=(2, 2))
@@ -671,6 +717,10 @@ class HomePage(ttkb.Frame):
             "alignment": dict(_ALIGNMENTS).get(self._align_var.get(), 2),
             "margin_v": margin_v,
             "outline_width": self._outline_width_value(),
+            # ADR-050：陰影（0 = 關；舊檔冇呢三個 key → 燒錄行為完全不變）
+            "shadow_width": self._shadow_width_value(),
+            "shadow_color": self._color_vars["shadow"].get().strip(),
+            "shadow_opacity": self._shadow_opacity_value(),
             # ADR-027：雙行歌詞（舊 settings.json 冇呢兩個 key → 自動單行）
             "dual_line": bool(self._dual_var.get()),
             # ADR-039：行距倍數（px 由 render 時按字級換算，唔存死值）
@@ -726,6 +776,11 @@ class HomePage(ttkb.Frame):
         outline = float(style.get("outline_width") or 0.0)
         # 對唔上預設級距（例如人手改過 JSON）就直接顯示 px 值，唔好靜靜當「自動」
         self._outline_var.set(_OUTLINE_NAME.get(outline, f"{outline:g}"))
+        # ADR-050：陰影（舊檔冇 → 0 = 關）
+        self._shadow_var.set(f"{float(style.get('shadow_width') or 0.0):g}")
+        if style.get("shadow_opacity") is not None:
+            self._shadow_opacity_var.set(
+                max(0, min(100, int(style.get("shadow_opacity") or 0))))
         # ADR-027：舊檔冇呢兩個 key → 保持單行、延遲沿用預設
         if "dual_line" in style:
             self._dual_var.set(bool(style.get("dual_line")))
@@ -933,12 +988,26 @@ class HomePage(ttkb.Frame):
                                     bootstyle="warning")
             else:
                 gap_label.configure(text=f"= {gap_px}px", bootstyle="secondary")
+        # ADR-049：描邊即時反饋 —— 打錯字標紅，唔會靜靜變回「自動」
+        parsed_outline = self._parse_outline(self._outline_var.get())
+        hint = getattr(self, "_outline_hint", None)
+        if hint is not None:
+            if parsed_outline is None:
+                hint.configure(text="⚠ 請輸入 0–30 數字", bootstyle="danger")
+            elif parsed_outline == 0:
+                hint.configure(text="自動 ≈ 3px", bootstyle="secondary")
+            else:
+                hint.configure(text=f"= {parsed_outline:g}px", bootstyle="success")
         self._preview.set_style(
             font_name=self._font_var.get(), font_size=size,
             primary_color=self._color_vars["primary"].get(),
             secondary_color=self._color_vars["secondary"].get(),
             outline_color=self._color_vars["outline"].get(),
             outline_width=self._outline_width_value(),
+            # ADR-050：陰影（0 = 關）
+            shadow_width=self._shadow_width_value(),
+            shadow_color=self._color_vars["shadow"].get(),
+            shadow_opacity=self._shadow_opacity_value(),
             margin_v=margin,
             dual_line=bool(self._dual_var.get()),
             line_gap_ratio=ratio,
@@ -947,16 +1016,52 @@ class HomePage(ttkb.Frame):
             down_offset_pct=dict(_POSITIONS).get(self._down_pos_var.get(), 0))
         self._schedule_style_save()
 
-    def _outline_width_value(self) -> float:
-        """「自動 / 幼 2 / 中 3 / 粗 4」→ px；非預設級距（例如 JSON 寫 3.5）照 parse。"""
-        name = self._outline_var.get().strip()
+    def _parse_outline(self, text: str) -> float | None:
+        """描邊輸入 → px；``None`` = 解析不到（唔可以靜靜當「自動」）。
+
+        ADR-049：Combobox 可編輯之後，用戶打錯字（``6..5``、中文、負數）唔應該
+        被當成 0 = 自動，否則畫面「揀咗都冇反應」但完全冇提示。
+
+        Args:
+            text: Combobox 的原始文字（快捷名或數字）。
+
+        Returns:
+            0–30 的 px 值（一位小數）；解析失敗回 ``None``。
+        """
+        name = (text or "").strip()
         mapping = dict(_OUTLINE_WIDTHS)
         if name in mapping:
             return mapping[name]
         try:
-            return max(0.0, float(name))
+            value = float(name)
         except ValueError:
+            return None
+        if value < 0:
+            return None
+        return round(min(30.0, value), 1)
+
+    def _outline_width_value(self) -> float:
+        """「自動 / 幼 2 / 中 3 / 粗 4」或任意 px → 數值；非法輸入當 0（自動）。"""
+        parsed = self._parse_outline(self._outline_var.get())
+        return 0.0 if parsed is None else parsed
+
+    def _shadow_width_value(self) -> float:
+        """陰影偏移 px；0 或非法輸入 = 關閉。上限 30（同 Spinbox 一致）。"""
+        try:
+            value = float(self._shadow_var.get().strip())
+        except (ValueError, tk.TclError):
             return 0.0
+        if value < 0:
+            return 0.0
+        return round(min(30.0, value), 1)
+
+    def _shadow_opacity_value(self) -> int:
+        """陰影不透明度 0–100；非法輸入沿用 50（＝舊版寫死的半透明黑）。"""
+        try:
+            value = int(self._shadow_opacity_var.get())
+        except (ValueError, tk.TclError):
+            return 50
+        return max(0, min(100, value))
 
     # ------------------------------------------------------------------
     # 生成
@@ -980,6 +1085,10 @@ class HomePage(ttkb.Frame):
                 # 之前漏咗呢兩個 → 主頁「對齊」「描邊粗幼」揀咩都冇效
                 alignment=snap["alignment"],
                 outline_width=snap["outline_width"],
+                # ADR-050：陰影（0 = 關；主頁係燒錄權威來源，ADR-015）
+                shadow_width=snap["shadow_width"],
+                shadow_color=snap["shadow_color"],
+                shadow_opacity=snap["shadow_opacity"],
                 margin_v=snap["margin_v"],
                 # ADR-027：雙行歌詞開關
                 dual_line=bool(snap.get("dual_line", False)),
@@ -1136,6 +1245,10 @@ class HomePage(ttkb.Frame):
         snap = self.style_snapshot()
         values["alignment"] = snap["alignment"]
         values["outline_width"] = snap["outline_width"]
+        # ADR-050：陰影三個參數（同預設一樣就唔會出現喺指令度）
+        values["shadow"] = snap["shadow_width"]
+        values["shadow_color"] = snap["shadow_color"]
+        values["shadow_opacity"] = snap["shadow_opacity"]
         # ADR-031：提前顯示 / 倒數圓點（同預設一樣就唔會出現喺指令度）
         values["lead_in_ms"] = snap["lead_in_ms"]
         values["countdown_dots"] = snap["countdown_dots"]

@@ -324,6 +324,35 @@ def hex_to_ass_color(hex_color: str) -> str:
     return f"&H00{b}{g}{r}".upper()
 
 
+def hex_to_ass_color_alpha(hex_color: str, opacity: int = 100) -> str:
+    """``#RRGGBB`` + 不透明度 → ``&HAABBGGRR``（ASS alpha：00 = 不透明、FF = 全透明）。
+
+    ⚠️ ASS 的 alpha 與一般 UI 相反：數值越大越透明。此處收「opacity」（越大越
+    不透明，符合 UI 直覺）再反轉，避免主頁滑桿同成品反向。
+
+    ADR-050：``#000000`` + 50% 會得到 ``&H80000000``，同舊版寫死的值一模一樣
+    —— 舊 timings.json 重燒時顏色不變。
+
+    Args:
+        hex_color: 6 位 hex 色碼（可帶 ``#``）。
+        opacity: 0–100；100 = 全不透明。
+
+    Returns:
+        ``&HAABBGGRR`` 字串。
+
+    Raises:
+        ValueError: 顏色格式不合法。
+    """
+    value = hex_color.strip().lstrip("#")
+    if not _HEX_COLOR_RE.match(value):
+        raise ValueError(
+            f"顏色必須係 6 位 hex（#RRGGBB，只可含 0-9 / A-F），收到：{hex_color!r}")
+    clamped = max(0, min(100, int(opacity)))
+    alpha = round((100 - clamped) * 255 / 100)
+    r, g, b = value[0:2], value[2:4], value[4:6]
+    return f"&H{alpha:02X}{b}{g}{r}".upper()
+
+
 def _validate_style_colors(**colors: str | None) -> None:
     """即時驗證 CLI 傳入的顏色參數（``ValueError`` → ``UsageError``）。
 
@@ -485,6 +514,13 @@ class StyleConfig:
     alignment: int = 2                    # 底部置中
     margin_v: int = 0                     # 0 = 由 render 按 PlayResY 推算
     outline_width: float = 0.0            # 0 = 由 render 按 PlayResY 推算
+    #: ADR-050：字幕陰影，對應 ASS Style 的 ``Shadow``（右下 45° 單一偏移，單位 px）。
+    #: 0 = 關閉（唔會寫入 timings.json，舊檔行為完全不變）。
+    shadow_width: float = 0.0
+    #: 陰影色。libass 的陰影色就是 ``BackColour`` —— 同一個 Style 只有一個值。
+    shadow_color: str = "#000000"
+    #: 陰影不透明度 0–100（100 = 全不透明）。50 + 黑色 = 舊版寫死的 &H80000000。
+    shadow_opacity: int = 50
 
     #: 雙行交替（ADR-027）：奇數句固定上行、偶數句固定下行，每行隔兩句才換。
     #: False（預設）= 舊行為，一句一個 event，完全唔會變。
@@ -775,129 +811,100 @@ def separate_vocals(wav: Path, workdir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 · 本地音頻上傳（ADR-003）
+# Stage 3 · 本地音頻上傳（ADR-003 / ADR-048）
 # ---------------------------------------------------------------------------
 
-def _upload_file_with_progress(wav: Path, progress_cb: Callable[[float], None]) -> dict[str, Any]:
-    """自己砌 multipart POST，邊傳邊報位元組進度（ADR-028）。
+#: ADR-048：SDK 上傳失敗後等幾耐再試一次（秒）。10053 之類屬瞬態斷線。
+UPLOAD_RETRY_DELAY_S = 2.0
 
-    ⚠️ 為何唔用 ``dashscope.Files.upload``：官方 SDK 喺 ``_upload_form()`` 一次
-    ``f.read()`` 讀完整個檔才交畀 transport，中間**冇任何回調點** —— 想有真進度
-    只能自己發請求。契約同 legacy SDK 完全一致：
-    ``POST {base_http_api_url}/files``、``Authorization: Bearer``、
-    multipart 欄位名 ``files``、回應 ``output.uploaded_files[0].file_id``。
+
+def _upload_via_sdk(wav: Path) -> str:
+    """``Files.upload()`` 拎 file_id → ``Files.get()`` 拎預簽名 https URL。
 
     Args:
         wav: 要上傳的音訊檔。
-        progress_cb: ``(pct)``，0–100；最多回調約 200 次。
 
     Returns:
-        伺服器回應 JSON。
+        可直接餵畀 ASR 的 https URL。
 
     Raises:
-        Exception: 任何網絡／HTTP 錯誤（呼叫方會 fallback 去 SDK）。
-    """
-    import uuid
-
-    import requests
-
-    import dashscope
-
-    size = wav.stat().st_size
-    boundary = "----karaoke" + uuid.uuid4().hex
-    head = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="files"; filename="{wav.name}"\r\n'
-        "Content-Type: application/octet-stream\r\n\r\n"
-    ).encode("utf-8")
-    tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
-    total = len(head) + size + len(tail)
-    step = max(1, total // 200)
-    sent = 0
-    last_reported = 0
-
-    def _tick() -> None:
-        nonlocal last_reported
-        if sent - last_reported < step and sent < total:
-            return
-        last_reported = sent
-        progress_cb(min(100.0, 100.0 * sent / total if total else 0.0))
-
-    def _gen():
-        nonlocal sent
-        yield head
-        sent += len(head)
-        with wav.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(256 * 1024), b""):
-                sent += len(chunk)
-                _tick()
-                yield chunk
-        sent += len(tail)
-        _tick()
-        yield tail
-
-    base = (getattr(dashscope, "base_http_api_url", "") or
-            "https://dashscope.aliyuncs.com/api/v1").rstrip("/")
-    resp = requests.post(
-        f"{base}/files",
-        data=_gen(),
-        headers={
-            "Authorization": f"Bearer {dashscope.api_key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Content-Length": str(total),
-        },
-        timeout=900,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
-def upload_audio(wav: Path,
-                 progress_cb: Callable[[float], None] | None = None) -> str:
-    """上傳 TempAudio → UploadedURL。
-
-    主路線：``Files.upload()`` 拎 ``file_id`` → ``Files.get()`` 拎**預簽名 https URL**。
-    ⚠️ Files.upload 淨係畀 file_id，**唔係**可以直接餵畀 ASR 的 URL。
-    後備：``OssUtils.upload()`` 返 ``oss://`` URL（需配合 resolve header）。
-
-    ADR-028：有 ``progress_cb`` 時改用自建 multipart 上傳（可報真進度）；
-    自建路線失敗會**靜靜退回** SDK，唔會令整個 generate 失敗。
+        KeyError: 回應缺少 ``uploaded_files`` 或 ``url`` 字段。
+        Exception: SDK 拋出的任何網絡／API 錯誤（由呼叫方決定重試或走後備）。
     """
     import dashscope
 
-    LOGGER.info("上傳音訊到百煉臨時儲存 …")
-    if progress_cb is not None:
-        try:
-            payload = _upload_file_with_progress(wav, progress_cb)
-            file_id = payload["output"]["uploaded_files"][0]["file_id"]
-            url = dashscope.Files.get(file_id=file_id).output.get("url")
-            if not url:
-                raise KeyError("Files.get() 冇返 url 字段")
-            if url.startswith("http://"):
-                url = url.replace("http://", "https://", 1)
-            LOGGER.info("UploadedURL 取得成功（自建上傳 + 進度）")
-            return url
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("自建上傳失敗（%s），退回 SDK 上傳（無進度）", exc)
+    resp = dashscope.Files.upload(file_path=str(wav), purpose="assistants")
+    file_id = resp.output["uploaded_files"][0]["file_id"]
+    url = dashscope.Files.get(file_id=file_id).output.get("url")
+    if not url:
+        raise KeyError("Files.get() 冇返 url 字段")
+    # 預簽名 URL 偶爾返 http://，影片平台／ASR 只收 https
+    if url.startswith("http://"):
+        url = url.replace("http://", "https://", 1)
+    return url
 
-    try:
-        resp = dashscope.Files.upload(file_path=str(wav), purpose="assistants")
-        file_id = resp.output["uploaded_files"][0]["file_id"]
-        url = dashscope.Files.get(file_id=file_id).output.get("url")
-        if not url:
-            raise KeyError("Files.get() 冇返 url 字段")
-        if url.startswith("http://"):
-            url = url.replace("http://", "https://", 1)
-        LOGGER.info("UploadedURL 取得成功")
-        return url
-    except Exception as exc:  # noqa: BLE001
-        LOGGER.warning("預簽名 URL 路線失敗（%s），改用 oss:// + resolve header 後備路線", exc)
 
+def _upload_via_oss(wav: Path) -> str:
+    """最後後備：``OssUtils.upload()`` 返 ``oss://`` URL（ASR 需配合 resolve header）。
+
+    Args:
+        wav: 要上傳的音訊檔。
+
+    Returns:
+        ``oss://`` 開頭的 URL。
+    """
+    import dashscope
     from dashscope.utils.oss_utils import OssUtils
 
     oss_url, _ = OssUtils.upload(model=DEFAULT_ASR_MODEL, file_path=str(wav),
                                  api_key=dashscope.api_key)
     return oss_url
+
+
+def upload_audio(wav: Path,
+                 progress_cb: Callable[[float], None] | None = None) -> str:
+    """上傳 TempAudio → UploadedURL（ADR-048 取代 ADR-028 的上傳部分）。
+
+    路線：``Files.upload()`` + ``Files.get()``（預簽名 https URL）
+    → 失敗等 2 秒重試一次 → 仍失敗才走 ``OssUtils.upload()`` 的 ``oss://``
+    URL（需配合 resolve header）。
+
+    ⚠️ 為何移除自建 multipart：本機環境每次都被對端中止
+    （``ConnectionAbortedError(10053)``），失敗後照樣要退回 SDK，等於每次白等
+    一次上傳時間、log 也一定出現紅色失敗字。ADR-028 追求的「位元組級真進度」
+    在 SDK 路線無回調點，UI 改以跑馬燈 + 已等秒數交代。
+
+    Args:
+        wav: 要上傳的音訊檔（通常是 16k 單聲道 wav）。
+        progress_cb: 只為呼叫端相容而保留 —— SDK 路線**冇**回調點，永遠不會被呼叫。
+
+    Returns:
+        可直接餵畀 ASR 的 URL（https 或 ``oss://``）。
+
+    Raises:
+        Exception: 三條路線全數失敗時，拋最後一個錯誤（SDK 的為主）。
+    """
+    import time
+
+    LOGGER.info("上傳音訊到百煉臨時儲存（%.2f MB，SDK 路線）…",
+                wav.stat().st_size / 1048576)
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            url = _upload_via_sdk(wav)
+            LOGGER.info("UploadedURL 取得成功（SDK，第 %d 次嘗試）", attempt)
+            return url
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+            if attempt == 1:
+                LOGGER.warning("SDK 上傳失敗（%s），%.0f 秒後重試一次",
+                               exc, UPLOAD_RETRY_DELAY_S)
+                time.sleep(UPLOAD_RETRY_DELAY_S)
+
+    LOGGER.warning("SDK 上傳重試後仍失敗（%s），改用 oss:// + resolve header 後備路線",
+                   last_exc)
+
+    return _upload_via_oss(wav)
 
 
 # ---------------------------------------------------------------------------
@@ -1343,6 +1350,12 @@ def lines_to_timings_doc(
             "alignment": style.alignment,
             "margin_v": style.margin_v,
             "outline_width": style.outline_width,
+            # ADR-050：陰影。只在真的啟用時才寫（0 = 關）→ 舊檔輸出完全不變
+            **({"shadow_width": style.shadow_width} if style.shadow_width else {}),
+            **({"shadow_color": style.shadow_color}
+               if style.shadow_width and style.shadow_color.upper() != "#000000" else {}),
+            **({"shadow_opacity": style.shadow_opacity}
+               if style.shadow_width and style.shadow_opacity != 50 else {}),
             # ADR-027：只在啟用雙行時才寫，單行輸出維持同舊版 byte-identical
             **({"dual_line": True,
                 "switch_delay_ms": style.switch_delay_ms,
@@ -1402,6 +1415,18 @@ def _safe_float(value: Any, default: float) -> float:
         return default
 
 
+def _safe_opacity(value: Any, default: int = 50) -> int:
+    """寬鬆讀取 0–100 的百分比（``None`` / 壞字串 → ``default``，超範圍夾回）。
+
+    ADR-050：陰影不透明度係人手可改的 JSON 欄位，寫 150 或 ``"abc"`` 都唔應該
+    令開檔失敗，但亦唔可以傳去 ``hex_to_ass_color_alpha`` 造成負 alpha。
+    """
+    try:
+        return max(0, min(100, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
 def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleConfig]:
     """timings.json → (LyricLine[], StyleConfig)。**直接使用 JSON 內嘅絕對時間，唔重新推算**。
 
@@ -1439,6 +1464,10 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
         alignment=int(raw_style.get("alignment") or defaults.alignment),
         margin_v=int(raw_style.get("margin_v") or 0),
         outline_width=float(raw_style.get("outline_width") or 0.0),
+        # ADR-050：陰影（舊檔冇呢三個欄位 → 0 = 關，輸出同舊版 byte-identical）
+        shadow_width=_safe_float(raw_style.get("shadow_width"), 0.0),
+        shadow_color=raw_style.get("shadow_color") or defaults.shadow_color,
+        shadow_opacity=_safe_opacity(raw_style.get("shadow_opacity")),
         # ADR-027：舊檔冇呢三個欄位 → 自動當單行，行為同以前一模一樣
         dual_line=bool(raw_style.get("dual_line", False)),
         switch_delay_ms=int(raw_style.get("switch_delay_ms") or defaults.switch_delay_ms),
@@ -1459,7 +1488,8 @@ def timings_doc_to_lines(doc: dict[str, Any]) -> tuple[list[LyricLine], StyleCon
     )
     for name, value in (("primary_color", style.primary_color),
                         ("secondary_color", style.secondary_color),
-                        ("outline_color", style.outline_color)):
+                        ("outline_color", style.outline_color),
+                        ("shadow_color", style.shadow_color)):
         try:
             hex_to_ass_color(value)
         except ValueError as exc:
@@ -1761,9 +1791,10 @@ def build_karaoke_ass(lines: list[LyricLine], style: StyleConfig, gap_ms: int = 
         f"{hex_to_ass_color(s.primary_color)},"      # 唱過（高亮）
         f"{hex_to_ass_color(s.secondary_color)},"    # 未唱（底色）
         f"{hex_to_ass_color(s.outline_color)},"
-        "&H80000000,"
+        # BackColour 同時係「陰影色」（BorderStyle=1）；ADR-050 由 UI 控制
+        f"{hex_to_ass_color_alpha(s.shadow_color, s.shadow_opacity)},"
         "0,0,0,0,100,100,0,0,"
-        f"1,{s.outline_width},0,"
+        f"1,{s.outline_width},{s.shadow_width:g},"
         f"{s.alignment},20,20,{s.margin_v},1",
         "",
         "[Events]",
@@ -2287,7 +2318,8 @@ def generate_timings(opts: GenerateOptions, *,
     Args:
         opts: 全部 generate 參數。
         progress_cb: 階段回呼（可選），stage ∈ 抽音/上傳/ASR/斷句/渲染。
-        percent_cb: 進度百分比回呼（0–100，ADR-028）；暫時只有上傳階段會用。
+        percent_cb: 進度百分比回呼（0–100）。ADR-048 起**上傳階段已無回調點**，
+            本參數只為呼叫端相容而保留（UI 的進度條改以跑馬燈 + 已等秒數交代）。
 
     Returns:
         GenerateResult：產出路徑 + 統計。
@@ -2355,20 +2387,12 @@ def generate_timings(opts: GenerateOptions, *,
             _raise_if_cancelled(cancel, stage="人聲分離")
 
         if progress_cb:
-            progress_cb("上傳", "上傳音訊到百煉臨時儲存 …")
+            # ADR-048：SDK 路線冇位元組回調 → 只交代狀態；「已等 Ns」由進度元件自己計
+            progress_cb("上傳", "上傳音訊到百煉臨時儲存（SDK，無百分比）…")
 
-        def _upload_pct(pct: float) -> None:
-            if percent_cb is not None:
-                percent_cb(pct)
-            if progress_cb is not None:
-                progress_cb("上傳", f"上傳音訊 … {pct:.0f}%")
-
-        # 冇 percent_cb 時保持舊呼叫方式（單一位置參數）—— 外部／測試的
-        # monkeypatch 都係 replace 一個食一個參數的函式，唔好破壞佢。
-        if percent_cb is not None:
-            uploaded_url = upload_audio(asr_source, progress_cb=_upload_pct)
-        else:
-            uploaded_url = upload_audio(asr_source)
+        # ⚠️ 唔再傳 progress_cb：以前傳入會令進度條切去「確定模式」然後永遠停在
+        #    0%～7%（自建 multipart 必定失敗），比跑馬燈更差（ADR-048）。
+        uploaded_url = upload_audio(asr_source)
         _raise_if_cancelled(cancel, stage="上傳")
         if progress_cb:
             progress_cb("上傳", "")       # ADR-028：空 message = 呢個階段完成
@@ -2493,6 +2517,12 @@ def cmd_generate(args: argparse.Namespace) -> int:
             alignment=args.alignment,
             margin_v=args.margin_v,
             outline_width=args.outline_width,
+            # ADR-050：陰影（CLI 與 UI 主頁同一組參數）。用 or 兜底 —— render 子命令
+            # 的預設係 None（唔覆寫），唔可以直接塞入 StyleConfig。
+            shadow_width=float(getattr(args, "shadow", 0.0) or 0.0),
+            shadow_color=getattr(args, "shadow_color", None) or "#000000",
+            shadow_opacity=(50 if getattr(args, "shadow_opacity", None) is None
+                            else int(args.shadow_opacity)),
             # ADR-031：提前顯示 / 倒數圓點
             lead_in_ms=getattr(args, "lead_in_ms", 3000),
             countdown_dots=getattr(args, "countdown_dots", True),
@@ -2540,6 +2570,10 @@ def cmd_render(args: argparse.Namespace) -> int:
         ("primary_color", args.primary_color), ("secondary_color", args.secondary_color),
         ("outline_color", args.outline_color), ("margin_v", args.margin_v),
         ("alignment", args.alignment), ("outline_width", args.outline_width),
+        # ADR-050：陰影（None = 唔覆寫，沿用 timings.json 內嵌值）
+        ("shadow_width", getattr(args, "shadow", None)),
+        ("shadow_color", getattr(args, "shadow_color", None)),
+        ("shadow_opacity", getattr(args, "shadow_opacity", None)),
         ("shift_ms", getattr(args, "shift_ms", None)),
         # ADR-031
         ("lead_in_ms", getattr(args, "lead_in_ms", None)),
@@ -2739,6 +2773,19 @@ def add_style_args(parser: argparse.ArgumentParser, *, overrides: bool = False) 
         #    會拋 ValueError: unsupported format character（實測 render -h 直接 crash）
         help="描邊粗細，單位 px（預設 0 = 依 PlayResY 自動推算，一般等於字級的 4%%）。"
              "畫面雜亂時可加粗至 3–4px" + suffix)
+    # ADR-050：陰影（UI 主頁「陰影」三個控件對應項）
+    group.add_argument(
+        "--shadow", type=float, default=None if overrides else 0.0,
+        help="字幕陰影偏移，單位 px（預設 0 = 關閉）。ASS 陰影固定向右下 45°，"
+             "與描邊同樣以 PlayResY 為基準縮放" + suffix)
+    group.add_argument(
+        "--shadow-color", default=None if overrides else "#000000",
+        help="陰影色，十六進位 #RRGGBB（預設 #000000 黑）。淺色畫面可用深灰或"
+             "與描邊同色，避免陰影搶走主字" + suffix)
+    group.add_argument(
+        "--shadow-opacity", type=int, default=None if overrides else 50,
+        help="陰影不透明度 0–100（預設 50；100 = 全不透明、0 = 完全透明）。"
+             "深色 MV 建議調低至 30–40，淺色 MV 可調高至 70" + suffix)
     # ADR-031：提前顯示 / 倒數圓點（UI 主頁「提前顯示」「倒數圓點」對應項）
     group.add_argument(
         "--lead-in-ms", type=int, default=None if overrides else 3000,

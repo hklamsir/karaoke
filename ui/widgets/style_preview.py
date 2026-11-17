@@ -11,7 +11,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 
 from .. import theme
-from .overlay import pixel_font
+from .overlay import blend_over, pixel_font
 
 #: 預覽畫布設計尺寸（§4.5.4：344×180）
 PREVIEW_W = 344
@@ -53,6 +53,8 @@ class StylePreviewCanvas(tk.Canvas):
                   font_size: int = 48, primary_color: str = theme.SUB_PRIMARY,
                   secondary_color: str = theme.SUB_SECONDARY,
                   outline_color: str = "#000000", outline_width: float = 0.0,
+                  shadow_width: float = 0.0, shadow_color: str = "#000000",
+                  shadow_opacity: int = 50,
                   margin_v: int = 0, sung_chars: int = 3,
                   dual_line: bool = False, line_gap_ratio: float = 0.0,
                   alignment: int = 2,
@@ -60,11 +62,16 @@ class StylePreviewCanvas(tk.Canvas):
         """更新樣式並即時重繪。``sung_chars`` = 由頭數起幾多隻字算「唱過」。
 
         ``line_gap_ratio``（ADR-039）= 行距倍數；0 = 用 1.45 舊公式。
+        ``shadow_width`` / ``shadow_color`` / ``shadow_opacity``（ADR-050）= 陰影；
+        0 = 關閉（與 ASS Style 的 ``Shadow`` 同語義）。
         """
         self._style = dict(text=text, font_name=font_name or theme.ui_font_family(),
                            font_size=font_size, primary_color=primary_color,
                            secondary_color=secondary_color, outline_color=outline_color,
-                           outline_width=outline_width, margin_v=margin_v,
+                           outline_width=outline_width,
+                           shadow_width=shadow_width, shadow_color=shadow_color,
+                           shadow_opacity=shadow_opacity,
+                           margin_v=margin_v,
                            sung_chars=sung_chars, dual_line=dual_line,
                            line_gap_ratio=line_gap_ratio,
                            alignment=alignment, up_offset_pct=up_offset_pct,
@@ -94,6 +101,11 @@ class StylePreviewCanvas(tk.Canvas):
         raw_margin = s["margin_v"] or max(24, round(SAMPLE_RES_Y * 0.055))
         margin_v = max(0, round(raw_margin * scale))
         outline = max(1.0, (s["outline_width"] or 3.0) * scale)
+        # ADR-050：陰影（PlayRes px → 畫布 px）；Tk 冇 alpha → 先同影片底色預混
+        shadow_raw = float(s.get("shadow_width") or 0)
+        shadow = max(1, round(shadow_raw * scale)) if shadow_raw > 0 else 0
+        shadow_color = blend_over(s["shadow_color"] or "#000000", theme.VIDEO_BG,
+                                  int(s.get("shadow_opacity", 50)))
 
         family = s["font_name"] if s["font_name"] in tk_font_families_safe() \
             else theme.ui_font_family()
@@ -120,7 +132,8 @@ class StylePreviewCanvas(tk.Canvas):
                 color = hex_or(s["primary_color"], theme.SUB_PRIMARY) if i < sung_count \
                     else hex_or(s["secondary_color"], theme.SUB_SECONDARY)
                 self._draw_char(x, top_y, ch, font, color,
-                                hex_or(s["outline_color"], "#000000"), outline)
+                                hex_or(s["outline_color"], "#000000"), outline,
+                                shadow, shadow_color)
                 x += self._char_w(ch, font)
 
         up_pct = float(s.get("up_offset_pct") or 0)
@@ -152,8 +165,16 @@ class StylePreviewCanvas(tk.Canvas):
         return font.measure(ch) + 1
 
     def _draw_char(self, x: float, y: float, ch: str, font: tkfont.Font,
-                   color: str, outline_color: str, outline: float) -> None:
-        """tkinter Canvas 無原生描邊 → 8 方向疊同色文字模擬（§6.7.5）。"""
+                   color: str, outline_color: str, outline: float,
+                   shadow: float = 0.0, shadow_color: str = "") -> None:
+        """tkinter Canvas 無原生描邊 → 8 方向疊同色文字模擬（§6.7.5）。
+
+        ADR-050：有陰影就先畫右下位移的陰影字，再畫描邊，最後畫主字 ——
+        次序同 libass（陰影在底、描邊在中、主字在上）一致。
+        """
+        if shadow > 0 and shadow_color:
+            self.create_text(x + shadow, y + shadow, text=ch, font=font,
+                             fill=shadow_color, anchor="nw")
         steps = max(1, int(outline))
         for dx in range(-steps, steps + 1, max(1, steps // 1)):
             for dy in range(-steps, steps + 1, max(1, steps // 1)):

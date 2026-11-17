@@ -81,6 +81,38 @@ def resolved_line_gap(style: dict) -> int:
     return max(24, round(font_size * 1.45))
 
 
+def blend_over(fg: str, bg: str, opacity: int) -> str:
+    """把 ``fg`` 按 ``opacity``（0–100）疊在 ``bg`` 上，回傳 ``#RRGGBB``。
+
+    ADR-050：Tk Canvas 的文字**冇 alpha 通道**，半透明陰影只能預先混色。混色
+    基準固定用 ``theme.VIDEO_BG``（主頁預覽的純色底），而編輯頁疊在真片段上時
+    只有近似效果 —— 準確度仍以燒錄成品為準（ADR-038）。
+
+    Args:
+        fg: 前景色 ``#RRGGBB``（陰影色）。
+        bg: 背景色 ``#RRGGBB``（假定底）。
+        opacity: 0–100；0 = 完全透明（回傳 bg）。
+
+    Returns:
+        混色後的 ``#RRGGBB``；任一輸入不合法時回傳 ``bg``。
+    """
+    def _parse(value: str) -> tuple[int, int, int] | None:
+        raw = (value or "").strip().lstrip("#")
+        if len(raw) != 6:
+            return None
+        try:
+            return int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16)
+        except ValueError:
+            return None
+
+    f, b = _parse(fg), _parse(bg)
+    if f is None or b is None:
+        return bg if b is None else f"#{bg.lstrip('#').upper()}"
+    alpha = max(0.0, min(100.0, float(opacity))) / 100.0
+    mixed = tuple(round(fc * alpha + bc * (1 - alpha)) for fc, bc in zip(f, b))
+    return "#{:02X}{:02X}{:02X}".format(*mixed)
+
+
 def _metrics(style: dict, h: float) -> tuple[int, int, int, int]:
     """回傳 ``(size, outline, margin_v, line_gap)``，全部已按畫布縮放。"""
     play_res_y = int(style.get("play_res_y") or 1080) or 1080
@@ -103,7 +135,8 @@ def _char_list(line: dict) -> list[tuple[str, int]]:
 
 
 def _draw_line(canvas: tk.Canvas, center_x: float, top_y: float, line: dict,
-               style: dict, cursor_ms: int, size: int, outline: int) -> float:
+               style: dict, cursor_ms: int, size: int, outline: int,
+               shadow: float = 0.0, shadow_color: str = "") -> float:
     """喺指定中心／頂部位置畫一行逐字變色字幕。
 
     Returns:
@@ -124,7 +157,8 @@ def _draw_line(canvas: tk.Canvas, center_x: float, top_y: float, line: dict,
         sung = cursor_ms >= begin_ms
         color = (style.get("primary_color") or theme.SUB_PRIMARY) if sung \
             else (style.get("secondary_color") or theme.SUB_SECONDARY)
-        _draw_outlined(canvas, x, top_y, ch, font, color, outline_color, outline)
+        _draw_outlined(canvas, x, top_y, ch, font, color, outline_color, outline,
+                       shadow, shadow_color)
         x += cw
     return left
 
@@ -161,8 +195,16 @@ def _layout(style: dict, h: float, y0: float) -> dict[str, Any]:
     else:
         down_top = y0 + h - margin_v - size
         up_top = down_top - gap
+    # ADR-050：陰影（PlayRes px → 畫布 px）。0 = 關；> 0 最少畫 1px，
+    # 否則 720p 縮到預覽尺寸時 1px 陰影會四捨五入成 0 而「睇落冇開」。
+    play_res_y = int(style.get("play_res_y") or 1080) or 1080
+    shadow_raw = float(style.get("shadow_width") or 0)
+    shadow = max(1, round(shadow_raw * h / play_res_y)) if shadow_raw > 0 else 0
+    shadow_color = blend_over(style.get("shadow_color") or "#000000", theme.VIDEO_BG,
+                              int(style.get("shadow_opacity", 50)))
     return {"an": an, "size": size, "outline": outline,
-            "single_top": single_top, "up_top": up_top, "down_top": down_top}
+            "single_top": single_top, "up_top": up_top, "down_top": down_top,
+            "shadow": shadow, "shadow_color": shadow_color}
 
 
 def _dot_xy(left_x: float, row_top: float, layout: dict[str, Any]) -> tuple[float, float]:
@@ -186,7 +228,8 @@ def _draw_dots(canvas: tk.Canvas, left_x: float, dot_top: float, count: int,
     x = left_x
     for _ in range(count):
         _draw_outlined(canvas, x, dot_top, "●", font, color, outline_color,
-                       layout["outline"])
+                       layout["outline"], layout.get("shadow", 0.0),
+                       layout.get("shadow_color", ""))
         x += advance
 
 
@@ -239,7 +282,8 @@ def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
             continue
         center_x, top = row_of(i)
         left_x = _draw_line(canvas, center_x, top, line, style, cursor_ms,
-                            layout["size"], layout["outline"])
+                            layout["size"], layout["outline"],
+                            layout.get("shadow", 0.0), layout.get("shadow_color", ""))
         # 圓點：只在**開唱前**畫（ASS 的圓點 event 也是開唱即結束）。
         # ⚠️ 唔加 `cursor_ms < starts[i]` 的話，唱完之後句尾停留期間會一直
         #    見到 3 粒圓點 -- 同成品唔一致。
@@ -252,8 +296,12 @@ def draw_overlay(canvas: tk.Canvas, x0: float, y0: float, w: float, h: float,
 
 
 def _draw_outlined(canvas: tk.Canvas, x: float, y: float, ch: str,
-                   font: tkfont.Font, color: str, outline_color: str, outline: int) -> None:
-    """8 方向疊字模擬描邊。"""
+                   font: tkfont.Font, color: str, outline_color: str, outline: int,
+                   shadow: float = 0.0, shadow_color: str = "") -> None:
+    """8 方向疊字模擬描邊；有陰影就先畫右下位移的陰影字（ADR-050）。"""
+    if shadow > 0 and shadow_color:
+        canvas.create_text(x + shadow, y + shadow, text=ch, font=font,
+                           fill=shadow_color, anchor="nw")
     for dx in (-outline, 0, outline):
         for dy in (-outline, 0, outline):
             if dx or dy:

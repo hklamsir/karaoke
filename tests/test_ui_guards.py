@@ -125,6 +125,10 @@ _STYLE_SNAPSHOT = {
     "outline_color": "#000000",
     "alignment": 2,
     "outline_width": 2,
+    # ADR-050：陰影三個欄位（真 style_snapshot 一定會帶）
+    "shadow_width": 2.5,
+    "shadow_color": "#101010",
+    "shadow_opacity": 60,
     "margin_v": 40,
 }
 
@@ -232,6 +236,10 @@ def test_build_options_parses_style_snapshot(tmp_path: Path) -> None:
     assert opts.style.alignment == 2
     assert opts.style.outline_width == 2
     assert opts.style.margin_v == 40
+    # ADR-050：陰影三個欄位都要傳到 StyleConfig（漏一個就燒錄冇陰影）
+    assert opts.style.shadow_width == 2.5
+    assert opts.style.shadow_color == "#101010"
+    assert opts.style.shadow_opacity == 60
 
 
 # ---------------------------------------------------------------------------
