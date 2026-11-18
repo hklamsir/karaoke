@@ -148,6 +148,13 @@ class PreviewPane(ttkb.Frame):
                                   state="readonly", values=[n for n, _ in RES_PRESETS])
         res_combo.pack(side="left", padx=(2, 6))
         res_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_view_setting())
+        # ADR-051：以前只寫「解析度」，用戶以為揀 1920×1080 成品就會係 1920×1080，
+        # 但燒錄一直跟原片尺寸。而家真嘅會縮放，所以 tooltip 要講清楚係成品尺寸。
+        from .tooltip import Tooltip
+        Tooltip(res_combo,
+                "成品影片解析度（ADR-051）：燒錄時畫面會按比例縮入此框，"
+                "不足部分補黑邊（唔會裁走畫面）；字幕字級的 px 值不變，"
+                "所以預覽見到的大小＝成品大小。揀「跟原片」= 成品沿用 MV 原始解析度。")
         ttkb.Label(row, text="縮放", bootstyle="secondary",
                    font=(theme.ui_font_family(), 8)).pack(side="left")
         zoom_combo = ttkb.Combobox(row, textvariable=self._zoom_var, width=8,
@@ -263,32 +270,44 @@ class PreviewPane(ttkb.Frame):
         if size == self._source_size:
             return
         self._source_size = size
+        # 原片尺寸變 → contain 後畫面闊度（vw）亦變，舊縮圖快取比例唔再啱用
+        self._photo_cache.clear()
         self._redraw_video()
 
     def _frame_geometry(self, w: float, h: float) -> tuple[float, float, float, float, float]:
-        """回傳 ``(x0, y0, fw, fh, scale)``。
+        """回傳 ``(x0, y0, fw, fh, scale)`` —— ``fw``/``fh`` 係**成品框**（含黑邊）。
 
-        ``scale`` 係「畫面像素 ÷ PlayRes 像素」的實際比例 —— 100% 就係 1:1。
+        ``scale`` 係「成品像素 ÷ PlayRes 像素」的實際比例 —— 100% 就係 1:1。
         窗格唔夠大時自動降到「適合視窗」並喺狀態列顯示**實際**百分比，
         唔會靜靜畫到爆框。
 
-        ⚠️ 畫面**比例**用原片真實尺寸（ADR-046），字幕**基準**用 timings 的
-        PlayRes —— 兩者刻意分開。燒錄只會把字幕疊在原片上，畫面比例永遠跟原片；
-        而「解析度」是模擬的輸出解析度，會改變字幕基準（字級 px 不變）。
-        以前畫面比例借用 PlayRes，改解析度就會連比例一齊變，4:3 的 MV 揀
-        1920×1080 便被拉闊／裁邊（2026-11-12 用戶回報）。
+        ADR-051 改變了語意：ADR-046 時成品框比例跟原片（燒錄亦永遠輸出原片
+        尺寸），所以「揀 1920×1080 但成品仍然 1080×1080」根本反映唔到。
+        現在成品框就是所選解析度的比例，原片畫面以 ``contain`` 方式置中
+        （與 ffmpeg ``scale`` + ``pad`` 完全一致），字幕照成品框座標畫 ——
+        預覽所見＝成品所見。原片真實尺寸仍然用 ``_content_box()`` 決定畫面位置。
         """
         res_w, res_h = self._target_res()
-        style = self._state.doc.get("style") or {}
-        if self._source_size:
-            base_w, base_h = self._source_size
-        else:
-            base_w = int(style.get("play_res_x") or res_w) or res_w
-            base_h = int(style.get("play_res_y") or res_h) or res_h
         zoom = dict(ZOOM_PRESETS).get(self._zoom_var.get(), "fit")
-        fw, fh, scale = fit_frame(w, h, base_w, base_h, res_w, res_h,
+        fw, fh, scale = fit_frame(w, h, res_w, res_h, res_w, res_h,
                                   None if zoom == "fit" else float(zoom))
         return (w - fw) / 2, (h - fh) / 2, fw, fh, scale
+
+    def _content_box(self, x0: float, y0: float, fw: float,
+                     fh: float) -> tuple[float, float, float, float]:
+        """成品框內「原片畫面」的位置 ``(x, y, w, h)``（contain，置中）。
+
+        與 ``main._burn_base()`` 的 ``scale=…:force_original_aspect_ratio=decrease``
+        ＋ ``pad`` 同一套算法，所以預覽見到的黑邊闊度＝成品黑邊闊度。
+        """
+        if not self._source_size:
+            return x0, y0, fw, fh
+        sw, sh = self._source_size
+        if sw <= 0 or sh <= 0:
+            return x0, y0, fw, fh
+        k = min(fw / sw, fh / sh)
+        vw, vh = sw * k, sh * k
+        return x0 + (fw - vw) / 2, y0 + (fh - vh) / 2, vw, vh
 
     def _info_text(self, scale: float) -> str:
         """狀態列：原片尺寸 · 顯示比例（· 字幕基準）· 字級警告。
@@ -307,7 +326,11 @@ class PreviewPane(ttkb.Frame):
         play_h = int(style.get("play_res_y") or base_h) or base_h
         text = f"{base_w}×{base_h} · {scale * 100:.0f}%"
         if (play_w, play_h) != (base_w, base_h):
-            text += f" · 字幕 {play_w}×{play_h}"
+            # ADR-051：呢個數字係**成品**尺寸（燒錄會縮放＋補黑邊），
+            # 以前寫「字幕 WxH」令人以為只影響字幕。
+            text += f" · 成品 {play_w}×{play_h}"
+            if base_h and play_h and abs(base_w / base_h - play_w / play_h) > 0.01:
+                text += "（加黑邊）"
         font = int(style.get("font_size") or 48)
         longest = max((len(str(ln.get("text") or "")) for ln in self._state.lines),
                       default=0)
@@ -339,18 +362,64 @@ class PreviewPane(ttkb.Frame):
         為何要改 PlayRes 而唔止改畫面比例：字級與留白都是相對 PlayRes 的 px 值，
         只改畫面比例的話，選 720p 模擬低清輸出時字幕仍然按舊基準縮放，
         見到的字級同所選解析度完全脫節。
+
+        ADR-051：同時寫入根層 ``doc["output_res"]`` —— 燒錄靠這個欄位決定成品
+        尺寸（``main._burn_base`` 會 scale + pad），``"auto"`` 時刪除該欄位。
+        無此欄位的舊檔一律當「跟原片」，行為不變。
         """
         target = (self._source_size if mode == "auto" and self._source_size
                   else self._target_res())
         if not target:
             return
-        style = self._state.doc.setdefault("style", {})
+        doc = self._state.doc
+        style = doc.setdefault("style", {})
         current = (int(style.get("play_res_x") or 0), int(style.get("play_res_y") or 0))
-        if current == target:
+        changed = current != target
+        if changed:
+            style["play_res_x"], style["play_res_y"] = int(target[0]), int(target[1])
+        if mode == "auto":
+            if doc.pop("output_res", None) is not None:
+                changed = True
+        else:
+            wanted = [int(target[0]), int(target[1])]
+            # 所選解析度等於原片尺寸 → 成品同「跟原片」完全一樣，毋須標記，
+            # 咁樣喺原片上重覆揀同一個值唔會無故令檔案變 dirty。
+            same_as_source = (self._source_size is not None
+                              and tuple(wanted) == tuple(self._source_size))
+            if same_as_source:
+                if doc.pop("output_res", None) is not None:
+                    changed = True
+            elif doc.get("output_res") != wanted:
+                doc["output_res"] = wanted
+                changed = True
+        if not changed:
             return
-        style["play_res_x"], style["play_res_y"] = target
         self._state.dirty = True
         self._state.notify("edit")
+
+    def sync_res_from_doc(self) -> None:
+        """開檔後把「解析度」下拉對齊 timings.json 記錄（ADR-051）。
+
+        以前下拉只讀 ``settings.json`` 的全域偏好，開一份「跟原片」的檔時會顯示
+        上次揀過的 1920×1080 —— 講一套做一套。現在以**文件**為準：
+        有 ``output_res`` 就顯示該值（非預設值落到「自訂…」），冇就顯示「跟原片」。
+        """
+        doc = self._state.doc or {}
+        res = doc.get("output_res")
+        try:
+            w, h = int(res[0]), int(res[1])
+        except (TypeError, IndexError, ValueError):
+            self._res_var.set(RES_PRESETS[0][0])
+            return
+        for label, value in RES_PRESETS:
+            if value == f"{w}x{h}":
+                self._res_var.set(label)
+                return
+        from .. import settings as ui_settings
+        data = ui_settings.load()
+        data["preview_res_custom"] = [w, h]
+        ui_settings.save(data)
+        self._res_var.set(_RES_BY_VALUE.get("custom", "自訂…"))
 
     def _ask_custom_res(self) -> bool:
         """問自訂闊×高；成功寫入 settings 並回傳 True。"""
@@ -503,6 +572,9 @@ class PreviewPane(ttkb.Frame):
         # ADR-032：畫面框按所選解析度／縮放擺位（唔再寫死 16:9）
         x0, y0, fw, fh, scale = self._frame_geometry(w, h)
         self._view_info_var.set(self._info_text(scale))
+        # ADR-051：先畫成品框（黑底 = 燒錄時補的黑邊），再把原片 contain 置中
+        vx, vy, vw, vh = self._content_box(x0, y0, fw, fh)
+        canvas.create_rectangle(x0, y0, x0 + fw, y0 + fh, fill="#000000", outline="")
 
         self._photo = None
         if self._thumbs is not None:
@@ -515,7 +587,7 @@ class PreviewPane(ttkb.Frame):
                 path = self._thumbs.frame_path(idx * 1000 // self._thumbs.FPS)
                 if path is not None and Path(path).is_file():
                     try:
-                        photo = self._fit_photo(tk.PhotoImage(file=str(path)), fw)
+                        photo = self._fit_photo(tk.PhotoImage(file=str(path)), vw)
                         self._photo_cache[idx] = photo
                         while len(self._photo_cache) > 3:
                             self._photo_cache.pop(next(iter(self._photo_cache)))
@@ -523,7 +595,7 @@ class PreviewPane(ttkb.Frame):
                         LOGGER.warning("縮圖載入失敗：%s", exc)
             if photo is not None:
                 self._photo = photo
-                canvas.create_image(x0, y0, image=photo, anchor="nw")
+                canvas.create_image(vx, vy, image=photo, anchor="nw")
         else:
             canvas.create_text(x0 + fw / 2, y0 + fh / 2, text="冇預覽畫面",
                                fill=theme.FG_DIM, font=(theme.ui_font_family(), 11))

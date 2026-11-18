@@ -110,3 +110,20 @@ def test_burn_outside_subtitle_window_is_near_identical(media: dict[str, Path],
         f"字幕時段差異 {with_sub} 唔顯著大過非字幕時段 {without_sub}，"
         "可能畫面本身變化就蓋過字幕效果"
     )
+
+def test_out_size_really_changes_output_resolution(media: dict[str, Path],
+                                                   ffprobe: str,
+                                                   tmp_path: Path) -> None:
+    """ADR-051：指定成品尺寸 → 輸出的真實解析度必須係該尺寸。
+
+    用戶回報「改 1920×1080 但成品仍然 1080×1080」，根因係 filter chain 冇 scale。
+    本測試實際編碼一次，用 ffprobe 讀回輸出尺寸（唔信命令字串）。
+    """
+    _require_ffmpeg_on_path()
+    out = tmp_path / "burned_720p.mp4"
+
+    main.burn_video(media["same"], media["ass"], out, out_size=(1280, 720))
+
+    assert out.is_file() and out.stat().st_size > 50_000
+    assert main.probe_video_size(ffprobe, out) == (1280, 720)
+    assert main.probe_audio_codec(ffprobe, out) is not None, "縮放唔應該影響音軌"

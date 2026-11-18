@@ -2059,6 +2059,8 @@ def _burn_base(
     background: dict[str, Any] | None,
     workdir: Path,
     total_ms: int,
+    *,
+    out_size: tuple[int, int] | None = None,
 ) -> list[str]:
     """組燒錄命令的「輸入 + 濾鏡 + 視訊編碼」部分（唔包音軌同輸出檔）。
 
@@ -2072,7 +2074,7 @@ def _burn_base(
         ffmpeg: 執行檔路徑。
         video: 來源（影片，或冇視訊軌的 mp3/wav）。
         ass_name: ASS **檔名**（同 ``workdir`` 同層；ADR-006 唔准寫絕對路徑）。
-        play_res_x: ASS 座標系闊（= 背景解析度）。
+        play_res_x: ASS 座標系闊（字幕字級／留白的基準）。
         play_res_y: ASS 座標系高。
         background: ``None`` = 來源本身有視訊軌。dict 格式：
             ``{"mode": "color"|"image", "color": "#RRGGBB",
@@ -2080,6 +2082,10 @@ def _burn_base(
         workdir: ffmpeg 的 cwd，所有路徑都相對它。
         total_ms: 來源時長（ms）。>0 時用 ``-t`` 封頂，否則用 ``-shortest``
             （``-loop 1`` 的圖片同 lavfi 純色都係無限長，冇封頂就永遠唔停）。
+        out_size: 指定**成品畫面尺寸** ``(闊, 高)``（ADR-051）。``None`` = 維持
+            來源尺寸（舊行為）。指定時先按比例縮到框內再補黑邊（``contain``），
+            唔會裁走畫面；``ass=`` 仍然係最後一個 filter，字幕按原始座標系疊上，
+            所以字級 px 不變、位置與預覽一致。
 
     Returns:
         subprocess 參數（未含音軌編碼與輸出檔）。
@@ -2092,6 +2098,16 @@ def _burn_base(
     color = "0x000000"
     image: Path | None = None
     fit = "cover"
+    #: 成品尺寸前綴（scale + pad）。空字串 = 唔改尺寸。
+    prefix = ""
+    if out_size is not None:
+        ow, oh = int(out_size[0]), int(out_size[1])
+        if ow > 0 and oh > 0:
+            # force_divisible_by=2：libx264 + yuv420p 要求偶數邊；縮放後可能是
+            # 奇數（例如 3:2 素材縮到 720 高），先夾成偶數再補邊，唔會編碼失敗。
+            prefix = (f"scale={ow}:{oh}:force_original_aspect_ratio=decrease"
+                      f":force_divisible_by=2,"
+                      f"pad={ow}:{oh}:(ow-iw)/2:(oh-ih)/2:color=0x000000,")
     if background:
         mode = str(background.get("mode") or "color")
         raw = str(background.get("color") or "#000000").lstrip("#") or "000000"
@@ -2119,17 +2135,17 @@ def _burn_base(
             bgf = (f"scale={play_res_x}:{play_res_y}"
                    f":force_original_aspect_ratio=increase,"
                    f"crop={play_res_x}:{play_res_y}")
-        vf = f"{bgf},{ass_filter}"
+        vf = f"{bgf},{prefix}{ass_filter}"
         mapping = ["-map", "0:v:0", "-map", "1:a:0"]
     elif mode == "color":
         inputs = ["-f", "lavfi", "-i",
                   f"color=c={color}:s={play_res_x}x{play_res_y}:r=25",
                   "-i", _rel_or_abs(video, workdir)]
-        vf = ass_filter
+        vf = f"{prefix}{ass_filter}"
         mapping = ["-map", "0:v:0", "-map", "1:a:0"]
     else:
         inputs = ["-i", _rel_or_abs(video, workdir)]
-        vf = ass_filter
+        vf = f"{prefix}{ass_filter}"
         mapping = []
 
     base = [ffmpeg, "-y", "-v", "error", *inputs, "-vf", vf, *mapping,
@@ -2155,6 +2171,7 @@ def burn_subtitles(
     cancel_event: threading.Event | None = None,
     total_ms: int = 0,
     progress_cb: Callable[[int, int], None] | None = None,
+    out_size: tuple[int, int] | None = None,
 ) -> None:
     """把 ASS 燒錄進影片。
 
@@ -2174,6 +2191,7 @@ def burn_subtitles(
         play_res_x: ASS 座標系寬（ADR-006）。
         play_res_y: ASS 座標系高。
         audio_codec: 原片音軌 codec，用於決定 ``-c:a copy`` 抑或降級 aac。
+        out_size: 指定成品畫面尺寸（ADR-051）；``None`` = 跟來源尺寸。
         cancel_event: 取消旗標（ADR-025）；命中時拋 ``TaskCancelled`` 並刪除
             半截輸出檔。
 
@@ -2193,7 +2211,7 @@ def burn_subtitles(
 
     try:
         base = _burn_base(ffmpeg, video, ass_name, play_res_x, play_res_y,
-                          background, workdir, total_ms)
+                          background, workdir, total_ms, out_size=out_size)
         # ADR-009：音軌優先用 copy，唔相容就降級 aac 192k
         if audio_codec in {"aac", "mp3", "ac3", "eac3", "alac"}:
             audio_args = ["-c:a", "copy"]
@@ -2623,7 +2641,8 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
                background: dict[str, Any] | None = None,
                progress_cb: ProgressCB | None = None,
                percent_cb: Callable[[float], None] | None = None,
-               cancel_event: threading.Event | None = None) -> Path:
+               cancel_event: threading.Event | None = None,
+               out_size: tuple[int, int] | None = None) -> Path:
     """影片 + .ass → 燒錄 mp4（UI 入口；CLI 見 cmd_burn）。
 
     ADR-012：座標系由 .ass 自己讀出，唔使依賴 timings.json。
@@ -2640,6 +2659,9 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         percent_cb: 編碼百分比回呼（0–100），供進度條用（ADR-028）。
         cancel_event: 取消旗標（ADR-025）；命中時 ffmpeg 會被終止，
             半截輸出檔會被刪除，並拋 :class:`TaskCancelled`。
+        out_size: 成品畫面尺寸 ``(闊, 高)``（ADR-051）。``None`` = 跟來源尺寸。
+            指定時畫面按比例縮入框內並補黑邊（唔裁切），字幕按 ASS 座標系
+            疊上 —— 令「預覽揀的解析度」真正反映在成品上。
 
     Returns:
         輸出 mp4 路徑。
@@ -2684,10 +2706,40 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
                    play_res_x=width, play_res_y=height, audio_codec=audio_codec,
                    background=background,
                    cancel_event=cancel_event, total_ms=total_ms,
-                   progress_cb=_tick if (progress_cb or percent_cb) else None)
+                   progress_cb=_tick if (progress_cb or percent_cb) else None,
+                   out_size=out_size)
     if progress_cb:
         progress_cb("燒錄", "完成")
     return output_path
+
+
+def parse_size(text: str | None) -> tuple[int, int] | None:
+    """把 ``1920x1080``（或 ``1920×1080`` / ``1920*1080``）解析成 ``(闊, 高)``。
+
+    Args:
+        text: 使用者輸入；``None`` / 空字串 → ``None``（= 唔指定）。
+
+    Returns:
+        ``(wide, high)``；兩個值都必須 > 0。
+
+    Raises:
+        UsageError: 格式無法解析或數值不合理。
+
+    Examples:
+        >>> parse_size("1920x1080")
+        (1920, 1080)
+    """
+    if not text or not str(text).strip():
+        return None
+    cleaned = str(text).strip().lower().replace("×", "x").replace("*", "x")
+    try:
+        w_str, h_str = cleaned.split("x")
+        w, h = int(w_str), int(h_str)
+    except (ValueError, AttributeError) as exc:
+        raise UsageError(f"解析度格式唔啱：{text!r}（要 WxH，例如 1920x1080）") from exc
+    if not (16 <= w <= 7680 and 16 <= h <= 4320):
+        raise UsageError(f"解析度超出合理範圍：{w}x{h}（闊 16–7680、高 16–4320）")
+    return w, h
 
 
 def cmd_burn(args: argparse.Namespace) -> int:
@@ -2710,8 +2762,10 @@ def cmd_burn(args: argparse.Namespace) -> int:
         "image": getattr(args, "bg_image", None),
         "fit": getattr(args, "bg_fit", "cover") or "cover",
     }
-    burn_video(video, ass_path, output, background=background)
-    LOGGER.info("完成 ✅  影片：%s", output)
+    out_size = parse_size(getattr(args, "out_size", None))
+    burn_video(video, ass_path, output, background=background, out_size=out_size)
+    LOGGER.info("完成 ✅  影片：%s%s", output,
+                f"（{out_size[0]}×{out_size[1]}）" if out_size else "")
     return 0
 
 
@@ -2931,6 +2985,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="背景圖片路徑（jpg/png）。提供時優先於 --bg-color")
     b.add_argument("--bg-fit", choices=["cover", "contain"], default="cover",
                    help="背景圖片填充：cover = 填滿裁切（預設）、contain = 完整顯示加邊")
+    b.add_argument("--out-size", metavar="WxH",
+                   help="指定成品解析度（例如 1920x1080）。畫面按比例縮入框內並補黑邊，"
+                        "唔會裁切；預設沿用來源尺寸（ADR-051）")
     b.set_defaults(func=cmd_burn)
 
     return parser

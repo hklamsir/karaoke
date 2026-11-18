@@ -89,6 +89,35 @@ def probe_media(ffprobe: str, path: Path) -> dict[str, Any]:
             "has_video": has_video, "size": size}
 
 
+def output_res_text(out_size: tuple[int, int] | None,
+                    source_size: tuple[int, int] | None,
+                    has_video: bool = True) -> str:
+    """組「成品解析度」說明文字（ADR-051）。
+
+    Args:
+        out_size: 文件指定的成品尺寸；``None`` = 跟燒錄來源。
+        source_size: 目前已選來源的畫面尺寸（音檔給 ``(0, 0)``）。
+        has_video: 來源是否有視訊軌。
+
+    Returns:
+        一句人讀說明，例如
+        ``成品解析度：1920×1080（來源 1080×1080，會補黑邊）``。
+    """
+    if not out_size:
+        if has_video and source_size and source_size[0]:
+            return f"成品解析度：跟燒錄來源（{source_size[0]}×{source_size[1]}）"
+        return "成品解析度：跟燒錄來源"
+    ow, oh = int(out_size[0]), int(out_size[1])
+    if not has_video or not source_size or not source_size[0]:
+        return f"成品解析度：{ow}×{oh}（音檔背景合成）"
+    sw, sh = int(source_size[0]), int(source_size[1])
+    if (sw, sh) == (ow, oh):
+        return f"成品解析度：{ow}×{oh}（與來源相同）"
+    same_aspect = sh and abs((sw / sh) - (ow / oh)) < 0.01
+    how = "等比例縮放" if same_aspect else "會補黑邊"
+    return f"成品解析度：{ow}×{oh}（來源 {sw}×{sh}，{how}）"
+
+
 def compare_sources(ffprobe: str, source: Path, original: Path, *,
                     source_info: dict[str, Any] | None = None,
                     original_info: dict[str, Any] | None = None) -> tuple[list[str], bool]:
@@ -142,6 +171,7 @@ def ask_burn_source(
     style_text: str,
     ffprobe: str = "",
     last_dir: Path | None = None,
+    out_size: tuple[int, int] | None = None,
 ) -> dict[str, Any] | None:
     """彈出燒錄設定（modal），回傳燒錄計劃。
 
@@ -151,6 +181,8 @@ def ask_burn_source(
         style_text: 字幕樣式摘要。
         ffprobe: 用嚟做時長／比例比對；空字串 = 唔比對。
         last_dir: 開檔對話框的起始目錄。
+        out_size: 文件指定的成品解析度 ``(闊, 高)``（ADR-051）；``None`` = 跟來源。
+            只作顯示 —— 實際縮放由 ``main.burn_video`` 執行。
 
     Returns:
         ``{"source": Path, "bg_mode": "color"|"image", "bg_color": "#RRGGBB",
@@ -162,7 +194,7 @@ def ask_burn_source(
     """
     win, state, _on_ok = build_burn_dialog(
         parent, default_video=default_video, style_text=style_text,
-        ffprobe=ffprobe, last_dir=last_dir)
+        ffprobe=ffprobe, last_dir=last_dir, out_size=out_size)
     _grab_when_ready(win)
     win.wait_window()
     # 確認路徑會 destroy 個窗，所以靠旗標分辨「確認」同「取消／關窗」
@@ -187,6 +219,7 @@ def build_burn_dialog(
     style_text: str,
     ffprobe: str = "",
     last_dir: Path | None = None,
+    out_size: tuple[int, int] | None = None,
 ) -> tuple[ttkb.Toplevel, dict, callable]:
     """建立（但唔阻塞）燒錄設定視窗 —— 供截圖／自動化測試。
 
@@ -259,6 +292,14 @@ def build_burn_dialog(
     ttkb.Label(body, textvariable=info_var, bootstyle="secondary",
                font=(theme.ui_font_family(), 9), wraplength=SIZE[0] - 60,
                justify="left").pack(anchor="w", pady=(8, 0))
+
+    # ADR-051：成品解析度（文件層「解析度」下拉指定；無指定就跟來源）。
+    # 用戶回報「改了 1920×1080 但成品仍然 1080×1080」——以前成品尺寸永遠跟原片，
+    # 呢一行就係燒錄前最後一次講清楚會出幾大。
+    out_var = tk.StringVar(value=output_res_text(out_size, None))
+    ttkb.Label(body, textvariable=out_var, bootstyle="secondary",
+               font=(theme.ui_font_family(), 9), wraplength=SIZE[0] - 60,
+               justify="left").pack(anchor="w", pady=(4, 0))
 
     warn_label = ttkb.Label(body, text="", bootstyle="warning",
                             font=(theme.ui_font_family(), 9),
@@ -368,9 +409,11 @@ def build_burn_dialog(
             info_var.set(f"時長 {_fmt_ms(src_info['duration_ms'])}"
                          f"　·　原片 {_fmt_ms(org_info['duration_ms'])}")
             has_video = bool(src_info["has_video"])
+            out_var.set(output_res_text(out_size, src_info["size"], has_video))
         else:
             warnings, usable, has_video = [], True, True
             info_var.set("")
+            out_var.set(output_res_text(out_size, None, True))
         state["warnings"] = warnings
         state["usable"] = usable
         state["has_video"] = has_video

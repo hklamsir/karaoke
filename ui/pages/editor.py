@@ -83,7 +83,6 @@ class EditorPage(ttkb.Frame):
         tree_box.pack(fill="both", expand=True)
         self._tree = LyricTree(tree_box, self._state,
                                on_play_line=self._play_line,
-                               on_add_line=self._show_add_line_bar,
                                on_insert_line_at=self._insert_line_at,
                                on_delete_line=self._delete_line,
                                on_edit_line=self._edit_selected_line)
@@ -515,7 +514,21 @@ class EditorPage(ttkb.Frame):
         self._align_play_res()
         # ADR-015：開檔即把該片樣式反映去主頁面板（所見即所燒）
         self._sync_home_style()
+        # ADR-051：下拉要顯示**這份文件**的成品解析度，唔係上次的全域偏好
+        try:
+            self._preview.sync_res_from_doc()
+        except Exception:      # noqa: BLE001 — 顯示同步失敗唔應該阻住開檔
+            LOGGER.exception("同步輸出解析度下拉失敗")
         return True
+
+    def _output_res(self) -> tuple[int, int] | None:
+        """文件指定的成品解析度 ``(闊, 高)``；``None`` = 跟原片（ADR-051）。"""
+        raw = (self._state.doc or {}).get("output_res")
+        try:
+            w, h = int(raw[0]), int(raw[1])
+        except (TypeError, IndexError, ValueError):
+            return None
+        return (w, h) if w > 0 and h > 0 else None
 
     def _align_play_res(self) -> None:
         """把 timings 的 PlayRes 對齊原片真實解析度（ADR-044）。
@@ -526,6 +539,11 @@ class EditorPage(ttkb.Frame):
 
         對齊時**唔改字級**：字級是使用者直接調的 px 值，換片後應以新片為基準；
         純音檔（冇視訊軌）唔動座標系，因為它沿用固定的 1920×1080。
+
+        ADR-051：文件已用「解析度」下拉指定成品尺寸（``doc["output_res"]``）時
+        **唔覆寫** PlayRes —— 以前每次開檔都抹走用戶的選擇，令預覽揀的解析度
+        其實存唔住，燒錄亦永遠跟原片。指定了解析度就以該值為準，畫面在燒錄時
+        縮放補邊。
         """
         video = self._state.video_path
         if video is None or not Path(video).is_file():
@@ -544,6 +562,17 @@ class EditorPage(ttkb.Frame):
             return
         # 畫面比例用真實尺寸（ADR-046）；字幕基準見 style.play_res_*
         self._preview.set_source_size(w, h)
+        pinned = self._output_res()
+        if pinned is not None:
+            style = self._state.doc.setdefault("style", {})
+            cur = (int(style.get("play_res_x") or 0), int(style.get("play_res_y") or 0))
+            if cur != pinned:
+                style["play_res_x"], style["play_res_y"] = pinned
+                self._state.dirty = True
+                self._state.notify("edit")
+            LOGGER.info("已指定成品解析度 %d×%d（原片 %d×%d），唔對齊 PlayRes",
+                        pinned[0], pinned[1], w, h)
+            return
         style = self._state.doc.setdefault("style", {})
         old_w = int(style.get("play_res_x") or 0)
         old_h = int(style.get("play_res_y") or 0)
@@ -767,6 +796,7 @@ class EditorPage(ttkb.Frame):
             style_text=_describe_style(home_style),
             ffprobe=ffprobe,
             last_dir=last_dir,
+            out_size=self._output_res(),
         )
         if plan is None:
             return
@@ -806,10 +836,27 @@ class EditorPage(ttkb.Frame):
         import main as _main
         from dataclasses import replace as _replace
         _, doc_style = _main.timings_doc_to_lines(doc)
-        # ADR-006 補強：座標系要跟**燒錄片**，唔係 timings 的出處。
-        # 舊 timings 可能來自 480p（640×480），直接沿用會令 16:9 的片字幕走位／變形。
-        # 按高度比例換算字級／留白／描邊，令視覺大小保持不變（之後 home_style 會覆寫）。
-        if ffprobe:
+        # ADR-051：文件指定了成品解析度（預覽「解析度」下拉）→ 成品就係該尺寸，
+        # PlayRes 跟它、字級 px 唔換算，燒錄時畫面縮放＋補黑邊（out_size）。
+        # 舊 timings 可能來自 480p，直接沿用會令 16:9 的片字幕走位／變形。
+        pinned = self._output_res()
+        out_size: tuple[int, int] | None = None
+        if pinned is not None:
+            doc_style = _replace(doc_style, play_res_x=pinned[0], play_res_y=pinned[1])
+            LOGGER.info("成品解析度（文件指定）：%d×%d", pinned[0], pinned[1])
+            if ffprobe:
+                try:
+                    has_video = _main.probe_has_video(ffprobe, source)
+                    src_w, src_h = _main.probe_video_size(ffprobe, source)
+                    if has_video and (src_w, src_h) != pinned:
+                        out_size = pinned
+                        LOGGER.info("燒錄畫面 %d×%d → %d×%d（縮放＋補黑邊）",
+                                    src_w, src_h, pinned[0], pinned[1])
+                except Exception as exc:   # noqa: BLE001 — 讀唔到就唔縮放
+                    LOGGER.warning("讀取燒錄片解析度失敗（%s），維持來源尺寸", exc)
+        # ADR-006 補強：未指定成品解析度時，座標系要跟**燒錄片**（唔係 timings 出處），
+        # 並按高度比例換算字級／留白／描邊，令視覺大小保持不變。
+        elif ffprobe:
             try:
                 src_w, src_h = _main.probe_video_size(ffprobe, source)
                 old_h = doc_style.play_res_y or src_h
@@ -877,7 +924,8 @@ class EditorPage(ttkb.Frame):
                 _main.burn_video(source, ass_path, output, background=background,
                                  progress_cb=prog.report,
                                  percent_cb=prog.set_fraction,
-                                 cancel_event=cancel_event)
+                                 cancel_event=cancel_event,
+                                 out_size=out_size)
             except _main.TaskCancelled:
                 # 取消唔算失敗：唔彈 error dialog（半截輸出檔已由 burn_subtitles 刪除）
                 prog.fail("已取消（未產生輸出檔）")
@@ -1179,21 +1227,18 @@ class EditorPage(ttkb.Frame):
             preset=text, select_all=True)
 
     def _show_add_line_bar(self, at_line_i: int | None = None) -> None:
-        """＋ 新增歌詞行（inline 版）。
+        """新增歌詞行（inline 版）。
 
-        時間優先序（2026-11-11 用戶需求 #3）：時間軸拖曳範圍 → 游標所在空白段 →
-        片尾。舊版永遠寫喺「尾行 +3 秒」，所以**無字幕區段**（例如第 3、4 行之間）
-        完全加唔到 AI 認漏嘅一句。
+        時間優先序：指定行之前的空隙 → 游標所在空白段 → 片尾。
+
+        2026-11-17：移除「時間軸拖曳框選範圍」入口（見 ``timeline.py`` 註解），
+        新增行一律由「＋ 此行前／後」或右鍵選單觸發，時間自動塞入空隙。
         """
         st = self._state
         if st.path is None:
             messagebox.showinfo("新增歌詞行", "先開一個 timings.json（或先完成一次辨識）。")
             return
-        rng = self._timeline.range_ms() if hasattr(self._timeline, "range_ms") else None
-        if rng is not None and rng[1] - rng[0] >= 100:
-            start, end = rng
-            where = "時間軸拖曳範圍"
-        elif at_line_i is not None:
+        if at_line_i is not None:
             start, end = self._span_before_line(at_line_i)
             where = "該行前面的空隙"
         else:
@@ -1402,8 +1447,6 @@ class EditorPage(ttkb.Frame):
                 last_end = int(self._state.lines[-1].get("end_ms", 0)) if self._state.lines else 0
                 start, end = last_end + 500, last_end + 3500
             self._state.push(AddLine(start, end, text, at_line_i=at_line_i))
-            if hasattr(self._timeline, "clear_range"):
-                self._timeline.clear_range()
             self._ask_span = None
         else:
             return

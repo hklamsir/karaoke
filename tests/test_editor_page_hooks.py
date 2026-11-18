@@ -144,6 +144,8 @@ def preview(app, sample_doc, tmp_path):
     yield pane
     style = editor._state.doc["style"]
     style["play_res_x"], style["play_res_y"] = 1920, 1080
+    # ADR-051：成品解析度會寫入 doc，測完要清走（同一個 App 跨測試共用）
+    editor._state.doc.pop("output_res", None)
 
 
 def _play_res(preview) -> tuple[int, int]:
@@ -180,6 +182,43 @@ def test_same_resolution_is_noop(preview) -> None:
     assert preview._state.dirty is False
 
 
+def test_non_source_resolution_is_persisted_in_doc(preview) -> None:
+    """ADR-051：揀咗同原片不同的解析度 → 寫入 doc["output_res"]（燒錄靠它）。
+
+    用戶回報：1080×1080 原片揀 1920×1080，重開檔案又變回 1080×1080 ——
+    因為以前只改 style.play_res，而 ``_align_play_res()`` 開檔時會覆寫。
+    """
+    preview.set_source_size(1080, 1080)
+    preview._res_var.set("1920×1080")
+    preview._sync_play_res("1920x1080")
+
+    assert preview._state.doc["output_res"] == [1920, 1080]
+    assert _play_res(preview) == (1920, 1080)
+
+
+def test_auto_removes_pinned_output_res(preview) -> None:
+    """揀「跟原片」→ 清走 output_res（燒錄回到跟來源尺寸）。"""
+    preview.set_source_size(1080, 1080)
+    preview._sync_play_res("1920x1080")
+    assert "output_res" in preview._state.doc
+
+    preview._sync_play_res("auto")
+
+    assert "output_res" not in preview._state.doc
+    assert _play_res(preview) == (1080, 1080)
+
+
+def test_res_dropdown_follows_document(preview) -> None:
+    """下拉顯示**這份文件**的成品解析度，唔係 settings.json 的上次偏好。"""
+    preview._state.doc.pop("output_res", None)
+    preview.sync_res_from_doc()
+    assert preview._res_var.get() == "跟原片"
+
+    preview._state.doc["output_res"] = [1280, 720]
+    preview.sync_res_from_doc()
+    assert preview._res_var.get() == "1280×720"
+
+
 def test_frame_aspect_ignores_resolution(preview) -> None:
     """畫面比例永遠跟原片：選 720p 前後，fw/fh 比例不變。"""
     preview.set_source_size(1920, 1080)
@@ -193,11 +232,22 @@ def test_frame_aspect_ignores_resolution(preview) -> None:
     assert fw2 / fh2 == pytest.approx(16 / 9)
 
 
-def test_43_source_stays_43_after_res_change(preview) -> None:
-    """4:3 原片即使選 1920×1080，畫面仍然 4:3（只改字幕基準）。"""
+def test_43_source_is_pillarboxed_in_169_output(preview) -> None:
+    """ADR-051：4:3 原片選 1920×1080 → 成品框 16:9、原片畫面仍然 4:3（左右黑邊）。
+
+    ADR-046 時代成品框跟原片比例、成品尺寸亦跟原片，預覽與成品一致但
+    「揀 1920×1080」根本冇效果；現在成品框＝所選解析度，原片以 contain 置中，
+    黑邊闊度與 ffmpeg ``pad`` 相同，所以預覽仍然等於成品。
+    """
     preview.set_source_size(640, 480)
     preview._res_var.set("1920×1080")
     preview._sync_play_res("1920x1080")
-    _x, _y, fw, fh, _s = preview._frame_geometry(1000, 1000)
-    assert fw / fh == pytest.approx(4 / 3)
+
+    x0, y0, fw, fh, _s = preview._frame_geometry(1000, 1000)
+    vx, vy, vw, vh = preview._content_box(x0, y0, fw, fh)
+
+    assert fw / fh == pytest.approx(16 / 9), "成品框比例＝所選解析度"
+    assert vw / vh == pytest.approx(4 / 3), "原片畫面唔可以被拉闊"
+    assert vw < fw, "4:3 放入 16:9 一定要有左右黑邊"
+    assert vx > x0, "原片畫面要置中（左邊有黑邊）"
     assert _play_res(preview) == (1920, 1080)

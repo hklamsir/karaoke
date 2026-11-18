@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import tkinter as tk
-import tkinter.messagebox as messagebox
 from typing import Callable
 
 import ttkbootstrap as ttkb
@@ -23,7 +22,6 @@ class LyricTree(ttkb.Frame):
     def __init__(self, master, state, *,
                  on_select_line: Callable[[int], None] | None = None,
                  on_play_line: Callable[[int], None] | None = None,
-                 on_add_line: Callable[[], None] | None = None,
                  on_insert_line_at: Callable[[int], None] | None = None,
                  on_delete_line: Callable[[int], None] | None = None,
                  on_edit_line: Callable[[int], None] | None = None) -> None:
@@ -31,7 +29,6 @@ class LyricTree(ttkb.Frame):
         self._state = state
         self._on_select_line = on_select_line
         self._on_play_line = on_play_line
-        self._on_add_line = on_add_line
         self._on_insert_line_at = on_insert_line_at
         self._on_delete_line = on_delete_line
         self._on_edit_line = on_edit_line
@@ -65,10 +62,9 @@ class LyricTree(ttkb.Frame):
         self._tree.bind("<Button-3>", self._on_right_click)
         self._menu = tk.Menu(self, tearoff=False)
 
-        # ＋ 新增歌詞行（虛線框效果用 outline bootstyle）
-        ttkb.Button(self, text="+ 新增歌詞行（時間軸拖曳範圍／游標位置）",
-                    bootstyle="secondary-outline", takefocus=False,
-                    command=self._add_line_tail).pack(fill="x", pady=(2, 0))
+        # 2026-11-17 用戶需求：移除「＋ 新增歌詞行（時間軸拖曳範圍／游標位置）」——
+        # 佢 pack 喺 Treeview 之後，左欄固定 386px 時被擠到完全睇唔到；
+        # 而新增行已有三個入口（工具列「＋ 此行前／後」、右鍵選單），毋須第四個。
 
         state.add_observer(self._on_state_change)
         self.refresh()
@@ -195,60 +191,3 @@ class LyricTree(ttkb.Frame):
         """叫 callback（未接線就靜靜唔做，唔會爆）。"""
         if fn is not None:
             fn(arg)
-
-    def _add_line_tail(self) -> None:
-        # 用戶回報 _ask_text 彈窗冇生效 → 由 editor page 提供 inline 輸入列
-        if self._on_add_line is not None:
-            self._on_add_line()
-            return
-        last_end = 0
-        if self._state.lines:
-            last_end = int(self._state.lines[-1].get("end_ms", 0))
-        from ..commands import AddLine
-        new = _ask_text(self, "新增歌詞行", "歌詞（時間：尾行後 +3 秒，之後喺時間軸校）：")
-        if new:
-            self._state.push(AddLine(last_end + 500, last_end + 3500, new))
-
-
-def _ask_text(parent, title: str, prompt: str, initial: str = "") -> str | None:
-    """深色主題下嘅簡單文字輸入對話框（simpledialog 白底唔襯）。
-
-    ⚠️ grab_set 喺視窗未 viewable 之前呼叫會拋 TclError，令 wait_window 後面
-    全部跳過（實測：用戶撳確定冇生效）——所以要先 wait_visibility + try/except。
-    """
-    import ttkbootstrap as ttkb
-    dlg = ttkb.Toplevel(title=title, size=(380, 150))
-    dlg.transient(parent.winfo_toplevel())
-    result: list[str | None] = [None]
-
-    ttkb.Label(dlg, text=prompt, wraplength=340, bootstyle="secondary").pack(
-        padx=12, pady=(12, 4), anchor="w")
-    var = tk.StringVar(value=initial)
-    entry = ttkb.Entry(dlg, textvariable=var)
-    entry.pack(fill="x", padx=12)
-    entry.focus_set()
-    entry.select_range(0, "end")
-
-    def ok(_e=None) -> None:
-        result[0] = var.get().strip()
-        dlg.destroy()
-
-    def cancel(_e=None) -> None:
-        dlg.destroy()
-
-    btns = ttkb.Frame(dlg, bootstyle="light")
-    btns.pack(fill="x", padx=12, pady=10)
-    ttkb.Button(btns, text="確定", bootstyle=theme.ACCENT, command=ok).pack(side="right", padx=4)
-    ttkb.Button(btns, text="取消", bootstyle="secondary", command=cancel).pack(side="right")
-    dlg.bind("<Return>", ok)
-    dlg.bind("<Escape>", cancel)
-    try:
-        dlg.wait_visibility()
-        dlg.grab_set()
-        # ⚠️ focus_set 喺 map 之前呼叫會落咗去主視窗 —— 用戶打字 entry 完全收唔到，
-        # 撳確定 = 原文不變（實測「確定冇生效」嘅第二根源）。要 map 之後 focus_force。
-        entry.focus_force()
-    except tk.TclError:
-        pass
-    dlg.wait_window()
-    return result[0]
