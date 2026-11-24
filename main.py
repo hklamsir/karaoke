@@ -575,17 +575,39 @@ class StyleConfig:
 # 外部工具偵測
 # ---------------------------------------------------------------------------
 
-def find_ffmpeg() -> str:
+# ADR-052：工具路徑可由 UI 明確注入；唔好再淨係靠系統 PATH。
+def find_ffmpeg(path: str | None = None) -> str:
+    """FFmpeg 路徑：明確注入 > PATH > 常見安裝位。
+
+    注入優先係為咗支援 portable ffmpeg —— UI 由 ``settings.json`` 讀出使用者
+    指定嘅執行檔，唔使改系統 PATH。注入咗但檔案唔存在時**直接報錯**，
+    唔靜默跌落 PATH，否則用戶見到嘅 error 會係誤導嘅「搵唔到 ffmpeg」。
+
+    Args:
+        path: UI 注入嘅 ``ffmpeg.exe`` 完整路徑；``None`` / 空字串 = 沿用舊偵測。
+
+    Returns:
+        可用嘅 ffmpeg 執行檔路徑。
+
+    Raises:
+        ToolMissingError: 注入嘅路徑無效，或者完全搵唔到 ffmpeg。
+    """
+    if path and path.strip():
+        candidate = path.strip()
+        if Path(candidate).is_file():
+            return candidate
+        LOGGER.error("指定的 ffmpeg 路徑唔存在或唔係檔案：%s", candidate)
+        raise ToolMissingError(f"指定的 ffmpeg 路徑唔存在：{candidate}")
     found = shutil.which("ffmpeg")
     if found:
         return found
-    for path in (
+    for fallback in (
         r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
         "/usr/local/bin/ffmpeg",
         "/opt/homebrew/bin/ffmpeg",
     ):
-        if os.path.isfile(path):
-            return path
+        if os.path.isfile(fallback):
+            return fallback
     LOGGER.error(
         "搵唔到 ffmpeg。請先安裝系統層級 FFmpeg：\n"
         "  Windows ：winget install Gyan.FFmpeg\n"
@@ -595,8 +617,28 @@ def find_ffmpeg() -> str:
     raise ToolMissingError("搵唔到 ffmpeg —— 安裝方法見 log（winget install Gyan.FFmpeg）")
 
 
-def find_ffprobe() -> str:
-    sibling = Path(find_ffmpeg()).with_name("ffprobe" + (".exe" if os.name == "nt" else ""))
+def find_ffprobe(path: str | None = None, ffmpeg: str | None = None) -> str:
+    """FFprobe 路徑：明確注入 > ffmpeg 同目錄 > PATH。
+
+    Args:
+        path: UI 注入嘅 ``ffprobe.exe`` 完整路徑；``None`` / 空字串 = 沿用舊偵測。
+        ffmpeg: 已解析嘅 ffmpeg 路徑。傳入後同名兄弟檔優先，且唔會再叫一次
+            :func:`find_ffmpeg`（避免注入咗 ffmpeg 但仍被 PATH 檢查擋住）。
+
+    Returns:
+        可用嘅 ffprobe 執行檔路徑。
+
+    Raises:
+        ToolMissingError: 注入嘅路徑無效，或者完全搵唔到 ffprobe。
+    """
+    if path and path.strip():
+        candidate = path.strip()
+        if Path(candidate).is_file():
+            return candidate
+        LOGGER.error("指定的 ffprobe 路徑唔存在或唔係檔案：%s", candidate)
+        raise ToolMissingError(f"指定的 ffprobe 路徑唔存在：{candidate}")
+    base = ffmpeg or find_ffmpeg()
+    sibling = Path(base).with_name("ffprobe" + (".exe" if os.name == "nt" else ""))
     if sibling.is_file():
         return str(sibling)
     found = shutil.which("ffprobe")
@@ -766,8 +808,21 @@ def detect_silent_wav(path: str | Path, *,
 # Stage 2 · 人聲分離（可選，ADR-010 懶安裝）
 # ---------------------------------------------------------------------------
 
-def separate_vocals(wav: Path, workdir: Path) -> Path:
-    """AI 人聲分離。**只影響送去做 ASR 嘅音源**，輸出影片必須保留原聲軌。"""
+def separate_vocals(wav: Path, workdir: Path, ffmpeg: str | None = None) -> Path:
+    """AI 人聲分離。**只影響送去做 ASR 嘅音源**，輸出影片必須保留原聲軌。
+
+    Args:
+        wav: 已抽出嘅 16kHz 單聲道 WAV。
+        workdir: 暫存目錄。
+        ffmpeg: 可選注入嘅 ffmpeg 路徑；``None`` = 用 :func:`find_ffmpeg` 偵測。
+
+    Returns:
+        正規化後嘅 16kHz 人聲 WAV 路徑。
+
+    Raises:
+        ToolMissingError: 缺 audio-separator 或 ffmpeg。
+        AudioExtractionError: 分離或正規化失敗。
+    """
     import importlib.util
 
     if importlib.util.find_spec("audio_separator") is None:
@@ -796,7 +851,7 @@ def separate_vocals(wav: Path, workdir: Path) -> Path:
         LOGGER.error("人聲分離失敗（audio-separator 版本相容性問題）：%s", exc)
         raise AudioExtractionError(f"人聲分離失敗：{exc}") from exc
 
-    ffmpeg = find_ffmpeg()
+    ffmpeg = find_ffmpeg(ffmpeg)
     normalized = workdir / "vocals_16k.wav"
     proc = subprocess.run(
         [ffmpeg, "-y", "-v", "error", "-i", vocal,
@@ -2310,6 +2365,11 @@ class GenerateOptions:
     #: 無條件 ``opts.cancel_event.set()``；CLI 唔理它就等於唔支援取消。
     #: ⚠️ 因為 Event 唔可以 pickle，GenerateOptions 亦唔應該 deepcopy 到別的用途。
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    #: UI 由 ``settings.json`` 讀出嘅工具路徑（portable ffmpeg 必用）。
+    #: ``None`` / 空字串 = 沿用 :func:`find_ffmpeg` / :func:`find_ffprobe`
+    #: 嘅 PATH 偵測，所以 CLI 唔填時行為完全不變。
+    ffmpeg_path: str | None = None
+    ffprobe_path: str | None = None
 
 
 @dataclass
@@ -2361,8 +2421,8 @@ def generate_timings(opts: GenerateOptions, *,
     output_dir = opts.output_dir or video.parent
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ffmpeg = find_ffmpeg()
-    ffprobe = find_ffprobe()
+    ffmpeg = find_ffmpeg(opts.ffmpeg_path)
+    ffprobe = find_ffprobe(opts.ffprobe_path, ffmpeg)
     # ADR-039：純音檔（mp3/wav）冇視訊軌 → PlayRes 固定 1920×1080。
     # 用固定值而唔係「讀唔到就猜」：燒錄時的背景（純色／圖片）同字幕座標系
     # 必須一致，否則每次匯入同一首歌都可能出唔同字級比例。
@@ -2401,7 +2461,7 @@ def generate_timings(opts: GenerateOptions, *,
         if opts.separate_vocals:
             if progress_cb:
                 progress_cb("抽音", "人聲分離（首次需下載模型）…")
-            asr_source = separate_vocals(asr_source, workdir)
+            asr_source = separate_vocals(asr_source, workdir, ffmpeg=ffmpeg)
             _raise_if_cancelled(cancel, stage="人聲分離")
 
         if progress_cb:
@@ -2642,7 +2702,9 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
                progress_cb: ProgressCB | None = None,
                percent_cb: Callable[[float], None] | None = None,
                cancel_event: threading.Event | None = None,
-               out_size: tuple[int, int] | None = None) -> Path:
+               out_size: tuple[int, int] | None = None,
+               ffmpeg: str | None = None,
+               ffprobe: str | None = None) -> Path:
     """影片 + .ass → 燒錄 mp4（UI 入口；CLI 見 cmd_burn）。
 
     ADR-012：座標系由 .ass 自己讀出，唔使依賴 timings.json。
@@ -2662,6 +2724,9 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         out_size: 成品畫面尺寸 ``(闊, 高)``（ADR-051）。``None`` = 跟來源尺寸。
             指定時畫面按比例縮入框內並補黑邊（唔裁切），字幕按 ASS 座標系
             疊上 —— 令「預覽揀的解析度」真正反映在成品上。
+        ffmpeg: 可選注入嘅 ffmpeg 路徑（UI 由 ``settings.json`` 讀出）。
+            ``None`` = 沿用 :func:`find_ffmpeg` 嘅 PATH 偵測。
+        ffprobe: 可選注入嘅 ffprobe 路徑。``None`` = 用 ffmpeg 同目錄／PATH。
 
     Returns:
         輸出 mp4 路徑。
@@ -2671,8 +2736,8 @@ def burn_video(video: Path, ass_path: Path, output_path: Path, *,
         BurnError: ffmpeg 燒錄失敗（退出碼 5，ADR-024）或背景圖片唔存在。
         TaskCancelled: 用戶取消。
     """
-    ffmpeg = find_ffmpeg()
-    ffprobe = find_ffprobe()
+    ffmpeg = find_ffmpeg(ffmpeg)
+    ffprobe = find_ffprobe(ffprobe, ffmpeg)
 
     # ADR-012：座標系由 .ass 自己讀出，burn 唔使依賴 timings.json
     playres = read_playres_from_ass(ass_path)

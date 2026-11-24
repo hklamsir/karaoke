@@ -1112,6 +1112,9 @@ class HomePage(ttkb.Frame):
         # ⚠️ main.resolve_api_key 淨係識讀 env/.env，settings.json 嗰個要 UI 傳入
         from .. import settings as ui_settings
         api_key, _key_source = ui_settings.resolve_api_key(self.master.settings_data)
+        # ADR-052：同設定頁／燒錄共用同一份工具路徑 —— 核心唔使再靠系統 PATH。
+        ffmpeg = ui_settings.detect_ffmpeg(self.master.settings_data)
+        ffprobe = ui_settings.detect_ffprobe(self.master.settings_data)
         return main.GenerateOptions(
             input=video,
             output_dir=Path(self._output_var.get().strip()) if self._output_var.get().strip() else None,
@@ -1128,6 +1131,8 @@ class HomePage(ttkb.Frame):
             keep_punctuation=self._keep_punct_var.get(),
             save_raw=self._save_raw_var.get(),
             style=style,
+            ffmpeg_path=ffmpeg,
+            ffprobe_path=ffprobe,
         )
 
     def _start_generate(self) -> None:

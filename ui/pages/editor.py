@@ -921,11 +921,15 @@ class EditorPage(ttkb.Frame):
 
         def worker() -> None:
             try:
+                # ADR-052：把 UI 由 settings.json 讀出嘅路徑注入核心 ——
+                # burn_video 內部原本只認 PATH，portable ffmpeg 會喺呢度假綠後失敗。
                 _main.burn_video(source, ass_path, output, background=background,
                                  progress_cb=prog.report,
                                  percent_cb=prog.set_fraction,
                                  cancel_event=cancel_event,
-                                 out_size=out_size)
+                                 out_size=out_size,
+                                 ffmpeg=ffmpeg,
+                                 ffprobe=ffprobe)
             except _main.TaskCancelled:
                 # 取消唔算失敗：唔彈 error dialog（半截輸出檔已由 burn_subtitles 刪除）
                 prog.fail("已取消（未產生輸出檔）")

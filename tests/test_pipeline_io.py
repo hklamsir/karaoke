@@ -302,8 +302,9 @@ def test_generate_warns_when_audio_is_silent(tmp_path: Path, monkeypatch,
     video.write_bytes(b"fake")
     wav = write_wav(tmp_path / "silent.wav", sine_samples(0, 0.5))
 
-    monkeypatch.setattr(main, "find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(main, "find_ffprobe", lambda: "ffprobe")
+    # lambda 要食新加入嘅可選路徑參數（UI 注入用）
+    monkeypatch.setattr(main, "find_ffmpeg", lambda *a, **k: "ffmpeg")
+    monkeypatch.setattr(main, "find_ffprobe", lambda *a, **k: "ffprobe")
     monkeypatch.setattr(main, "probe_video_size", lambda *a, **k: (1920, 1080))
     monkeypatch.setattr(main, "extract_temp_audio", lambda *a, **k: wav)
 
@@ -323,3 +324,121 @@ def test_generate_warns_when_audio_is_silent(tmp_path: Path, monkeypatch,
     assert reached.get("upload") is True, "管線未走到上傳階段，測試前提不成立"
     assert any("全靜音" in rec.getMessage() for rec in caplog.records), \
         "偵測到全靜音但冇警告 —— 檢查點冇接線"
+
+
+# ---------------------------------------------------------------------------
+# portable ffmpeg：UI 由 settings.json 注入嘅路徑一定要壓過 PATH 偵測
+# ---------------------------------------------------------------------------
+
+
+def test_find_ffmpeg_prefers_injected_path(tmp_path: Path) -> None:
+    """明確注入嘅 portable 路徑優先於任何 PATH／常見安裝位結果。"""
+    exe = tmp_path / "ffmpeg.exe"
+    exe.write_bytes(b"MZ")
+    assert main.find_ffmpeg(str(exe)) == str(exe)
+
+
+def test_find_ffmpeg_invalid_injected_path_raises(tmp_path: Path) -> None:
+    """注入咗但檔案唔存在 → 明確報錯，唔好跌落 PATH 扮冇事。"""
+    with pytest.raises(main.ToolMissingError, match="指定的 ffmpeg 路徑唔存在"):
+        main.find_ffmpeg(str(tmp_path / "missing.exe"))
+
+
+def test_find_ffprobe_injected_and_sibling(tmp_path: Path, monkeypatch) -> None:
+    """注入 probe 直接用；淨係注入 ffmpeg 時用同目錄兄弟檔，唔再查 PATH。"""
+    ffmpeg = tmp_path / "ffmpeg.exe"
+    probe = tmp_path / "ffprobe.exe"
+    ffmpeg.write_bytes(b"MZ")
+    probe.write_bytes(b"MZ")
+
+    monkeypatch.setattr(main.shutil, "which", lambda name: None)
+    assert main.find_ffprobe(str(probe), str(ffmpeg)) == str(probe)
+
+    def no_fallback_ffmpeg(*a, **k):  # noqa: ANN002, ANN003
+        pytest.fail("已有注入 ffmpeg，唔應該再重新偵測")
+
+    monkeypatch.setattr(main, "find_ffmpeg", no_fallback_ffmpeg)
+    assert main.find_ffprobe(None, str(ffmpeg)) == str(probe)
+
+
+def test_burn_video_passes_injected_tools(monkeypatch, tmp_path: Path) -> None:
+    """burn_video 要將 UI 注入嘅路徑一路傳到 burn_subtitles。"""
+    video = tmp_path / "mv.mp4"
+    ass = tmp_path / "mv.ass"
+    out = tmp_path / "out.mp4"
+    video.write_bytes(b"fake")
+    ass.write_text("", encoding="utf-8")
+
+    seen: dict[str, object] = {}
+
+    def fake_find_ffmpeg(path=None):  # noqa: ANN001
+        seen["ffmpeg_arg"] = path
+        return "TOOL_FFMPEG"
+
+    def fake_find_ffprobe(path=None, ffmpeg=None):  # noqa: ANN001
+        seen["ffprobe_arg"] = path
+        seen["ffprobe_base"] = ffmpeg
+        return "TOOL_FFPROBE"
+
+    monkeypatch.setattr(main, "find_ffmpeg", fake_find_ffmpeg)
+    monkeypatch.setattr(main, "find_ffprobe", fake_find_ffprobe)
+    monkeypatch.setattr(main, "read_playres_from_ass", lambda *a: (1920, 1080))
+    monkeypatch.setattr(main, "probe_audio_codec", lambda *a: None)
+    monkeypatch.setattr(main, "probe_duration_ms", lambda *a: 1000)
+    monkeypatch.setattr(main, "probe_has_video", lambda *a: True)
+    monkeypatch.setattr(main, "burn_subtitles", lambda **kw: seen.update(burn=kw))
+
+    result = main.burn_video(
+        video, ass, out,
+        ffmpeg=r"C:\portable\ffmpeg.exe",
+        ffprobe=r"C:\portable\ffprobe.exe",
+    )
+
+    assert result == out
+    assert seen["ffmpeg_arg"] == r"C:\portable\ffmpeg.exe"
+    assert seen["ffprobe_arg"] == r"C:\portable\ffprobe.exe"
+    assert seen["ffprobe_base"] == "TOOL_FFMPEG"
+    assert seen["burn"]["ffmpeg"] == "TOOL_FFMPEG"
+
+
+def test_generate_timings_passes_injected_tools(tmp_path: Path, monkeypatch) -> None:
+    """GenerateOptions 嘅工具路徑要傳入解析層；CLI 唔填就保持 None。"""
+    video = tmp_path / "mv.mp4"
+    video.write_bytes(b"fake")
+    wav = write_wav(tmp_path / "a.wav", sine_samples(0, 0.2))
+
+    seen: dict[str, object] = {}
+
+    def fake_find_ffmpeg(path=None):  # noqa: ANN001
+        seen["ffmpeg"] = path
+        return "ffmpeg"
+
+    def fake_find_ffprobe(path=None, ffmpeg=None):  # noqa: ANN001
+        seen["ffprobe"] = path
+        seen["base"] = ffmpeg
+        return "ffprobe"
+
+    monkeypatch.setattr(main, "find_ffmpeg", fake_find_ffmpeg)
+    monkeypatch.setattr(main, "find_ffprobe", fake_find_ffprobe)
+    monkeypatch.setattr(main, "probe_has_video", lambda *a: True)
+    monkeypatch.setattr(main, "probe_video_size", lambda *a, **k: (640, 360))
+    monkeypatch.setattr(main, "extract_temp_audio", lambda *a, **k: wav)
+
+    def stop_after_check(uploaded_wav):  # noqa: ANN001
+        seen["upload"] = True
+        raise main.AsrError("測試用：到上傳為止")
+
+    monkeypatch.setattr(main, "upload_audio", stop_after_check)
+
+    opts = main.GenerateOptions(
+        input=video, api_key="sk-test",
+        ffmpeg_path="C:/portable/ffmpeg.exe",
+        ffprobe_path="C:/portable/ffprobe.exe",
+    )
+    with pytest.raises(main.AsrError):
+        main.generate_timings(opts)
+
+    assert seen["ffmpeg"] == "C:/portable/ffmpeg.exe"
+    assert seen["ffprobe"] == "C:/portable/ffprobe.exe"
+    assert seen["base"] == "ffmpeg"
+    assert seen["upload"] is True

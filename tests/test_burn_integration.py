@@ -22,7 +22,7 @@ pytestmark = [pytest.mark.slow, pytest.mark.integration]
 
 
 def _require_ffmpeg_on_path() -> str:
-    """``main.burn_video`` 內部用 ``find_ffmpeg()``（只認 PATH），先確認可用。"""
+    """本檔直接叫 ``burn_video()``（冇注入路徑），所以要先確認 PATH 有 ffmpeg；UI 會注入設定頁路徑，唔受此限。"""
     found = shutil.which("ffmpeg")
     if not found:
         pytest.skip("main.find_ffmpeg() 只認 PATH；請把 ffmpeg 加入 PATH 才跑本測試")
