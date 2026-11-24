@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """``python -m ui`` 啟動入口。
 
-⚠️ R24：UI 要用有 tkinter 嘅 venv —— ``.venv-ui``（由 ``py -3`` 建）。
+⚠️ R24：UI 要用有 tkinter 嘅 venv —— ``.venv-ui``（由 ``py -3.13`` 建，見 ADR-047）。
 CLI 嘅 ``.venv`` 冇 Tcl/Tk，用錯會喺度攔截並提示正確命令。
 """
 
@@ -16,7 +16,7 @@ def _fatal_no_tkinter() -> int:
     print("字幕編輯器 UI 要用 .venv-ui（見 ADR-014 R24）：", file=sys.stderr)
     print("", file=sys.stderr)
     print("  首次安裝：", file=sys.stderr)
-    print("    py -3 -m venv .venv-ui", file=sys.stderr)
+    print("    py -3.13 -m venv .venv-ui", file=sys.stderr)
     print("    .venv-ui\\Scripts\\python.exe -m pip install -r requirements-ui.txt", file=sys.stderr)
     print("", file=sys.stderr)
     print("  啟動 UI：", file=sys.stderr)

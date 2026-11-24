@@ -38,12 +38,12 @@
 
 ### 1.2 Python 依賴
 
-需要 Python 3.10 或以上。兩個入口使用各自獨立的虛擬環境：
+需要 **Python 3.13**（ADR-047 硬鎖；3.10–3.12 與 3.14 以上皆不支援，詳見 `DEPLOY.md` §0／§1.1）。兩個入口使用各自獨立的虛擬環境：
 
 | 入口 | 安裝指令 |
 |---|---|
-| **CLI** | `python -m venv .venv`<br>`.venv\Scripts\activate`（macOS/Linux：`source .venv/bin/activate`）<br>`pip install -r requirements.txt` |
-| **GUI** | `py -3 -m venv .venv-ui`<br>`.venv-ui\Scripts\python.exe -m pip install -r requirements-ui.txt`<br>`.venv-ui\Scripts\python.exe -m ui` |
+| **CLI** | `py -3.13 -m venv .venv`（macOS/Linux：`python3.13 -m venv .venv`）<br>`.venv\Scripts\activate`（macOS/Linux：`source .venv/bin/activate`）<br>`pip install -r requirements.txt` |
+| **GUI** | `py -3.13 -m venv .venv-ui`<br>`.venv-ui\Scripts\python.exe -m pip install -r requirements-ui.txt`<br>`.venv-ui\Scripts\python.exe -m ui` |
 
 CLI 依賴刻意保持輕量：`dashscope` / `requests` / `python-dotenv` / `opencc-python-reimplemented`。
 GUI 另需 `ttkbootstrap`（介面主題）／`numpy`（波形峰值）／`pygame`（音訊播放與游標同步），
@@ -85,7 +85,7 @@ pip install audio-separator     # 刻意不列入 requirements.txt（會引入 G
 ### 2.1 啟動
 
 雙擊 `run_ui.bat`，或於已建立的 `.venv-ui` 環境執行 `python -m ui`。
-視窗標題會顯示版本號（例如 `Karaoke AI Subtitler - Designed by Lamsir  (v1.0.2)`）。
+視窗標題會顯示版本號（格式為 `Karaoke AI Subtitler - Designed by Lamsir  (v<VERSION>)`，目前為 `v1.1.2`）。
 
 介面採 ttkbootstrap，內建三套主題，於設定頁即時切換：
 
@@ -184,7 +184,7 @@ pip install audio-separator     # 刻意不列入 requirements.txt（會引入 G
 **設定** — DashScope API Key、FFmpeg／FFprobe 路徑（預設自動偵測）、預設資料夾、
 介面主題、縮圖快取容量與清除。
 
-**說明** — 即 [`docs/使用說明.md`](docs/使用說明.md) 的內容，左側章節可跳轉，
+**說明（介面標題為「幫助」）** — 即 [`docs/使用說明.md`](docs/使用說明.md) 的內容，左側章節可跳轉，
 上方搜尋框支援全文搜尋；「複製等價 CLI 指令」會把目前參數組成一行可執行的命令。
 
 ### 2.3 時間軸操作
@@ -203,7 +203,7 @@ pip install audio-separator     # 刻意不列入 requirements.txt（會引入 G
 
 | 快捷鍵 | 作用 |
 |---|---|
-| `Alt+1` ～ `Alt+4` | 切換頁面（主頁／編輯器／設定／說明） |
+| `Alt+1` ～ `Alt+4` | 切換頁面（主頁／編輯器／設定／幫助） |
 | `Ctrl+S` | 儲存 `timings.json`（原子寫入並保留 `.bak`） |
 | `Ctrl+Z` / `Ctrl+Shift+Z` | 復原／重做 |
 | `空白鍵` | 播放／暫停 |
@@ -359,16 +359,16 @@ python main.py burn -i "MV_純音樂.mp4" -s "MV_karaoke.ass" -o "MV_karaoke_ins
 ```jsonc
 {
   "schema_version": 3,
+  "output_res": [1920, 1080],   // 可選；ADR-051 成品解析度，缺省 = 跟原片
   "source": { "video": "...", "model": "...", "language_hints": ["zh"],
               "min_clause_chars": 5, "min_clause_ms": 2500, "strip_punctuation": true,
               "generated_at": "..." },            // UI 儲存時另加 edited_at / edited_by
   "style":  { "play_res_x": 1920, "play_res_y": 1080, "font_name": "Microsoft JhengHei",
               "font_size": 48, "primary_color": "#FFFF00", "secondary_color": "#FFFFFF",
-              "outline_color": "#000000", "alignment": 2, "margin_v": 0, "outline_width": 0.0,
-              "shadow_width": 0.0, "shadow_color": "#000000", "shadow_opacity": 50,
-              // ADR-050：陰影（shadow_width = 0 即關閉，三個欄位都不會寫入）
-              "lead_in_ms": 3000, "countdown_dots": true,
-              "dot_min_gap_ms": 5000 },                     // ADR-031（非預設值才寫）
+              "outline_color": "#000000", "alignment": 2, "margin_v": 0, "outline_width": 0.0 },
+  // ADR-031／050：偏離預設時才會寫入，例如
+  // "shadow_width": 3, "shadow_color": "#333333", "shadow_opacity": 40,
+  // "lead_in_ms": 2000, "countdown_dots": false, "dot_min_gap_ms": 3000
   "lines": [{
     "start_ms": 3950, "end_ms": 8890,
     "text": "輪迴塵間的人 揮之不能",        // ADR-013：顯示用文字（已移除標點）
@@ -428,12 +428,12 @@ python main.py burn -i "MV_純音樂.mp4" -s "MV_karaoke.ass" -o "MV_karaoke_ins
 ## 7 · 疑難排解
 
 ```
-[error] 找不到 ffmpeg。
+[error] 搵唔到 ffmpeg。
 ```
 → 見 §1.1。安裝後請**重新開啟終端機**，令 `PATH` 生效。
 
 ```
-[error] 找不到 DashScope API Key。
+[error] 搵唔到 DashScope API Key。
 ```
 → 見 §1.3。
 
@@ -510,7 +510,7 @@ run_tests.bat                 全部（含 3 小時 / 5,000 行的大數據量�
 run_tests.bat -m "not slow"   快速回歸（約 10 秒）
 ```
 
-判準為 **exit code 0**。現時 **213 條全綠、0 xfail** —— 審查報告 §9.2 的必補案例
+判準為 **exit code 0**。現時全套 **379 條全綠**、0 xfail（`-m "not slow"` 快速回歸 368 條，另 11 條 slow）—— 審查報告 §9.2 的必補案例
 （取消、靜音偵測、跨磁碟燒錄、原子寫入、UI 防呆、長片記憶體）已全部實作並鎖住。
 
 `xfail(strict=True)` 的約定仍然保留：新增功能時先寫契約測試，未實作會 xfail

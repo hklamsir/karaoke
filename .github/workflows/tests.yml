@@ -35,8 +35,8 @@ jobs:
           pip install -r requirements.lock.txt -r requirements-dev.txt
 
       - name: 安裝 FFmpeg
-        # 必需的，唔係可選：10 條測試（compare_sources ×6、真實燒錄 ×3、
-        # 16kHz 抽音 ×1）沒有 ffmpeg 會 skip。初版誤以為 windows-latest 內建，
+        # 必需的，唔係可選：現時 11 條 slow 測試（真實燒錄 ×4、大文件／原子寫入 ×7）
+        # 當中需要 ffmpeg 的會 skip。初版誤以為 windows-latest 內建，
         # 實測會 skip 10 條 → CI 變假綠（首跑紀錄：56 passed, 10 skipped）。
         # 用 choco（runner 內建）而唔用第三方 action，減少供應鏈依賴。
         run: choco install ffmpeg -y --no-progress

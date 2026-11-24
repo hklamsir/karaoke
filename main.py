@@ -2993,7 +2993,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="語言提示 zh／yue／en（預設 zh）。yue 會被內部重映射為 zh，"
                         "避免觸發「粵語轉普通話」開關（ADR-001）")
     g.add_argument("--separate-vocals", action="store_true",
-                   help="先做人聲分離再送辨識（提升辨識率，但需額外安裝 demucs；"
+                   help="先做人聲分離再送辨識（提升辨識率，但需額外安裝 audio-separator；"
                         "未安裝時會提示而不會中斷）")
     add_style_args(g)
     g.add_argument("--max-chars", type=int, default=18,
